@@ -1,0 +1,56 @@
+# Secrets — NEVER commit
+egon-config.json
+.env
+*.key
+*.pem
+.gdrive_token.json
+.*_token.json
+state/imports/
+.backups/
+
+
+# Runtime state
+.egon.pid
+*.pid
+.venv/
+__pycache__/
+*.pyc
+logs/
+build/
+dist/
+
+# Machine-local browser/app state and generated snapshots
+state/
+shell/profile/
+
+# Vendored read-only mirrors of other repos
+external/*
+# ...EXCEPT panop_server, which we co-develop in this repo (Egon's in-process
+# embedding imports `external.panop_server.main:app` directly). Tracking it
+# here is what gives us a diffable history across agents — that's the whole
+# point of task #45. Bruno 2026-05-27.
+!external/panop_server/
+# ...and within panop_server, still ignore its runtime output + caches.
+external/panop_server/panop_output/
+external/panop_server/__pycache__/
+external/panop_server/.venv/
+# Same exception for the Egon Mind MCP server — co-developed in this repo,
+# installed into Claude Desktop / Antigravity / Codex from the path below.
+!external/egon_mind_mcp/
+external/egon_mind_mcp/__pycache__/
+
+# Panop ADB/runtime output (binaries + machine-local config)
+panop_output/
+
+# Local-only experiments
+scratch/
+.cache/
+
+# Local Panop configs
+panop_env.json
+external/panop_server/panop_env.json
+
+# Git backups
+.git.bak/
+
+

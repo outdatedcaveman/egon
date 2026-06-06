@@ -1,0 +1,6 @@
+@echo off
+echo Installing Panop Server dependencies...
+pip install -r requirements.txt
+echo Starting Panop Server...
+python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+pause

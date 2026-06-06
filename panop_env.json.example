@@ -1,0 +1,13 @@
+{
+    "root_dir": "state/panop",
+    "interval_hours": 6,
+    "catch_uncategorized": false,
+    "strict_domain_scan": true,
+    "port": 8000,
+    "bookmark_folder": "Panop",
+    "zotero_api_key": "",
+    "zotero_user_id": "",
+    "zotero_collection_key": "",
+    "close_tabs_after_save": false,
+    "chrome_profile": "Default"
+}
