@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pydantic
+requests
+beautifulsoup4
+rispy
+python-dotenv
+psutil
+cloudscraper
