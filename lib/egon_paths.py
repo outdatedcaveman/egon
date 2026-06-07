@@ -9,6 +9,9 @@ Override any path by exporting the matching environment variable before launch:
 
     EGON_VAULT_ROOT     Root of the cloud/Drive vault mirror (optional).
                         If unset, Egon keeps all state locally under EGON_ROOT/state.
+    EGON_SHARED_ROOT    Canonical shared substrate for AI projects, memories,
+                        skills, sessions, artifacts, pointers, and state.
+                        Defaults to ~/AI.
     EGON_ENV_FILE       Path to a .env file holding tokens (NOTION_TOKEN, etc.).
                         Defaults to EGON_ROOT/.env.
     EGON_BRAIN_DIRS     Path-separator list of agent "brain"/log dirs to ingest.
@@ -44,6 +47,16 @@ def _env_paths(name: str, defaults: list[Path]) -> list[Path]:
     return [Path(p).expanduser() for p in raw.split(os.pathsep) if p.strip()]
 
 
+# --- Shared AI workspace -------------------------------------------------
+SHARED_ROOT = _env_path("EGON_SHARED_ROOT", HOME / "AI")
+SHARED_PROJECTS = SHARED_ROOT / "projects"
+SHARED_MEMORIES = SHARED_ROOT / "memories"
+SHARED_SKILLS = SHARED_ROOT / "skills"
+SHARED_SESSIONS = SHARED_ROOT / "sessions"
+SHARED_ARTIFACTS = SHARED_ROOT / "artifacts"
+SHARED_POINTERS = SHARED_ROOT / "pointers"
+SHARED_STATE = SHARED_ROOT / "state"
+
 # --- Local + vault state -------------------------------------------------
 STATE_DIR = _env_path("EGON_STATE_DIR", EGON_ROOT / "state")
 
@@ -64,6 +77,8 @@ ENV_FILE = _env_path("EGON_ENV_FILE", EGON_ROOT / ".env")
 BRAIN_DIRS = _env_paths(
     "EGON_BRAIN_DIRS",
     [
+        SHARED_MEMORIES,
+        SHARED_SESSIONS,
         HOME / ".claude" / "projects",
         HOME / ".codex",
         HOME / ".gemini" / "antigravity" / "brain",
@@ -77,6 +92,7 @@ ROUTSTER_PATH = _env_path("ROUTSTER_PATH", HOME / "Routster")
 MOUSEION_PATH = _env_path("MOUSEION_PATH", HOME / "Mouseion")
 MOUSEION_DB = _env_path("MOUSEION_DB", MOUSEION_PATH / "refs.db")
 PANOP_PATH = _env_path("PANOP_PATH", HOME / "Panop")
+DOUBLE_PATH = _env_path("DOUBLE_PATH", SHARED_PROJECTS / "double")
 
 # --- Android Debug Bridge (used by phone-keepalive helpers) --------------
 ADB_PATH = _env_path(

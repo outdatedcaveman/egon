@@ -18,6 +18,7 @@ def enforcement_status(project: str | None = "egon",
                        since_hours: int = 168) -> dict[str, Any]:
     checks = [
         _service_check(),
+        _shared_workspace_check(),
         _claude_hooks_check(),
         _codex_mcp_check(),
         _codex_directive_check(),
@@ -68,6 +69,64 @@ def _service_check() -> dict[str, Any]:
         "Mind service is listening on 127.0.0.1:8000.",
         "Mind service is not listening on 127.0.0.1:8000.",
         "Run Start Egon Mind Service.bat or scripts/start_mind_service.ps1.",
+    )
+
+
+def _shared_workspace_check() -> dict[str, Any]:
+    try:
+        from lib.shared_workspace import shared_status
+
+        status = shared_status()
+    except Exception as e:
+        return {
+            "name": "shared_workspace",
+            "status": "fail",
+            "message": f"Shared workspace check failed: {type(e).__name__}: {str(e)[:160]}",
+            "fix": "Inspect lib/shared_workspace.py and run scripts/bootstrap_shared_workspace.py.",
+            "gaps": ["Shared workspace could not be checked."],
+        }
+
+    dirs = status.get("directories") or {}
+    required = [
+        "root",
+        "projects",
+        "memories",
+        "skills",
+        "sessions",
+        "artifacts",
+        "state",
+        "pointers",
+    ]
+    missing = [
+        name for name in required
+        if not (dirs.get(name) or {}).get("exists")
+    ]
+    double = next(
+        (p for p in status.get("pointers", []) if p.get("name") == "double"),
+        {},
+    )
+    double_ready = (
+        double.get("target_exists")
+        and (double.get("source_is_pointer") or not double.get("source_exists"))
+    )
+    if not double_ready:
+        missing.append("double project pointer")
+
+    ok = not missing
+    return _check(
+        "shared_workspace",
+        ok,
+        (
+            "Shared AI workspace is initialized at "
+            f"{status.get('root')} with Double resolved through the canonical root."
+        ),
+        f"Shared AI workspace is incomplete: {', '.join(missing)}.",
+        (
+            "Run scripts/bootstrap_shared_workspace.py --apply "
+            "--adopt-projects --project double, then adopt agent state deliberately."
+        ),
+        None,
+        missing,
     )
 
 

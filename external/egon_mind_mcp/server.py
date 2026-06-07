@@ -46,6 +46,23 @@ _LAST_AUTOSTART_AT = 0.0
 _MCP_SESSION_ID = None
 
 
+def _configure_stdio() -> None:
+    """Force Unicode-capable stdio on Windows MCP hosts.
+
+    Some clients launch Python with a legacy Windows code page. Returning a
+    Context Broker capsule with arrows, emoji, or accented text can then raise a
+    charmap encode error before the JSON-RPC response reaches the client.
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def _log(msg: str) -> None:
     """Diagnostics go to stderr — stdout is reserved for JSON-RPC."""
     try:
@@ -510,7 +527,9 @@ TOOLS = [
 # ── JSON-RPC plumbing ─────────────────────────────────────────────────────
 
 def _send(msg: dict) -> None:
-    sys.stdout.write(json.dumps(msg, ensure_ascii=False) + "\n")
+    # ASCII JSON is accepted by every MCP client and avoids Windows code-page
+    # crashes if a host ignores our stdio reconfiguration.
+    sys.stdout.write(json.dumps(msg, ensure_ascii=True) + "\n")
     sys.stdout.flush()
 
 
@@ -553,12 +572,13 @@ def _handle_tools_call(req_id, params: dict) -> dict:
                        "error": f"{type(e).__name__}: {e}"}
             return _result(req_id, {"content": [{
                 "type": "text",
-                "text": json.dumps(out, ensure_ascii=False, indent=2),
+                "text": json.dumps(out, ensure_ascii=True, indent=2),
             }]})
     return _error(req_id, -32601, f"unknown tool: {name}")
 
 
 def main() -> int:
+    _configure_stdio()
     _log(f"starting; API_BASE={API_BASE}")
     for line in sys.stdin:
         line = line.strip()
