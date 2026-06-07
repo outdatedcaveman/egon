@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 LOCAL_ROOT = Path(__file__).resolve().parent.parent / "state" / "snapshots"
-VAULT_ROOT = Path(r"G:/My Drive/MetaVault/VaultDrive/050 - Resources/egon/snapshots")
+from lib.egon_paths import VAULT_SNAPSHOTS as VAULT_ROOT
 
 # field weights for the score: which keys in an item contribute, and how heavily
 _FIELD_WEIGHTS = {

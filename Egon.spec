@@ -2,14 +2,16 @@
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_submodules
 
-datas = [('C:\\Users\\bruno\\Claude Code\\egon\\shell\\egon.ico', 'shell')]
+import os
+_SPEC_DIR = os.path.abspath(os.getcwd())
+datas = [(os.path.join(_SPEC_DIR, 'shell', 'egon.ico'), 'shell')]
 hiddenimports = ['lib.state', 'lib.ledger', 'lib.actions', 'lib.status_cache', 'lib.panop_proc', 'lib.snapshot', 'lib.snapshot_store', 'lib.secrets', 'lib.google_oauth', 'lib.scraper', 'lib.adapters.android_tabs', 'lib.adapters.chrome_bookmarks', 'lib.adapters.chrome_tabs', 'lib.adapters.gcalendar', 'lib.adapters.gdrive', 'lib.adapters.gfit', 'lib.adapters.gmail', 'lib.adapters.instapaper', 'lib.adapters.instapaper_full', 'lib.adapters.kindle', 'lib.adapters.letterboxd', 'lib.adapters.mouseion', 'lib.adapters.notion', 'lib.adapters.notion_workspace', 'lib.adapters.paperpile', 'lib.adapters.routster', 'lib.adapters.tvtime', 'lib.adapters.vault', 'lib.adapters.youtube', 'lib.adapters.zotero_local', 'lib.adapters.zotero_web', 'zeroconf']
 datas += collect_data_files('PySide6')
 hiddenimports += collect_submodules('egon_app')
 
 
 a = Analysis(
-    ['C:\\Users\\bruno\\Claude Code\\egon\\egon_app\\main.py'],
+    [os.path.join(_SPEC_DIR, 'egon_app', 'main.py')],
     pathex=[],
     binaries=[],
     datas=datas,
@@ -39,7 +41,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['C:\\Users\\bruno\\Claude Code\\egon\\shell\\egon.ico'],
+    icon=[os.path.join(_SPEC_DIR, 'shell', 'egon.ico')],
 )
 coll = COLLECT(
     exe,

@@ -10,11 +10,11 @@ Code (~/.claude/settings.local.json or ~/.claude/settings.json):
   {
     "hooks": {
       "Stop":              [{"hooks": [{"type": "command",
-        "command": "python C:/Users/bruno/Claude Code/egon/scripts/mind_hook.py stop"}]}],
+        "command": "python <EGON_ROOT>/scripts/mind_hook.py stop"}]}],
       "UserPromptSubmit":  [{"hooks": [{"type": "command",
-        "command": "python C:/Users/bruno/Claude Code/egon/scripts/mind_hook.py prompt"}]}],
+        "command": "python <EGON_ROOT>/scripts/mind_hook.py prompt"}]}],
       "PostToolUse":       [{"hooks": [{"type": "command",
-        "command": "python C:/Users/bruno/Claude Code/egon/scripts/mind_hook.py tool"}]}]
+        "command": "python <EGON_ROOT>/scripts/mind_hook.py tool"}]}]
     }
   }
 

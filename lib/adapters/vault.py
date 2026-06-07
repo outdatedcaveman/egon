@@ -17,7 +17,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-VAULT_ROOT = Path(r"G:/My Drive/MetaVault/VaultDrive")
+from lib.egon_paths import VAULT_ROOT
 INBOX = VAULT_ROOT / "001 - Inbox"
 MIRROR_STATE = VAULT_ROOT / ".mirror_state.json"
 

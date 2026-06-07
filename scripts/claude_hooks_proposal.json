@@ -1,5 +1,5 @@
 {
-  "_comment_for_bruno": [
+  "_comment": [
     "Drop this into ~/.claude/settings.local.json (it merges with whatever's already there).",
     "After saving, restart Claude Code and start a new session. Within seconds the mind will see:",
     "  • A 'user_prompt' activity for each message you send",
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"C:/Users/bruno/Claude Code/egon/scripts/mind_hook.py\" prompt"
+            "command": "python \"<EGON_ROOT>/scripts/mind_hook.py\" prompt"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"C:/Users/bruno/Claude Code/egon/scripts/mind_hook.py\" tool"
+            "command": "python \"<EGON_ROOT>/scripts/mind_hook.py\" tool"
           }
         ]
       }
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"C:/Users/bruno/Claude Code/egon/scripts/mind_hook.py\" stop"
+            "command": "python \"<EGON_ROOT>/scripts/mind_hook.py\" stop"
           }
         ]
       }

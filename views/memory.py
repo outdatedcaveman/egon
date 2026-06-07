@@ -1,12 +1,14 @@
 """Memory & rules — read-only viewer for ~/.claude/.../memory/."""
 from __future__ import annotations
 
+import os
 from html import escape
 from pathlib import Path
 
 from nicegui import ui
 
-MEMORY = Path.home() / ".claude" / "projects" / "C--Users-bruno-Claude-Code" / "memory"
+# Override with EGON_MEMORY_DIR; defaults to the Claude Code projects root.
+MEMORY = Path(os.environ.get("EGON_MEMORY_DIR", str(Path.home() / ".claude" / "projects")))
 
 
 def render(data: dict) -> None:

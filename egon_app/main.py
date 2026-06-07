@@ -53,7 +53,7 @@ if str(_ROOT) not in sys.path:
 from egon_app.window import MainWindow
 from egon_app.health import start_health_server
 
-APP_ID = "org.brunosaramago.egon"
+APP_ID = "com.outdatedcaveman.egon"
 ICON_PATH = _ROOT / "shell" / "egon.ico"
 
 
@@ -92,7 +92,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     _trace("QApplication created")
     app.setApplicationName("Egon")
-    app.setOrganizationName("brunosaramago")
+    app.setOrganizationName("outdatedcaveman")
     app.setApplicationDisplayName("Egon")
 
     if ICON_PATH.exists():

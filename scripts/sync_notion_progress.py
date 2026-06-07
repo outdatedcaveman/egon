@@ -11,6 +11,7 @@ Currently writes / updates:
 """
 from __future__ import annotations
 
+import os
 import json
 import sys
 from datetime import datetime
@@ -21,11 +22,11 @@ import httpx
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-EGON_PAGE_ID = "35393daa-9215-8134-9cf3-fc66d9a0e1a6"  # 🛰️ Egon root
+EGON_PAGE_ID = os.environ.get("NOTION_EGON_PAGE_ID", "")  # Egon root (set to your page id)
 
 
 def _token() -> str:
-    env = Path(r"C:/Users/bruno/Claude Code/claude-meta/.env")
+    from lib.egon_paths import ENV_FILE as env
     for line in env.read_text(encoding="utf-8").splitlines():
         if line.startswith("NOTION_TOKEN="):
             return line.split("=", 1)[1].strip().strip('"').strip("'")
@@ -134,7 +135,7 @@ def architecture_blocks() -> list[dict]:
         _h("Wiring", 2),
         _bullet("Backend: NiceGUI 3.11 (FastAPI + websockets) on 127.0.0.1:8088"),
         _bullet("Launcher: pywebview + pystray; PID-file at egon/.egon.pid"),
-        _bullet("Project root: C:/Users/bruno/Claude Code/egon/"),
+        _bullet("Project root: <EGON_ROOT>"),
         _bullet("Config (gitignored): egon/egon-config.json — all credentials + cache"),
         _bullet("State (double-backed-up): local egon/state/ + vault 050-Resources/egon/"),
         _bullet("Snapshots: date-partitioned JSON per source, never deleted (full audit)"),
@@ -254,7 +255,7 @@ CHANGES = [
     {"date": "2026-05-07", "headline": "Project genesis · NiceGUI app · launcher",
      "bullets": [
         "Old Egon FastAPI/React scaffold archived to .backups/egon-scaffold-*.zip + renamed .legacy",
-        "New NiceGUI project at C:/Users/bruno/Claude Code/egon",
+        "New NiceGUI project at <EGON_ROOT>",
         "Streamlit-aesthetic NiceGUI theme (light + dark via CSS variables)",
         "Contained pywebview launcher · system tray · desktop + Start Menu shortcuts",
         "Daily pass agent + Windows scheduled task",

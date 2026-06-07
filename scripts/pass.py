@@ -30,7 +30,7 @@ from pathlib import Path
 socket.setdefaulttimeout(45.0)
 
 ROOT = Path(__file__).resolve().parent.parent
-VAULT_STATE = Path(r"G:/My Drive/MetaVault/VaultDrive/050 - Resources/egon/state")
+from lib.egon_paths import VAULT_STATE
 LAST_PASS = VAULT_STATE / "last_pass.json"
 HISTORY = VAULT_STATE / "history"
 LOG_DIR = ROOT / "logs"
@@ -224,14 +224,14 @@ def _run_mirror() -> None:
     Write-back is only run when WRITE_BACK_ENABLED=1 in claude-meta/.env, so
     users opt in once they trust the round-trip.
     """
-    meta_scripts = Path(r"C:/Users/bruno/Claude Code/claude-meta/scripts")
+    meta_scripts = Path(os.environ.get("CLAUDE_META_SCRIPTS", str(Path.home() / "claude-meta" / "scripts")))
     fwd = meta_scripts / "notion_to_obsidian_mirror.py"
     rev = meta_scripts / "obsidian_to_notion_writeback.py"
     if not fwd.exists():
         raise RuntimeError(f"mirror script not found: {fwd}")
 
     # Read WRITE_BACK_ENABLED from claude-meta/.env (don't require it in our process env)
-    env_path = Path(r"C:/Users/bruno/Claude Code/claude-meta/.env")
+    from lib.egon_paths import ENV_FILE as env_path
     writeback_on = False
     if env_path.exists():
         for line in env_path.read_text(encoding="utf-8").splitlines():

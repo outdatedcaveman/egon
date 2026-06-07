@@ -26,7 +26,7 @@ from pathlib import Path
 
 LOCAL_STATE = Path(__file__).resolve().parent.parent / "state"
 LOCAL_LAST_PASS = LOCAL_STATE / "last_pass.json"
-VAULT_STATE = Path(r"G:/My Drive/MetaVault/VaultDrive/050 - Resources/egon/state")
+from lib.egon_paths import VAULT_STATE
 LAST_PASS = VAULT_STATE / "last_pass.json"
 LAST_PASS_CANDIDATES = (LOCAL_LAST_PASS, LAST_PASS)
 

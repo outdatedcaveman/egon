@@ -29,7 +29,7 @@ from typing import Callable
 from lib import secrets
 
 # vault location for mirrored pages
-VAULT_MIRROR_ROOT = Path(r"G:/My Drive/MetaVault/VaultDrive/050 - Resources/Mirrors")
+from lib.egon_paths import VAULT_MIRROR_ROOT
 
 # Notion DB id mapping (one DB per source). The DBs themselves are created lazily
 # the first time mirror is enabled for that source.

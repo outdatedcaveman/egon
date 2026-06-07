@@ -69,7 +69,7 @@ import os as _os
 _HEALTH_ROOT = _Path(__file__).resolve().parent
 _SNAP_DIR = _HEALTH_ROOT / "state" / "snapshots"
 _LOCAL_LAST_PASS = _HEALTH_ROOT / "state" / "last_pass.json"
-_LAST_PASS = _Path(r"G:/My Drive/MetaVault/VaultDrive/050 - Resources/egon/state/last_pass.json")
+from lib.egon_paths import LAST_PASS as _LAST_PASS
 _LAST_PASS_CANDIDATES = (_LOCAL_LAST_PASS, _LAST_PASS)
 
 

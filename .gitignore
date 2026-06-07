@@ -54,3 +54,7 @@ external/panop_server/panop_env.json
 .git.bak/
 
 
+
+# internal agent/dev notes — not for public repo
+CLAUDE.md
+_genericize.py

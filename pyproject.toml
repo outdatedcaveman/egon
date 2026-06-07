@@ -1,7 +1,7 @@
 [project]
 name = "egon"
 version = "0.3.0"
-description = "Egon - native visual control plane for Bruno's KMS."
+description = "Egon - a local-first visual control plane for your personal knowledge system."
 requires-python = ">=3.11"
 dependencies = [
     "PySide6>=6.11",

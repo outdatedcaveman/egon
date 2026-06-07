@@ -47,7 +47,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ADB_CANDIDATES = [
     ROOT / "state/panop/platform-tools/platform-tools/adb.exe",
     ROOT / "panop_output/platform-tools/platform-tools/adb.exe",
-    Path("C:/Users/bruno/AppData/Local/Android/Sdk/platform-tools/adb.exe"),
+    Path.home() / "AppData/Local/Android/Sdk/platform-tools/adb.exe",
     Path("adb.exe"),
 ]
 LOCKED_FILE = ROOT / "state/panop/locked_target.json"
