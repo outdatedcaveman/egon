@@ -226,7 +226,7 @@ def scan_and_reconcile_categories() -> dict[str, Any]:
     categories: list[Category] = []
     
     # 1. Scan Antigravity brain sessions
-    brain_dir = Path("C:/Users/bruno/.gemini/antigravity/brain")
+    brain_dir = Path.home() / ".gemini" / "antigravity" / "brain"
     if brain_dir.exists():
         for path in brain_dir.rglob("*.md"):
             try:

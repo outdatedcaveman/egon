@@ -56,7 +56,7 @@ LOCKED_FILE = ROOT / "state/panop/locked_target.json"
 ADB_CANDIDATES = [
     ROOT / "state/panop/platform-tools/platform-tools/adb.exe",
     ROOT / "panop_output/platform-tools/platform-tools/adb.exe",
-    Path("C:/Users/bruno/AppData/Local/Android/Sdk/platform-tools/adb.exe"),
+    Path.home() / "AppData/Local/Android/Sdk/platform-tools/adb.exe",
 ]
 LOG_FILE = ROOT / "logs" / f"phone-keepalive-{datetime.now():%Y-%m}.log"
 PID_FILE = ROOT / ".phone-keepalive.pid"

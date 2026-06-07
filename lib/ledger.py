@@ -65,7 +65,7 @@ def _project_for_cwd(cwd: str | None, session_path: str | None = None) -> str:
     if cwd:
         candidates.append(cwd.lower().replace("/", "\\"))
     if session_path:
-        # ~/.claude/projects/C--Users-bruno-Claude-Code-egon/<id>.jsonl
+        # ~/.claude/projects/C--Users-you-Claude-Code-egon/<id>.jsonl
         slug = Path(session_path).parent.name
         # decode: leading "C--" → "c:\", "-" → "\", but only after the C-- prefix
         # simpler: look for "claude-code-<X>" or "Claude-Code-<X>" markers in the slug

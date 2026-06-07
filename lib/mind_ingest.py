@@ -198,12 +198,12 @@ def _scan_claude(state: dict) -> int:
 
 def _project_slug_from_claude_dir(name: str) -> str | None:
     """Claude encodes project paths in dir names like
-    'C--Users-bruno-Claude-Code--egon'. Defer to the canonical resolver
+    'C--Users-you-Claude-Code--egon'. Defer to the canonical resolver
     so the slug agrees with every other agent's slug for the same project.
 
     Bruno 2026-05-29: return None (unattributed) when the resolver can't
     derive a real project — the old `or name.lower()` fallback resurrected
-    raw encoded dir names like 'c--users-bruno--claude-mem-observer-sessions'
+    raw encoded dir names like 'c--users-you--claude-mem-observer-sessions'
     as fake projects. Better to leave such sessions unattributed."""
     from lib.mind_project_resolver import canonical_slug
     return canonical_slug(name)

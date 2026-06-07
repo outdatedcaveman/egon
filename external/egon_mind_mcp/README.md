@@ -32,7 +32,7 @@ Add to `%APPDATA%\Claude\claude_desktop_config.json`:
   "mcpServers": {
     "egon-mind": {
       "command": "python.exe",
-      "args": ["C:/Users/bruno/Claude Code/egon/external/egon_mind_mcp/server.py"]
+      "args": ["/path/to/egon/external/egon_mind_mcp/server.py"]
     }
   }
 }
@@ -49,7 +49,7 @@ Add to `%USERPROFILE%\.gemini\antigravity-ide\mcp_config.json`:
   "mcpServers": {
     "egon-mind": {
       "command": "python.exe",
-      "args": ["C:/Users/bruno/Claude Code/egon/external/egon_mind_mcp/server.py"]
+      "args": ["/path/to/egon/external/egon_mind_mcp/server.py"]
     }
   }
 }
@@ -64,7 +64,7 @@ Append to `%USERPROFILE%\.codex\config.toml`:
 ```toml
 [mcp_servers.egon_mind]
 command = 'python.exe'
-args = ['C:/Users/bruno/Claude Code/egon/external/egon_mind_mcp/server.py']
+args = ['/path/to/egon/external/egon_mind_mcp/server.py']
 startup_timeout_sec = 30
 ```
 

@@ -15,6 +15,7 @@ import httpx
 
 from lib import secrets
 from lib.snapshot_store import latest_snapshot
+from lib.egon_paths import MOUSEION_DB
 
 META = {
     "id": "mouseion",
@@ -36,7 +37,7 @@ _DB_CANDIDATES = [
     Path.home() / "AppData" / "Local" / "mouseion" / "refs.db",
     Path.home() / "AppData" / "Roaming" / "mouseion" / "refs.db",
     Path.home() / ".local" / "share" / "zoterpile" / "refs.db",
-    Path(r"C:/Users/bruno/Desktop/mnt/outputs/zoterpile-main/refs.db"),
+    MOUSEION_DB,
 ]
 
 

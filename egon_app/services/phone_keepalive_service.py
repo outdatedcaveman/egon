@@ -43,7 +43,7 @@ STATUS_FILE = ROOT / "state" / "panop" / "phone_status.json"
 ADB_CANDIDATES = [
     ROOT / "state" / "panop" / "platform-tools" / "platform-tools" / "adb.exe",
     ROOT / "panop_output" / "platform-tools" / "platform-tools" / "adb.exe",
-    Path("C:/Users/bruno/AppData/Local/Android/Sdk/platform-tools/adb.exe"),
+    Path.home() / "AppData/Local/Android/Sdk/platform-tools/adb.exe",
 ]
 LOG_DIR = ROOT / "logs"
 

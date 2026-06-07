@@ -30,7 +30,7 @@ META = {
     "read_only_default": True,
 }
 
-ENV_PATH = Path(r"C:/Users/bruno/Claude Code/claude-meta/.env")
+from lib.egon_paths import ENV_FILE as ENV_PATH
 
 
 def _token() -> str | None:

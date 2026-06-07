@@ -6,9 +6,9 @@ from pathlib import Path
 
 import httpx
 
-ENV_PATH = Path(r"C:/Users/bruno/Claude Code/claude-meta/.env")
-KMS_ROOT_ID = "35393daa-9215-8134-9cf3-fc66d9a0e1a6"  # 🧠 KMS page
-HOME_PAGE_ID = "35893daa-9215-81df-a7e0-ce655e2613d0"  # 🏠 Home
+from lib.egon_paths import ENV_FILE as ENV_PATH
+KMS_ROOT_ID = os.environ.get("NOTION_KMS_ROOT_ID", "")   # your Notion KMS root page id
+HOME_PAGE_ID = os.environ.get("NOTION_HOME_PAGE_ID", "")  # your Notion home page id
 
 
 def _token() -> str | None:
@@ -77,7 +77,7 @@ def live_status(timeout: float = 4.0) -> dict:
 def _status_page_id() -> str | None:
     """Read the designated status page id from egon-config.json.notion."""
     import json
-    cfg_path = Path(r"C:/Users/bruno/Claude Code/egon/egon-config.json")
+    from lib.egon_paths import EGON_ROOT; cfg_path = EGON_ROOT / "egon-config.json"
     if not cfg_path.exists():
         return None
     try:

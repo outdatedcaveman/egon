@@ -69,7 +69,7 @@ def live_status() -> dict:
     return {"status": "ok", "version": getattr(mem0, "__version__", "?")}
 
 
-def add(text: str, user_id: str = "bruno",
+def add(text: str, user_id: str = "default",
         metadata: dict | None = None) -> dict:
     cli = _client()
     if cli is None:
@@ -81,7 +81,7 @@ def add(text: str, user_id: str = "bruno",
         return {"status": "error", "error": f"{type(e).__name__}: {e}"}
 
 
-def search(query: str, user_id: str = "bruno",
+def search(query: str, user_id: str = "default",
            limit: int = 10) -> list[dict]:
     cli = _client()
     if cli is None:

@@ -1,6 +1,7 @@
 """Home view — what tonight's agent pass produced."""
 from __future__ import annotations
 
+import os
 from html import escape
 
 from nicegui import ui
@@ -98,7 +99,7 @@ def render(data: dict) -> None:
         ui.button("Run mirror now",  on_click=_act("mirror")
                   ).props("unelevated outline").style("color:var(--text-2); border:1px solid var(--border);")
         ui.button("Open Notion 🏠",  on_click=lambda: ui.run_javascript(
-                  'window.open("https://www.notion.so/35893daa921581dfa7e0ce655e2613d0","_blank")')
+                  f'window.open("https://www.notion.so/{os.environ.get("NOTION_HOME_PAGE_ID","")}","_blank")')
                   ).props("unelevated outline").style("color:var(--text-2); border:1px solid var(--border);")
         ui.button("Search vault",    on_click=lambda: ui.navigate.to("/search")
                   ).props("unelevated outline").style("color:var(--text-2); border:1px solid var(--border);")

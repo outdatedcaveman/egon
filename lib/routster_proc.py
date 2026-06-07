@@ -35,6 +35,8 @@ import threading
 import time
 from pathlib import Path
 
+from lib.egon_paths import ROUTSTER_PATH
+
 ROOT = Path(__file__).resolve().parent.parent
 ROUTSTER_HOST = "127.0.0.1"
 ROUTSTER_PORT = 4000
@@ -83,8 +85,8 @@ def _find_routster_exe(install_path: str | None) -> Path | None:
             ip / "dist-new" / "Routster-win32-x64" / "Routster.exe",
         ]
     candidates += [
-        Path(r"C:/Users/bruno/Documents/Workspace/kms_auto_router/dist-app/win-unpacked/Routster.exe"),
-        Path(r"C:/Users/bruno/Documents/Workspace/kms_auto_router/dist-new/Routster-win32-x64/Routster.exe"),
+        ROUTSTER_PATH / "dist-app" / "win-unpacked" / "Routster.exe",
+        ROUTSTER_PATH / "dist-new" / "Routster-win32-x64" / "Routster.exe",
     ]
     existing = [p for p in candidates if p.exists()]
     if not existing:

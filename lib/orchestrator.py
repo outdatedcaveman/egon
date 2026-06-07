@@ -1,4 +1,4 @@
-"""App orchestrator — trigger Bruno's own apps from one interface.
+"""App orchestrator — trigger your own apps from one interface.
 
 Each app has:
 - `status()` → port liveness check + cached config (path, detected port, ui_url)
@@ -17,6 +17,7 @@ from pathlib import Path
 import httpx
 
 from lib.ledger import load_config, save_config
+from lib.egon_paths import ROUTSTER_PATH, MOUSEION_PATH, PANOP_PATH
 
 
 # -- Known apps + heuristics ------------------------------------------------
@@ -25,7 +26,7 @@ APP_DEFS = {
     "routster": {
         "label": "Routster",
         "icon":  "🦀",
-        "paths": [Path(r"C:/Users/bruno/Documents/Workspace/kms_auto_router")],
+        "paths": [ROUTSTER_PATH],
         "port_patterns": [
             r"const\s+PORT\s*=\s*(\d{4,5})",
             r"app\.listen\(\s*(\d{4,5})",
@@ -39,8 +40,8 @@ APP_DEFS = {
         "label": "Mouseion",
         "icon":  "🐭",
         "paths": [
-            Path(r"C:/Users/bruno/Desktop/mnt/outputs/zoterpile-main"),
-            Path(r"C:/Users/bruno/Claude Code/mouseion"),
+            MOUSEION_PATH,
+            MOUSEION_PATH,
         ],
         "port_patterns": [
             r"app\.run\([^)]*port\s*=\s*(\d{4,5})",
@@ -55,9 +56,9 @@ APP_DEFS = {
         "label": "Panop",
         "icon":  "📱",
         "paths": [
-            Path(r"C:/Users/bruno/Desktop/Panop/panop-server"),
-            Path(r"C:/Users/bruno/Desktop/Panop"),
-            Path(r"C:/Users/bruno/Claude Code/panop"),
+            PANOP_PATH / "panop-server",
+            PANOP_PATH,
+            PANOP_PATH,
         ],
         "port_patterns": [
             r"uvicorn\.run\([^)]*port\s*=\s*(\d{4,5})",

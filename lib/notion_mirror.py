@@ -17,16 +17,17 @@ To enable for one source:
 from __future__ import annotations
 
 import time
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-# Egon root in Notion
-EGON_PAGE_ID = "35393daa-9215-8134-9cf3-fc66d9a0e1a6"
+# Egon root in Notion — set NOTION_EGON_PAGE_ID to your own page id
+EGON_PAGE_ID = os.environ.get("NOTION_EGON_PAGE_ID", "")
 MIRRORS_PAGE_TITLE = "050 · Mirrors"
-ENV_PATH = Path(r"C:/Users/bruno/Claude Code/claude-meta/.env")
+from lib.egon_paths import ENV_FILE as ENV_PATH
 
 
 def _token() -> str | None:

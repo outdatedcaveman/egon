@@ -4,7 +4,7 @@ The whole point of Egon's unified mind is that **a Claude session about
 Egon and a Codex session about Egon land under the same project**. That
 only works if all three agents (and Antigravity, and any future agent)
 agree on what "the Egon project" is *called* in the mind. They don't
-naturally — Claude encodes path-as-name (`C--Users-bruno-Claude-Code--egon`),
+naturally — Claude encodes path-as-name (`C--Users-you-Claude-Code--egon`),
 Codex has no project concept at all (just rollout UUIDs), Antigravity
 uses session UUIDs + filename prefixes. This module is the
 normalization layer that turns any of those into one canonical slug.
@@ -22,8 +22,8 @@ Two ways to drive it:
 
 Use:
     from lib.mind_project_resolver import canonical_slug
-    canonical_slug("C:/Users/bruno/Claude Code/egon")       # -> "egon"
-    canonical_slug("C--Users-bruno-Claude-Code--egon")      # -> "egon"
+    canonical_slug("/path/to/egon")       # -> "egon"
+    canonical_slug("C--Users-you-Claude-Code--egon")      # -> "egon"
     canonical_slug("kms_auto_router")                       # -> "routster"  (via alias)
     canonical_slug("routster_v3_plan.md")                   # -> "routster"
     canonical_slug(None)                                    # -> None
@@ -82,7 +82,7 @@ _KNOWN_CANONICAL_SLUGS = {
     "double",       # ADHD learning app, Antigravity scratch/double-app
     "flood",        # Codex project under Documents/New project
     "citizenship",  # Portuguese citizenship (Lei 37/81) dossier
-    "ancestry",     # family-tree / genealogy research (G:/My Drive/Ancestry)
+    "ancestry",     # family-tree / genealogy research
 }
 
 
@@ -195,7 +195,7 @@ def canonical_slug(value: str | None) -> str | None:
     if not candidate or candidate in _GENERIC:
         return None
     # User-path fragments from Claude's path-encoded dir names that aren't a
-    # real project (e.g. `C--Users-bruno-Claude-Code` → "users-bruno-claude-code",
+    # real project (e.g. `C--Users-you-Claude-Code` → "users-you-claude-code",
     # the Claude Code home itself, not a project). Treat as unattributed.
     # Bruno 2026-05-29.
     if (candidate.startswith("users-") or candidate.startswith("c-users")
