@@ -16,6 +16,12 @@ configure (e.g. your own Notion token), and credentials live outside the repo.
 > you haven't configured simply doesn't appear. You can run it with a single
 > connector or a dozen.
 
+## Download (Windows)
+
+Grab the latest **Egon-windows.zip** from [Releases](https://github.com/outdatedcaveman/egon/releases),
+extract it anywhere, and run **Egon.exe**. No Python required. Then point Egon at your data
+sources via the environment variables in [Configuration](#configuration).
+
 ## Features
 
 - **One dashboard, many sources.** Pluggable adapters under `lib/adapters/` — Notion,
