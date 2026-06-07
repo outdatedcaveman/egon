@@ -10,7 +10,7 @@ This daemon holds the line by:
   3. Re-asserting `screen_off_timeout = 1800000000` and `svc power stayon
      true` every 5 minutes — survives Doze, charger plug/unplug, and the
      phone's own occasional reset of these flags.
-  4. On connection drop: reconnect to the locked target (192.168.0.3:5555)
+  4. On connection drop: reconnect to the locked target (192.168.1.50:5555)
      with exponential backoff (5 s → 60 s cap).
   5. Logs every action to `logs/phone-keepalive-YYYY-MM.log`.
 

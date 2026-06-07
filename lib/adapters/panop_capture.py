@@ -42,11 +42,11 @@ LOG_DIR = ROOT / "logs"
 LOG_FILE = LOG_DIR / f"panop-{datetime.now():%Y-%m}.log"
 
 # Fallback static targets if mDNS discovery fails (e.g. router DHCP keeps IP stable).
-STATIC_FALLBACKS = ["192.168.0.3:5555"]
+STATIC_FALLBACKS = [x for x in os.environ.get("EGON_PHONE_IP", "").split(",") if x]
 
-# Phone's persistent device serial — matches the prefix of mDNS service names like
-# `adb-ZF524TB4GG-DldzIa._adb-tls-connect._tcp`.
-DEVICE_SERIAL = "ZF524TB4GG"
+# Phone's persistent device serial (set EGON_PHONE_SERIAL) — matches the prefix of
+# mDNS service names like `adb-<SERIAL>-xxxx._adb-tls-connect._tcp`.
+DEVICE_SERIAL = os.environ.get("EGON_PHONE_SERIAL", "")
 
 
 # -- logging ------------------------------------------------------------------

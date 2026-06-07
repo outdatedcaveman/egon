@@ -58,3 +58,5 @@ external/panop_server/panop_env.json
 # internal agent/dev notes — not for public repo
 CLAUDE.md
 _genericize.py
+Egon.spec
+build_egon*.log

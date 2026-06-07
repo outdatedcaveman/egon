@@ -10,8 +10,8 @@ first match in `timeout_s` seconds.
 
 Usage:
     from lib.adapters.phone_discovery import find_phone
-    addr = find_phone(serial_prefix="ZF524TB4GG", timeout_s=8)
-    if addr: print(addr)  # e.g. "192.168.0.3:41385"
+    addr = find_phone(timeout_s=8)
+    if addr: print(addr)  # e.g. "192.168.1.50:41385"
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def _locked_target_if_reachable(timeout_s: float = 1.5) -> str | None:
         return None
 
 
-def find_phone(serial_prefix: str = "ZF524TB4GG", timeout_s: float = 8.0) -> str | None:
+def find_phone(serial_prefix: str = "", timeout_s: float = 8.0) -> str | None:
     """Return 'IP:PORT' of the phone if found, else None."""
     try:
         from zeroconf import Zeroconf, ServiceBrowser, ServiceListener
@@ -82,7 +82,7 @@ def find_phone(serial_prefix: str = "ZF524TB4GG", timeout_s: float = 8.0) -> str
     return found[0] if found else None
 
 
-def find_phone_any_service(serial_prefix: str = "ZF524TB4GG",
+def find_phone_any_service(serial_prefix: str = "",
                            timeout_s: float = 8.0) -> str | None:
     """Like find_phone but also checks the legacy `_adb._tcp` advertisement
     (which is what shows up when `adb tcpip 5555` is set).

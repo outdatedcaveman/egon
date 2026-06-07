@@ -8,7 +8,7 @@
 set -u
 EGON_ROOT="${EGON_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 ADB="$EGON_ROOT/panop_output/platform-tools/platform-tools/adb.exe"
-DEVICE="192.168.0.3:5555"
+DEVICE="${EGON_PHONE_IP:-}"
 PY="$EGON_ROOT/.venv/Scripts/python.exe"
 CHECKPOINT="$EGON_ROOT/state/restore/checkpoint.json"
 TOTAL=1345
