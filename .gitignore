@@ -60,3 +60,7 @@ CLAUDE.md
 _genericize.py
 Egon.spec
 build_egon*.log
+
+# internal AI-session logs — not for the public repo
+docs/HANDOFF_*.md
+docs/RECONCILE_*.md
