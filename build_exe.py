@@ -42,10 +42,12 @@ HIDDEN_IMPORTS = [
     "lib.adapters.youtube",
     "lib.adapters.zotero_local",
     "lib.adapters.zotero_web",
-    "zeroconf",
 ]
 
 ML_MODULES = [
+    # zeroconf bundles mDNS .pyd extensions that AV may lock during build;
+    # the import is guarded (optional phone auto-discovery), so excluding is safe.
+    "zeroconf",
     "torch",
     "transformers",
     "sentence_transformers",

@@ -2289,8 +2289,8 @@ def _adb_mdns_discover(adb_exe, expected_host=None):
         out = (p.stdout or "") + "\n" + (p.stderr or "")
     except Exception:
         return None
-    # Lines look like: "adb-XYZ._adb-tls-connect._tcp\t192.168.0.3:38123"
-    # or sometimes: "adb-XYZ\t_adb-tls-connect._tcp.\t192.168.0.3:38123"
+    # Lines look like: "adb-XYZ._adb-tls-connect._tcp\t192.168.1.50:38123"
+    # or sometimes: "adb-XYZ\t_adb-tls-connect._tcp.\t192.168.1.50:38123"
     candidates = []
     for line in out.splitlines():
         if "_adb-tls-connect" not in line: continue
