@@ -42,6 +42,7 @@ gracefully when unset.
 
 | Variable | Purpose | Default |
 |---|---|---|
+| `EGON_SHARED_ROOT` | Canonical AI substrate for projects, memories, skills, sessions, artifacts, pointers, and state | `~/AI` |
 | `EGON_VAULT_ROOT` | Cloud/Drive vault mirror root | `~/EgonVault` |
 | `EGON_ENV_FILE` | `.env` file holding tokens (e.g. `NOTION_TOKEN`) | `<repo>/.env` |
 | `EGON_BRAIN_DIRS` | Agent log/brain dirs to ingest (path-separated) | Claude / Codex / Antigravity dirs |
@@ -52,6 +53,11 @@ gracefully when unset.
 
 Non-secret settings live in `egon-config.json` (created on first run); secrets flow
 through `lib/secrets.py` (env vars → local config → never committed).
+
+The shared-root contract is documented in
+[`docs/SHARED_WORKSPACE.md`](docs/SHARED_WORKSPACE.md). App-specific folders
+should become junctions or symlinks into `EGON_SHARED_ROOT`, so every AI body
+resolves projects, memories, and skills from the same underlying structure.
 
 ## Run from source
 
