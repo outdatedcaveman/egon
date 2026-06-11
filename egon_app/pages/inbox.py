@@ -3,19 +3,23 @@ from __future__ import annotations
 
 import json
 import webbrowser
+from egon_app.api import post_compat as __epost, get_compat as __eget
 import os
 import shutil
 import re
+import html
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlencode
 
-from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject, Slot
 from PySide6.QtGui import QColor, QBrush
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QTableWidget, QTableWidgetItem, QPushButton, QHeaderView, QSizePolicy,
     QMessageBox, QTabWidget, QGridLayout, QLineEdit, QTextEdit, QFileDialog,
-    QComboBox, QCheckBox, QMenu
+    QComboBox, QCheckBox, QMenu, QDialog, QFormLayout, QDialogButtonBox,
+    QListWidget, QListWidgetItem, QSplitter
 )
 
 from egon_app import data
@@ -24,6 +28,16 @@ from egon_app import data
 # Panop base URL
 # ---------------------------------------------------------------------------
 _PANOP_BASE = "http://127.0.0.1:8000/api/v1"
+_ACTION_TIMEOUTS = {
+    "Auto Connect Phone": 35.0,
+    "Phone Reconnect": 20.0,
+    "Diagnose USB": 30.0,
+    "Pair Phone": 25.0,
+    "Keep Phone Awake": 15.0,
+    "Drain All Tabs": 10.0,
+    "Fetch Now": 10.0,
+}
+_PHONE_TAB_RENDER_LIMIT = 120
 
 # ---------------------------------------------------------------------------
 # Custom QSS Stylesheets (Panop dark theme with crimson accents)
@@ -226,21 +240,31 @@ class _HttpWorker(QObject):
 
     def run(self) -> None:
         try:
-            import httpx
-            with httpx.Client(timeout=self._timeout) as client:
-                if self._method.upper() == "GET":
-                    r = client.get(self._url)
-                else:
-                    if self._json_body:
-                        r = client.post(self._url, json=self._json_body)
-                    else:
-                        r = client.post(self._url)
+            from egon_app.api import get_compat, post_compat
+            if self._method.upper() == "GET":
+                r = get_compat(self._url, timeout=self._timeout)
+            else:
+                r = post_compat(self._url, self._json_body,
+                                timeout=self._timeout)
+            if True:
                 if r.status_code < 400:
                     try:
                         body = r.json()
                     except Exception:
                         body = r.text
-                    self.finished.emit({"ok": True, "data": body, "error": ""})
+                    body_status = ""
+                    body_message = ""
+                    if isinstance(body, dict):
+                        body_status = str(body.get("status") or "").lower()
+                        body_message = str(body.get("message") or body.get("error") or "")
+                    if body_status in {"error", "failed", "failure"}:
+                        self.finished.emit({
+                            "ok": False,
+                            "data": body,
+                            "error": body_message or f"API returned status={body_status}",
+                        })
+                    else:
+                        self.finished.emit({"ok": True, "data": body, "error": ""})
                 else:
                     self.finished.emit({"ok": False, "data": None,
                                         "error": f"HTTP {r.status_code}: {r.text[:300]}"})
@@ -248,29 +272,75 @@ class _HttpWorker(QObject):
             self.finished.emit({"ok": False, "data": None, "error": str(exc)[:300]})
 
 
+class _HttpCallbackProxy(QObject):
+    """Delivers worker results on the GUI thread and contains slot errors."""
+    done = Signal()
+
+    def __init__(self, callback, status_label: QLabel | None = None):
+        super().__init__()
+        self._callback = callback
+        self._status_label = status_label
+
+    @Slot(dict)
+    def handle(self, result: dict) -> None:
+        try:
+            self._callback(result)
+        except Exception as exc:
+            if self._status_label is not None:
+                self._status_label.setText(f"Action failed in UI callback: {type(exc).__name__}: {exc}")
+            print(f"[Inbox] UI callback failed: {type(exc).__name__}: {exc}")
+        finally:
+            self.done.emit()
+
 def _spawn_http(parent: QWidget, method: str, url: str,
                 callback, json_body: dict = None, timeout: float = 3.0) -> QThread:
     """Fire an HTTP request in a QThread. *callback(result_dict)* is called
     on the main thread when done."""
     thread = QThread(parent)
     worker = _HttpWorker(method, url, json_body, timeout)
+    proxy = _HttpCallbackProxy(callback, getattr(parent, "_status_lbl", None))
     worker.moveToThread(thread)
-    
+
     # Store reference on the thread object to prevent garbage collection
     thread._worker = worker
-    
+    thread._callback_proxy = proxy
+
     thread.started.connect(worker.run)
-    worker.finished.connect(callback)
-    worker.finished.connect(thread.quit)
+    worker.finished.connect(proxy.handle)
     worker.finished.connect(worker.deleteLater)
+    proxy.done.connect(thread.quit)
+    proxy.done.connect(proxy.deleteLater)
     thread.finished.connect(thread.deleteLater)
-    
-    if hasattr(parent, "_threads") and isinstance(parent._threads, list):
-        parent._threads.append(thread)
-        thread.finished.connect(lambda: parent._threads.remove(thread) if thread in parent._threads else None)
-        
+
+
     thread.start()
     return thread
+
+
+def _summarize_connection_status(body: dict) -> tuple[str, str, bool]:
+    status = str(body.get("status") or "ok")
+    connected = bool(body.get("connected", body.get("adb_connected", False)))
+    adb = bool(body.get("adb_connected", connected))
+    chrome = bool(body.get("chrome_running"))
+    device = body.get("device_id") or "none"
+    tabs = body.get("tabs_seen", 0)
+    matched = body.get("tabs_matched", 0)
+    pending = body.get("bookmarks_pending", 0)
+    last_run = body.get("last_run") or "never"
+    last_fetch = body.get("last_tab_fetch_at") or "never"
+
+    if body.get("message"):
+        msg = str(body["message"])
+    elif body.get("last_error"):
+        msg = f"Last sweep error: {body.get('last_error')}"
+    else:
+        live = "live" if adb and chrome else "not live"
+        msg = (
+            f"Phone link is {live}. Device: {device}. "
+            f"Last capture: {tabs} tabs, {matched} matched, {pending} bookmark writes pending. "
+            f"Last sweep: {last_run}; last tab fetch: {last_fetch}."
+        )
+    return status, msg, connected or adb
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -358,7 +428,7 @@ class _UnifiedQueueTab(QWidget):
                 continue
             r = self._table.rowCount()
             self._table.insertRow(r)
-            
+
             try:
                 conf = float(it.get("confidence", 0.0) or 0.0)
             except (TypeError, ValueError):
@@ -429,7 +499,11 @@ class _PhoneTabsTab(QWidget):
         super().__init__(parent)
         self._parent = parent
         self._raw_phone_tabs: list[dict] = []
+        self._filtered_phone_tabs: list[tuple[dict, str]] = []
+        self._visible_filtered_count = 0
         self._selected_urls: set[str] = set()
+        self._sort_column: int | None = None
+        self._sort_desc = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
@@ -506,10 +580,19 @@ class _PhoneTabsTab(QWidget):
         self._search_input.textChanged.connect(self._apply_filters)
         filter_bar.addWidget(self._search_input, 2)
 
+        self._scope_combo = QComboBox()
+        self._scope_combo.setStyleSheet(_COMBO_QSS)
+        self._scope_combo.addItem("Show: Ready for Sweep", "Ready for Sweep")
+        self._scope_combo.addItem("Show: All Loaded Rows", "All Loaded Rows")
+        self._scope_combo.currentIndexChanged.connect(self._apply_filters)
+        self._scope_combo.setToolTip("Which rows are shown: ready, saved, unmatched, needs review, or all loaded rows.")
+        filter_bar.addWidget(self._scope_combo, 1)
+
         self._category_combo = QComboBox()
         self._category_combo.setStyleSheet(_COMBO_QSS)
-        self._category_combo.addItem("All Predictions")
-        self._category_combo.currentTextChanged.connect(self._apply_filters)
+        self._category_combo.addItem("Category: Any", "Any Category")
+        self._category_combo.currentIndexChanged.connect(self._apply_filters)
+        self._category_combo.setToolTip("Category filter. Use this after choosing the row state in the Show menu.")
         filter_bar.addWidget(self._category_combo, 1)
 
         self._btn_toggle_ingest = QPushButton("➕ Ingest Links")
@@ -522,6 +605,17 @@ class _PhoneTabsTab(QWidget):
         self._btn_toggle_ingest.setCursor(Qt.PointingHandCursor)
         self._btn_toggle_ingest.clicked.connect(self._toggle_ingest_panel)
         filter_bar.addWidget(self._btn_toggle_ingest)
+
+        btn_load_tabs = QPushButton("Load Phone Tabs")
+        btn_load_tabs.setStyleSheet(
+            "QPushButton { background: #18181B; color: #E4E4E7; border: 1px solid #27272A; "
+            "border-radius: 6px; padding: 4px 10px; font-weight: 600; font-size: 12px; }"
+            "QPushButton:hover { background: #27272A; color: white; }"
+        )
+        btn_load_tabs.setFixedHeight(28)
+        btn_load_tabs.setCursor(Qt.PointingHandCursor)
+        btn_load_tabs.clicked.connect(self._parent.refresh_phone_tabs)
+        filter_bar.addWidget(btn_load_tabs)
 
         layout.addLayout(filter_bar)
 
@@ -539,6 +633,21 @@ class _PhoneTabsTab(QWidget):
         select_bar.addWidget(self._lbl_sel_count)
 
         select_bar.addStretch(1)
+
+        self._bulk_cat_combo = QComboBox()
+        self._bulk_cat_combo.setStyleSheet(_COMBO_QSS)
+        self._bulk_cat_combo.setFixedHeight(24)
+        select_bar.addWidget(self._bulk_cat_combo)
+
+        btn_apply_category = QPushButton("Set Checked Category")
+        btn_apply_category.setStyleSheet(
+            "QPushButton { background: #18181B; color: #E4E4E7; padding: 4px 10px; "
+            "border-radius: 4px; font-weight: 600; font-size: 12px; border: 1px solid #27272A; }"
+            "QPushButton:hover { background: #27272A; color: white; }"
+        )
+        btn_apply_category.setFixedHeight(24)
+        btn_apply_category.clicked.connect(self._apply_checked_category)
+        select_bar.addWidget(btn_apply_category)
 
         btn_save_selected = QPushButton("📥 Save & Close Checked")
         btn_save_selected.setStyleSheet(
@@ -570,6 +679,10 @@ class _PhoneTabsTab(QWidget):
         self._phone_table.itemChanged.connect(self._on_table_item_changed)
         self._phone_table.itemDoubleClicked.connect(self._on_table_double_clicked)
         self._phone_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._phone_table.setSortingEnabled(False)
+        self._phone_table.horizontalHeader().setSectionsClickable(True)
+        self._phone_table.horizontalHeader().setSortIndicatorShown(True)
+        self._phone_table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
         layout.addWidget(self._phone_table, 1)
 
         # Start with ingestion panel hidden
@@ -595,22 +708,13 @@ class _PhoneTabsTab(QWidget):
 
     def populate_categories(self, categories: list[dict]) -> None:
         self._manual_cat_combo.clear()
+        self._bulk_cat_combo.clear()
+        self._bulk_cat_combo.addItem("Uncategorized / Do not sweep", "uncategorized")
         for cat in categories:
             self._manual_cat_combo.addItem(f"{get_emoji(cat['name'])} {cat['name']}", cat['id'])
-        
-        self._category_combo.blockSignals(True)
-        current = self._category_combo.currentText()
-        self._category_combo.clear()
-        self._category_combo.addItem("Only Matched Predictions")
-        self._category_combo.addItem("All Predictions")
-        for cat in categories:
-            self._category_combo.addItem(cat['name'])
-        idx = self._category_combo.findText(current)
-        if idx >= 0:
-            self._category_combo.setCurrentIndex(idx)
-        else:
-            self._category_combo.setCurrentIndex(0)
-        self._category_combo.blockSignals(False)
+            self._bulk_cat_combo.addItem(f"{get_emoji(cat['name'])} {cat['name']}", cat['id'])
+
+        self._rebuild_filter_controls(self._current_scope_key(), self._current_category_key())
 
         # Set helpful tooltip listing predefined categories
         self._category_combo.setToolTip(
@@ -618,17 +722,196 @@ class _PhoneTabsTab(QWidget):
             "\n".join(f"• {c['name']} (dest: {c['dest_folder']})" for c in categories)
         )
 
+    def _tab_category_name(self, tab: dict) -> str:
+        status_str = str(tab.get("status") or "")
+        pred_cat_name = str(tab.get("category") or "").strip() or "Uncategorized"
+        if status_str.startswith("match:"):
+            pred_cat_name = status_str.split(":", 1)[1]
+        elif status_str in {"needs_body_check", "body_required"}:
+            pred_cat_name = "Needs body check"
+        return pred_cat_name
+
+    def _is_article_like_tab(self, tab: dict, category_name: str | None = None) -> bool:
+        cat_name = (category_name or self._tab_category_name(tab)).lower()
+        if cat_name in {"articles", "science news", "science longform (read-in-place)"}:
+            return True
+        text = f"{tab.get('title') or ''} {tab.get('url') or ''}".lower()
+        patterns = (
+            r"/article", r"/articles/", r"/doi/", r"\bdoi\b", r"\.pdf(?:\?|$)", r"arxiv\.org/",
+            r"biorxiv\.org/", r"medrxiv\.org/", r"pubmed", r"pmc\.ncbi", r"nature\.com/",
+            r"science\.org/", r"pnas\.org/", r"cell\.com/", r"sciencedirect\.com/", r"springer\.com/",
+            r"link\.springer\.com/", r"wiley\.com/", r"tandfonline\.com/", r"jstor\.org/",
+            r"muse\.jhu\.edu/", r"philarchive\.org/", r"osf\.io/", r"academic\.oup\.com/",
+            r"cambridge\.org/", r"projecteuclid\.org/", r"frontiersin\.org/", r"mdpi\.com/",
+            r"plos\.org/", r"royalsocietypublishing\.org/", r"liebertpub\.com/", r"sagepub\.com/",
+            r"theatlantic\.com/", r"newyorker\.com/", r"aeon\.co/", r"nautil\.us/", r"quantamagazine\.org/",
+        )
+        return any(re.search(pattern, text) for pattern in patterns)
+
+    def _current_scope_key(self) -> str:
+        data = self._scope_combo.currentData()
+        if data:
+            return str(data)
+        text = self._scope_combo.currentText()
+        if text in ("All Predictions", "Only Matched Predictions", "Article-like / Reading", ""):
+            return "Ready for Sweep"
+        return text
+
+    def _current_category_key(self) -> str:
+        data = self._category_combo.currentData()
+        if data:
+            return str(data)
+        text = self._category_combo.currentText()
+        if text.startswith("Category: "):
+            text = text.removeprefix("Category: ").strip()
+        return text or "Any Category"
+
+    def _filter_counts(self) -> dict:
+        stats = {
+            "all": len(self._raw_phone_tabs),
+            "ready": 0,
+            "needs_attention": 0,
+            "saved": 0,
+            "unmatched": 0,
+            "cat_total": {},
+            "cat_ready": {},
+            "cat_saved": {},
+        }
+        for tab in self._raw_phone_tabs:
+            if not isinstance(tab, dict):
+                continue
+            status_str = str(tab.get("status") or "")
+            cat_name = self._tab_category_name(tab)
+            is_ready = status_str.startswith("match:")
+            if is_ready:
+                stats["ready"] += 1
+                stats["cat_ready"][cat_name] = stats["cat_ready"].get(cat_name, 0) + 1
+            if status_str == "saved":
+                stats["saved"] += 1
+                stats["cat_saved"][cat_name] = stats["cat_saved"].get(cat_name, 0) + 1
+            if status_str in {"needs_body_check", "body_required"} or (status_str == "no_match" and self._is_article_like_tab(tab, cat_name)):
+                stats["needs_attention"] += 1
+            if status_str in ("no_match", "chrome_internal", "discarded", "") or cat_name == "Uncategorized":
+                stats["unmatched"] += 1
+            stats["cat_total"][cat_name] = stats["cat_total"].get(cat_name, 0) + 1
+        return stats
+
+    def _rebuild_filter_controls(self, preferred_scope: str | None = None, preferred_category: str | None = None) -> None:
+        stats = self._filter_counts()
+        categories = self._parent._categories_list or []
+        preferred_scope = preferred_scope or "Ready for Sweep"
+        preferred_category = preferred_category or "Any Category"
+
+        self._scope_combo.blockSignals(True)
+        self._scope_combo.clear()
+        self._scope_combo.addItem(f"Show: Ready for Sweep ({stats['ready']})", "Ready for Sweep")
+        self._scope_combo.addItem(f"Show: Needs Review ({stats['needs_attention']})", "Needs Rule / Classifier Attention")
+        self._scope_combo.addItem(f"Show: All Loaded ({stats['all']})", "All Loaded Rows")
+        self._scope_combo.addItem(f"Show: Already Saved ({stats['saved']})", "Already Saved")
+        self._scope_combo.addItem(f"Show: Unmatched ({stats['unmatched']})", "Unmatched / Uncategorized")
+        idx = self._scope_combo.findData(preferred_scope)
+        self._scope_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._scope_combo.blockSignals(False)
+
+        self._category_combo.blockSignals(True)
+        self._category_combo.clear()
+        self._category_combo.addItem("Category: Any", "Any Category")
+        for cat in categories:
+            name = str(cat.get("name") or "").strip()
+            if not name:
+                continue
+            total = stats["cat_total"].get(name, 0)
+            ready = stats["cat_ready"].get(name, 0)
+            saved = stats["cat_saved"].get(name, 0)
+            if total:
+                self._category_combo.addItem(f"Category: {name} ({total} total, {ready} new, {saved} saved)", name)
+            else:
+                self._category_combo.addItem(f"Category: {name}", name)
+        idx = self._category_combo.findData(preferred_category)
+        self._category_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._category_combo.blockSignals(False)
+
     def load_tabs(self, tabs: list[dict]) -> None:
         self._raw_phone_tabs = tabs
+        self._selected_urls.clear()
+        self._rebuild_filter_controls(self._current_scope_key(), self._current_category_key())
         self._apply_filters()
 
-    def _apply_filters(self) -> None:
+    def _phone_tab_sort_key(self, row: tuple[dict, str], column: int) -> str:
+        tab, pred_cat_name = row
+        status = str(tab.get("status") or "")
+        if column == 0:
+            return "0" if str(tab.get("url") or "") in self._selected_urls else "1"
+        if column == 1:
+            return pred_cat_name.lower()
+        if column == 2:
+            return str(tab.get("title") or "").lower()
+        if column == 3:
+            return str(tab.get("url") or "").lower()
+        if column == 4:
+            return pred_cat_name.lower()
+        if column == 5:
+            return f"{status} {tab.get('reason') or ''}".lower()
+        return str(tab.get("title") or tab.get("url") or "").lower()
+
+    def _filtered_url_set(self) -> set[str]:
+        return {str(tab.get("url") or "") for tab, _cat in self._filtered_phone_tabs if str(tab.get("url") or "")}
+
+    def _current_action_urls(self) -> set[str]:
+        return self._selected_urls.intersection(self._filtered_url_set())
+
+    def _category_id_for_name(self, category_name: str) -> str:
+        for c in self._parent._categories_list or []:
+            if c.get("name") == category_name:
+                return str(c.get("id") or "uncategorized")
+        return "uncategorized"
+
+    def _on_header_clicked(self, column: int) -> None:
+        if column == self._sort_column:
+            self._sort_desc = not self._sort_desc
+        else:
+            self._sort_column = column
+            self._sort_desc = False
+        order = Qt.DescendingOrder if self._sort_desc else Qt.AscendingOrder
+        self._phone_table.horizontalHeader().setSortIndicator(column, order)
+        self._apply_filters()
+
+    def _phone_tab_matches_filters(self, tab: dict, pred_cat_name: str, search: str, scope_filter: str, category_filter: str) -> bool:
+        title = str(tab.get("title") or "")
+        url = str(tab.get("url") or "")
+        status_str = str(tab.get("status") or "")
+        reason = str(tab.get("reason") or "")
+        haystack = f"{title} {url} {pred_cat_name} {status_str} {reason}".lower()
+        if search and search not in haystack:
+            return False
+
+        if scope_filter == "Ready for Sweep":
+            if not status_str.startswith("match:"):
+                return False
+        elif scope_filter == "Needs Rule / Classifier Attention":
+            if status_str not in {"needs_body_check", "body_required"} and (status_str != "no_match" or not self._is_article_like_tab(tab, pred_cat_name)):
+                return False
+        elif scope_filter == "Already Saved":
+            if status_str != "saved":
+                return False
+        elif scope_filter == "Unmatched / Uncategorized":
+            if status_str not in ("no_match", "chrome_internal", "discarded", "") and pred_cat_name != "Uncategorized":
+                return False
+        elif scope_filter != "All Loaded Rows":
+            return False
+
+        if category_filter != "Any Category" and pred_cat_name != category_filter:
+            return False
+        return True
+
+    def _apply_filters(self, *_args) -> None:
         self._phone_table.blockSignals(True)
         self._phone_table.setSortingEnabled(False)
         self._phone_table.setRowCount(0)
 
         search = self._search_input.text().strip().lower()
-        cat_filter = self._category_combo.currentText()
+        scope_filter = self._current_scope_key()
+        category_filter = self._current_category_key()
 
         categories_list = self._parent._categories_list or []
 
@@ -636,27 +919,16 @@ class _PhoneTabsTab(QWidget):
         for tab in self._raw_phone_tabs:
             if not isinstance(tab, dict):
                 continue
-            title = str(tab.get("title") or "").lower()
-            url = str(tab.get("url") or "").lower()
-            if search and (search not in title and search not in url):
-                continue
+            pred_cat_name = self._tab_category_name(tab)
+            if self._phone_tab_matches_filters(tab, pred_cat_name, search, scope_filter, category_filter):
+                filtered.append((tab, pred_cat_name))
 
-            status_str = str(tab.get("status") or "")
-            pred_cat_name = "Uncategorized"
-            if status_str.startswith("match:"):
-                pred_cat_name = status_str.split(":", 1)[1]
-            elif status_str == "needs_body_check":
-                pred_cat_name = "Articles"  # articles is default for body required
-
-            if cat_filter == "Only Matched Predictions":
-                if status_str in ("no_match", "chrome_internal", "discarded", "") or pred_cat_name == "Uncategorized":
-                    continue
-            elif cat_filter != "All Predictions" and pred_cat_name != cat_filter:
-                continue
-
-            filtered.append((tab, pred_cat_name))
-
-        for tab, pred_cat_name in filtered:
+        if self._sort_column is not None:
+            filtered.sort(key=lambda row: self._phone_tab_sort_key(row, self._sort_column), reverse=self._sort_desc)
+        self._filtered_phone_tabs = filtered
+        self._visible_filtered_count = len(filtered)
+        render_rows = filtered[:_PHONE_TAB_RENDER_LIMIT]
+        for tab, pred_cat_name in render_rows:
             r = self._phone_table.rowCount()
             self._phone_table.insertRow(r)
 
@@ -685,28 +957,16 @@ class _PhoneTabsTab(QWidget):
             url_item = QTableWidgetItem(url)
             self._phone_table.setItem(r, 3, url_item)
 
-            # 4. Predicted Category dropdown
-            combo = QComboBox()
-            combo.setStyleSheet(_COMBO_QSS)
-            combo.blockSignals(True)
-            for c in categories_list:
-                combo.addItem(f"{get_emoji(c['name'])} {c['name']}", c['id'])
-            combo.addItem("Uncategorized", "uncategorized")
-
-            # Find matching category ID
+            # 4. Predicted Category. Keep rows lightweight; per-row combo
+            # widgets across hundreds of phone tabs freeze the Qt GUI.
             cur_cat_id = "uncategorized"
             for c in categories_list:
                 if c["name"] == pred_cat_name:
                     cur_cat_id = c["id"]
                     break
-            
-            c_idx = combo.findData(cur_cat_id)
-            if c_idx >= 0:
-                combo.setCurrentIndex(c_idx)
-            else:
-                combo.setCurrentIndex(combo.count() - 1)
-            combo.blockSignals(False)
-            self._phone_table.setCellWidget(r, 4, combo)
+            cat_item = QTableWidgetItem(f"{get_emoji(pred_cat_name)} {pred_cat_name}")
+            cat_item.setData(Qt.UserRole, cur_cat_id)
+            self._phone_table.setItem(r, 4, cat_item)
 
             # 5. Status / Reason
             reason_item = QTableWidgetItem(reason)
@@ -714,43 +974,17 @@ class _PhoneTabsTab(QWidget):
                 reason_item.setForeground(QBrush(QColor(_COLOR_GREEN)))
             elif status.startswith("match:"):
                 reason_item.setForeground(QBrush(QColor(_COLOR_CYAN)))
-            elif status == "needs_body_check":
+            elif status in {"needs_body_check", "body_required"}:
                 reason_item.setForeground(QBrush(QColor(_COLOR_AMBER)))
             elif status == "chrome_internal":
                 reason_item.setForeground(QBrush(QColor(_COLOR_MUTED)))
             self._phone_table.setItem(r, 5, reason_item)
 
             # 6. Actions row
-            actions_widget = QWidget()
-            actions_lay = QHBoxLayout(actions_widget)
-            actions_lay.setContentsMargins(2, 2, 2, 2)
-            actions_lay.setSpacing(4)
-            
-            save_btn = QPushButton("Save & Close")
-            save_btn.setStyleSheet(
-                "QPushButton { background: #EF4444; color: white; padding: 2px 6px; "
-                "border-radius: 4px; font-size: 10px; font-weight: bold; border: none; }"
-                "QPushButton:hover { background: #B91C1C; }"
-            )
-            save_btn.setFixedHeight(20)
-            save_btn.setCursor(Qt.PointingHandCursor)
-            save_btn.clicked.connect(lambda _=False, u=url, t=title, cb=combo: self._save_and_close_tab(u, t, cb.currentData()))
-            actions_lay.addWidget(save_btn)
-            
-            close_btn = QPushButton("Close")
-            close_btn.setStyleSheet(
-                "QPushButton { background: #18181B; color: #E4E4E7; border: 1px solid #27272A; "
-                "padding: 2px 6px; border-radius: 4px; font-size: 10px; }"
-                "QPushButton:hover { background: #27272A; }"
-            )
-            close_btn.setFixedHeight(20)
-            close_btn.setCursor(Qt.PointingHandCursor)
-            close_btn.clicked.connect(lambda _=False, u=url: self._close_tab_without_saving(u))
-            actions_lay.addWidget(close_btn)
-            
-            self._phone_table.setCellWidget(r, 6, actions_widget)
+            action_item = QTableWidgetItem("Check row, then use Save & Close Checked or Close Checked")
+            action_item.setForeground(QBrush(QColor(_COLOR_MUTED)))
+            self._phone_table.setItem(r, 6, action_item)
 
-        self._phone_table.setSortingEnabled(True)
         self._phone_table.blockSignals(False)
         self._update_selected_label()
 
@@ -767,31 +1001,90 @@ class _PhoneTabsTab(QWidget):
 
     def _toggle_select_all(self, state: int) -> None:
         self._phone_table.blockSignals(True)
-        self._phone_table.setSortingEnabled(False)
         checked = (state == Qt.Checked.value or state == Qt.Checked)
-        
+        filtered_urls = self._filtered_url_set()
+
+        if checked:
+            self._selected_urls.update(filtered_urls)
+        else:
+            self._selected_urls.difference_update(filtered_urls)
+
         for r in range(self._phone_table.rowCount()):
             chk_item = self._phone_table.item(r, 0)
-            url_item = self._phone_table.item(r, 3)
-            if chk_item and url_item:
-                url = url_item.text()
+            if chk_item:
                 chk_item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
-                if checked:
-                    self._selected_urls.add(url)
-                else:
-                    self._selected_urls.discard(url)
-                    
-        self._phone_table.setSortingEnabled(True)
+
         self._phone_table.blockSignals(False)
         self._update_selected_label()
 
+    def _apply_checked_category(self) -> None:
+        active_urls = self._current_action_urls()
+        if not active_urls:
+            QMessageBox.warning(self, "Set Category", "No tabs selected.")
+            return
+        cat_id = self._bulk_cat_combo.currentData()
+        is_uncategorized = str(cat_id or "").lower() == "uncategorized"
+        cat = None if is_uncategorized else next((c for c in (self._parent._categories_list or []) if c.get("id") == cat_id), None)
+        if not is_uncategorized and not cat:
+            QMessageBox.warning(self, "Set Category", "Choose a category first.")
+            return
+        name = "Uncategorized" if is_uncategorized else cat.get("name", "Uncategorized")
+        changed = 0
+        changed_urls = set()
+        override_items = []
+        for tab in self._raw_phone_tabs:
+            url = str(tab.get("url") or "")
+            if url in active_urls:
+                tab["category"] = name
+                tab["cat_id"] = cat_id
+                if is_uncategorized:
+                    tab["status"] = "no_match"
+                    tab["reason"] = "User marked as Uncategorized / do not sweep."
+                else:
+                    tab["status"] = f"match:{name}"
+                    tab["reason"] = f"User corrected to '{name}'."
+                changed_urls.add(url)
+                override_items.append({
+                    "url": url,
+                    "title": str(tab.get("title") or ""),
+                    "category_id": str(cat_id or "uncategorized"),
+                    "reason": tab["reason"],
+                })
+                changed += 1
+        if is_uncategorized:
+            self._selected_urls.difference_update(changed_urls)
+        if override_items:
+            payload = {"items": override_items}
+            t = _spawn_http(
+                self,
+                "POST",
+                f"{_PANOP_BASE}/classifier/overrides",
+                lambda _res: None,
+                json_body=payload,
+                timeout=15.0,
+            )
+            self._parent._threads.append(t)
+            t.finished.connect(lambda: self._parent._threads.remove(t) if t in self._parent._threads else None)
+        self._rebuild_filter_controls(self._current_scope_key(), self._current_category_key())
+        self._apply_filters()
+        if is_uncategorized:
+            self._parent._status_lbl.setText(f"Marked {changed} checked tab(s) as Uncategorized. They are excluded from Ready for Sweep.")
+        else:
+            self._parent._status_lbl.setText(f"Set {changed} checked tab(s) to {name}. Save checked tabs to teach the profile.")
+
     def _update_selected_label(self) -> None:
-        count = len(self._selected_urls)
-        self._lbl_sel_count.setText(f"{count} tab{'s' if count != 1 else ''} selected")
+        filtered_urls = self._filtered_url_set()
+        count = len(self._selected_urls.intersection(filtered_urls))
+        total = len(filtered_urls)
+        visible = self._phone_table.rowCount()
+        shown_suffix = ""
+        if self._visible_filtered_count > visible:
+            shown_suffix = f" | showing first {visible} of {self._visible_filtered_count}"
+        self._lbl_sel_count.setText(f"{count} of {total} selected | {visible} visible{shown_suffix}")
         self._chk_select_all.blockSignals(True)
         if count == 0:
             self._chk_select_all.setCheckState(Qt.Unchecked)
-        elif count == self._phone_table.rowCount():
+        elif total > 0 and count == total:
             self._chk_select_all.setCheckState(Qt.Checked)
         else:
             self._chk_select_all.setCheckState(Qt.PartiallyChecked)
@@ -814,16 +1107,16 @@ class _PhoneTabsTab(QWidget):
         title = self._manual_title_input.text().strip()
         files = self._manual_file_input.text().strip()
         cat_id = self._manual_cat_combo.currentData()
-        
+
         if not url and not files:
             QMessageBox.warning(self, "Manual Ingestion", "Please enter a URL or select a file to ingest.")
             return
-            
+
         if url:
             self._parent._status_lbl.setText("⏳ Ingesting URL to Panop...")
             api_url = f"{_PANOP_BASE}/history/add"
             payload = {"url": url, "title": title, "category_id": cat_id}
-            
+
             def callback(res):
                 if res.get("ok"):
                     data = res.get("data", {})
@@ -836,11 +1129,11 @@ class _PhoneTabsTab(QWidget):
                         self._parent._status_lbl.setText(f"❌ Ingestion failed: {data.get('message', 'unknown error')}")
                 else:
                     self._parent._status_lbl.setText(f"❌ Ingestion HTTP error: {res.get('error')}")
-            
+
             t = _spawn_http(self, "POST", api_url, callback, json_body=payload)
             self._parent._threads.append(t)
             t.finished.connect(lambda: self._parent._threads.remove(t) if t in self._parent._threads else None)
-            
+
         if files:
             file_paths = [f.strip() for f in files.split("; ") if f.strip()]
             dest_folder = None
@@ -850,9 +1143,9 @@ class _PhoneTabsTab(QWidget):
                     break
             if not dest_folder:
                 dest_folder = "Uncategorized"
-                
+
             self._parent._status_lbl.setText("⏳ Copying files to category folder...")
-            
+
             import threading
             def _copy_worker():
                 try:
@@ -866,7 +1159,7 @@ class _PhoneTabsTab(QWidget):
                             dest = target_dir / Path(fp).name
                             shutil.copy2(fp, dest)
                             copied.append(dest.name)
-                    
+
                     def success():
                         self._parent._status_lbl.setText(f"✅ Copied {len(copied)} file(s) directly to category folder: state/panop/{dest_folder}")
                         self._manual_file_input.clear()
@@ -879,28 +1172,31 @@ class _PhoneTabsTab(QWidget):
                     QTimer.singleShot(0, success)
                 except Exception as e:
                     QTimer.singleShot(0, lambda: self._parent._status_lbl.setText(f"❌ File copy failed: {e}"))
-                    
+
             threading.Thread(target=_copy_worker, daemon=True).start()
 
     def _save_and_close_tab(self, url: str, title: str, category_id: str) -> None:
+        if str(category_id or "").lower() == "uncategorized":
+            self._parent._status_lbl.setText("Uncategorized tabs are excluded from Save & Close. Choose a real category first.")
+            return
         tid = ""
         for tab in self._raw_phone_tabs:
             if tab.get("url") == url:
                 tid = tab.get("id", "")
                 break
-        
+
         self._parent._status_lbl.setText(f"⏳ Saving '{title}' to Zotero/Bookmarks...")
-        
+
         import threading
         import httpx
         def _worker():
             try:
-                r = httpx.post(f"{_PANOP_BASE}/history/add", json={
+                r = __epost(f"{_PANOP_BASE}/history/add", {
                     "url": url, "title": title, "category_id": category_id
                 }, timeout=15.0)
                 if r.status_code == 200 and r.json().get("status") == "ok":
                     if tid:
-                        try: httpx.post(f"http://127.0.0.1:9222/json/close/{tid}", timeout=5.0)
+                        try: __epost(f"http://127.0.0.1:9222/json/close/{tid}", timeout=5.0)
                         except Exception: pass
                     def success():
                         self._parent._status_lbl.setText(f"✅ Saved and closed tab successfully: {title}")
@@ -911,7 +1207,7 @@ class _PhoneTabsTab(QWidget):
                     QTimer.singleShot(0, lambda: self._parent._status_lbl.setText(f"❌ Save failed: {msg}"))
             except Exception as e:
                 QTimer.singleShot(0, lambda: self._parent._status_lbl.setText(f"❌ Save failed: {e}"))
-                
+
         threading.Thread(target=_worker, daemon=True).start()
 
     def _close_tab_without_saving(self, url: str) -> None:
@@ -924,14 +1220,14 @@ class _PhoneTabsTab(QWidget):
                 break
         if not tid:
             return
-            
+
         self._parent._status_lbl.setText(f"⏳ Closing tab: {title}...")
-        
+
         import threading
         import httpx
         def _worker():
             try:
-                r = httpx.post(f"http://127.0.0.1:9222/json/close/{tid}", timeout=5.0)
+                r = __epost(f"http://127.0.0.1:9222/json/close/{tid}", timeout=5.0)
                 if r.status_code == 200:
                     def success():
                         self._parent._status_lbl.setText(f"✅ Closed tab on phone: {title}")
@@ -941,99 +1237,96 @@ class _PhoneTabsTab(QWidget):
                     QTimer.singleShot(0, lambda: self._parent._status_lbl.setText(f"❌ Close failed: HTTP {r.status_code}"))
             except Exception as e:
                 QTimer.singleShot(0, lambda: self._parent._status_lbl.setText(f"❌ Close failed: {e}"))
-                
+
         threading.Thread(target=_worker, daemon=True).start()
 
     def _save_selected_tabs(self) -> None:
-        if not self._selected_urls:
+        active_urls = self._current_action_urls()
+        if not active_urls:
             QMessageBox.warning(self, "Save Tabs", "No tabs selected.")
             return
-            
-        # Collect info from table
+
         targets = []
-        for r in range(self._phone_table.rowCount()):
-            url_item = self._phone_table.item(r, 3)
-            title_item = self._phone_table.item(r, 2)
-            chk_item = self._phone_table.item(r, 0)
-            combo = self._phone_table.cellWidget(r, 4)
-            
-            if url_item and chk_item and chk_item.checkState() == Qt.Checked:
-                url = url_item.text()
-                title = title_item.text() if title_item else url
-                category_id = combo.currentData() if combo else ""
-                
-                tid = ""
-                for tab in self._raw_phone_tabs:
-                    if tab.get("url") == url:
-                        tid = tab.get("id", "")
-                        break
-                targets.append({"url": url, "title": title, "category_id": category_id, "tid": tid})
-                
+        seen_urls = set()
+        for tab, pred_cat_name in self._filtered_phone_tabs:
+            url = str(tab.get("url") or "")
+            if not url or url not in active_urls or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            title = str(tab.get("title") or url)
+            category_id = str(tab.get("cat_id") or self._category_id_for_name(pred_cat_name))
+            if category_id.lower() == "uncategorized":
+                continue
+            targets.append({"url": url, "title": title, "category_id": category_id, "tid": str(tab.get("id") or "")})
+
         if not targets:
+            self._parent._status_lbl.setText("No saveable tabs selected. Uncategorized tabs are excluded from Save & Close.")
             return
-            
+
         self._parent._status_lbl.setText(f"⏳ Saving {len(targets)} selected tab(s) to Zotero/Bookmarks...")
-        
+
         import threading
         import httpx
-        
+
         def _save_worker():
             success_count = 0
             fail_count = 0
             for item in targets:
                 try:
-                    r = httpx.post(f"{_PANOP_BASE}/history/add", json={
+                    r = __epost(f"{_PANOP_BASE}/history/add", {
                         "url": item["url"], "title": item["title"], "category_id": item["category_id"]
                     }, timeout=15.0)
-                    
+
                     if r.status_code == 200 and r.json().get("status") == "ok":
                         success_count += 1
                         if item["tid"]:
                             try:
-                                httpx.post(f"http://127.0.0.1:9222/json/close/{item['tid']}", timeout=5.0)
+                                __epost(f"http://127.0.0.1:9222/json/close/{item['tid']}", timeout=5.0)
                             except Exception:
                                 pass
                     else:
                         fail_count += 1
                 except Exception:
                     fail_count += 1
-            
+
             def done():
                 self._parent._status_lbl.setText(f"✅ Saved {success_count} tab(s) successfully. Failed: {fail_count}.")
                 self._selected_urls.clear()
                 self._parent.refresh()
             QTimer.singleShot(0, done)
-            
+
         threading.Thread(target=_save_worker, daemon=True).start()
 
     def _close_selected_tabs(self) -> None:
-        if not self._selected_urls:
+        active_urls = self._current_action_urls()
+        if not active_urls:
             QMessageBox.warning(self, "Close Tabs", "No tabs selected.")
             return
-            
+
         confirm = QMessageBox.question(
             self, "Close Tabs",
-            f"Are you sure you want to close the {len(self._selected_urls)} selected tab(s) on your phone without saving them?",
+            f"Are you sure you want to close the {len(active_urls)} selected tab(s) on your phone without saving them?",
             QMessageBox.Yes | QMessageBox.No
         )
         if confirm != QMessageBox.Yes:
             return
-            
+
         tids = []
-        for url in self._selected_urls:
-            for tab in self._raw_phone_tabs:
-                if tab.get("url") == url and tab.get("id"):
-                    tids.append(tab.get("id"))
-                    
+        for tab, _pred_cat_name in self._filtered_phone_tabs:
+            url = str(tab.get("url") or "")
+            tid = tab.get("id")
+            if url in active_urls and tid:
+                tids.append(tid)
+
         self._parent._status_lbl.setText(f"⏳ Closing {len(tids)} tab(s) on phone...")
-        
+
         import threading
         import httpx
         def _close_worker():
             closed = 0
             for tid in tids:
                 try:
-                    r = httpx.post(f"http://127.0.0.1:9222/json/close/{tid}", timeout=5.0)
+                    r = __epost(f"http://127.0.0.1:9222/json/close/{tid}", timeout=5.0)
                     if r.status_code == 200:
                         closed += 1
                 except Exception:
@@ -1043,7 +1336,7 @@ class _PhoneTabsTab(QWidget):
                 self._selected_urls.clear()
                 self._parent.refresh()
             QTimer.singleShot(0, done)
-            
+
         threading.Thread(target=_close_worker, daemon=True).start()
 
 
@@ -1133,7 +1426,7 @@ class _SavedHistoryTab(QWidget):
 
     def load_history(self, items: list[dict]) -> None:
         self._history_items = items
-        
+
         # Populate category filter ComboBox
         cats_set = set()
         for entry in items:
@@ -1250,7 +1543,7 @@ class _SavedHistoryTab(QWidget):
         self._history_table.blockSignals(True)
         self._history_table.setSortingEnabled(False)
         checked = (state == Qt.Checked.value or state == Qt.Checked)
-        
+
         for r in range(self._history_table.rowCount()):
             chk_item = self._history_table.item(r, 0)
             title_item = self._history_table.item(r, 2)
@@ -1262,7 +1555,7 @@ class _SavedHistoryTab(QWidget):
                         self._selected_urls.add(url)
                     else:
                         self._selected_urls.discard(url)
-                    
+
         self._history_table.setSortingEnabled(True)
         self._history_table.blockSignals(False)
         self._update_selected_label()
@@ -1290,12 +1583,12 @@ class _SavedHistoryTab(QWidget):
         if not self._selected_urls:
             QMessageBox.warning(self, "Sync History", "No history items selected.")
             return
-            
+
         self._parent._status_lbl.setText(f"⏳ Syncing {len(self._selected_urls)} history item(s)...")
-        
+
         import threading
         import httpx
-        
+
         targets = []
         for url in self._selected_urls:
             item = None
@@ -1305,23 +1598,23 @@ class _SavedHistoryTab(QWidget):
                     break
             if item:
                 targets.append((url, item))
-                
+
         def _worker():
             succeeded = 0
             failed = 0
             for url, item in targets:
                 z_need = not item.get("z_synced")
                 b_need = not item.get("b_synced")
-                
+
                 try:
                     if z_need:
-                        r = httpx.post(f"{_PANOP_BASE}/history/sync_single?url={url}&type=zotero", timeout=15.0)
+                        r = __epost(f"{_PANOP_BASE}/history/sync_single?url={url}&type=zotero", timeout=15.0)
                         if r.status_code == 200 and r.json().get("status") == "ok":
                             succeeded += 1
                         else:
                             failed += 1
                     if b_need:
-                        r = httpx.post(f"{_PANOP_BASE}/history/sync_single?url={url}&type=bookmark", timeout=15.0)
+                        r = __epost(f"{_PANOP_BASE}/history/sync_single?url={url}&type=bookmark", timeout=15.0)
                         if r.status_code == 200 and r.json().get("status") == "ok":
                             succeeded += 1
                         else:
@@ -1333,14 +1626,14 @@ class _SavedHistoryTab(QWidget):
                 self._selected_urls.clear()
                 self._parent.refresh()
             QTimer.singleShot(0, done)
-            
+
         threading.Thread(target=_worker, daemon=True).start()
 
     def _delete_selected_history(self) -> None:
         if not self._selected_urls:
             QMessageBox.warning(self, "Delete History", "No history items selected.")
             return
-            
+
         confirm = QMessageBox.question(
             self, "Delete History",
             f"Are you sure you want to delete the {len(self._selected_urls)} selected history item(s)?\n"
@@ -1349,15 +1642,15 @@ class _SavedHistoryTab(QWidget):
         )
         if confirm != QMessageBox.Yes:
             return
-            
+
         self._parent._status_lbl.setText("⏳ Deleting history items...")
-        
+
         import threading
         import httpx
         urls = list(self._selected_urls)
         def _worker():
             try:
-                r = httpx.post(f"{_PANOP_BASE}/history/delete", json={"urls": urls}, timeout=15.0)
+                r = __epost(f"{_PANOP_BASE}/history/delete", {"urls": urls}, timeout=15.0)
                 if r.status_code == 200 and r.json().get("status") == "ok":
                     def success():
                         self._parent._status_lbl.setText(f"✅ Deleted {len(urls)} history item(s).")
@@ -1368,19 +1661,331 @@ class _SavedHistoryTab(QWidget):
                     QTimer.singleShot(0, lambda: self._parent._status_lbl.setText(f"❌ Delete failed: {r.text}"))
             except Exception as e:
                 QTimer.singleShot(0, lambda: self._parent._status_lbl.setText(f"❌ Delete failed: {e}"))
-                
+
         threading.Thread(target=_worker, daemon=True).start()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Main page — QTabWidget wrapper
 # ═══════════════════════════════════════════════════════════════════════════
+class _CategoriesRulesTab(QWidget):
+    def __init__(self, parent: "InboxPage"):
+        super().__init__(parent)
+        self._parent = parent
+        self._config: dict[str, Any] = {}
+        self._categories: list[dict[str, Any]] = []
+        self._loading = False
+        self._active_row = -1
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(6)
+
+        self._summary = QLabel("0 categories")
+        self._summary.setStyleSheet("color: #D4D4D8; font-size: 12px; font-weight: 600;")
+        toolbar.addWidget(self._summary, 1)
+
+        for text, slot in [
+            ("Add Category", self._add_category),
+            ("Delete Selected", self._delete_selected),
+            ("Reload Rules", self.reload),
+            ("Save Rules", self.save),
+        ]:
+            btn = QPushButton(text)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFixedHeight(28)
+            btn.setStyleSheet(
+                "QPushButton { background: #18181B; color: #E4E4E7; border: 1px solid #27272A; "
+                "border-radius: 4px; padding: 4px 10px; font-weight: 600; font-size: 12px; }"
+                "QPushButton:hover { background: #27272A; color: white; }"
+            )
+            btn.clicked.connect(slot)
+            toolbar.addWidget(btn)
+        layout.addLayout(toolbar)
+
+        split = QSplitter(Qt.Horizontal)
+        layout.addWidget(split, 1)
+
+        left = QFrame()
+        left.setStyleSheet("QFrame { background: #050505; border: 1px solid #27272A; border-radius: 6px; }")
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(8, 8, 8, 8)
+        left_layout.setSpacing(6)
+        left_title = QLabel("Category Buckets")
+        left_title.setStyleSheet("color: #EF4444; font-size: 12px; font-weight: 700;")
+        left_layout.addWidget(left_title)
+        self._list = QListWidget()
+        self._list.setStyleSheet(
+            "QListWidget { background: #09090B; border: 1px solid #27272A; color: #F4F4F5; "
+            "font-size: 12px; outline: 0; }"
+            "QListWidget::item { padding: 8px; border-bottom: 1px solid #18181B; }"
+            "QListWidget::item:selected { background: #27272A; color: white; border-left: 3px solid #EF4444; }"
+        )
+        self._list.currentRowChanged.connect(self._on_selected_category)
+        left_layout.addWidget(self._list, 1)
+        split.addWidget(left)
+
+        right = QFrame()
+        right.setStyleSheet("QFrame { background: #050505; border: 1px solid #27272A; border-radius: 6px; }")
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(10, 10, 10, 10)
+        right_layout.setSpacing(8)
+
+        self._detail_title = QLabel("Select a category")
+        self._detail_title.setStyleSheet("color: #F4F4F5; font-size: 15px; font-weight: 700;")
+        right_layout.addWidget(self._detail_title)
+
+        form = QGridLayout()
+        form.setHorizontalSpacing(8)
+        form.setVerticalSpacing(6)
+        self._id_edit = self._line_edit()
+        self._name_edit = self._line_edit()
+        self._dest_edit = self._line_edit()
+        self._mode_combo = QComboBox()
+        self._mode_combo.setStyleSheet(_COMBO_QSS)
+        self._mode_combo.addItems(["ANY", "ALL"])
+        self._keep_open = QCheckBox("Keep source tab open after capture")
+        self._keep_open.setStyleSheet("color: #E4E4E7; font-size: 12px;")
+
+        for row, (label, widget) in enumerate([
+            ("ID", self._id_edit),
+            ("Name", self._name_edit),
+            ("Destination folder", self._dest_edit),
+            ("Body match mode", self._mode_combo),
+        ]):
+            form.addWidget(self._form_label(label), row, 0)
+            form.addWidget(widget, row, 1)
+        form.addWidget(self._keep_open, 4, 1)
+        right_layout.addLayout(form)
+
+        rules_layout = QHBoxLayout()
+        rules_layout.setSpacing(8)
+        self._domains_edit = self._rules_box("Domain keywords")
+        self._body_required_edit = self._rules_box("Body required")
+        self._body_forbidden_edit = self._rules_box("Body forbidden")
+        for title, editor in [
+            ("Domain keywords", self._domains_edit),
+            ("Body required", self._body_required_edit),
+            ("Body forbidden", self._body_forbidden_edit),
+        ]:
+            box = QVBoxLayout()
+            lab = self._form_label(title)
+            box.addWidget(lab)
+            box.addWidget(editor)
+            rules_layout.addLayout(box, 1)
+        right_layout.addLayout(rules_layout, 1)
+        split.addWidget(right)
+        split.setSizes([330, 980])
+
+        self._status = QLabel("Rules are loaded from Panop config.")
+        self._status.setStyleSheet("color: #A1A1AA; font-size: 11px;")
+        layout.addWidget(self._status)
+
+        for widget in [self._id_edit, self._name_edit, self._dest_edit]:
+            widget.textChanged.connect(self._commit_current)
+        for widget in [self._domains_edit, self._body_required_edit, self._body_forbidden_edit]:
+            widget.textChanged.connect(self._commit_current)
+        self._mode_combo.currentTextChanged.connect(self._commit_current)
+        self._keep_open.stateChanged.connect(self._commit_current)
+
+    def load_config(self, config: dict[str, Any]) -> None:
+        self._loading = True
+        self._config = dict(config or {})
+        cats = self._config.get("categories") or []
+        if not isinstance(cats, list):
+            cats = []
+        self._categories = [dict(cat) for cat in cats if isinstance(cat, dict)]
+        self._list.clear()
+        for cat in self._categories:
+            self._list.addItem(self._list_item_for(cat))
+        self._summary.setText(self._summary_text())
+        if self._categories:
+            self._active_row = 0
+            self._list.setCurrentRow(0)
+            self._load_editor(self._categories[0])
+        else:
+            self._active_row = -1
+            self._clear_editor()
+        self._loading = False
+        self._status.setText(f"Loaded {len(self._categories)} categories.")
+
+    def reload(self) -> None:
+        self._parent.refresh_config()
+
+    def save(self) -> None:
+        self._commit_current()
+        config = dict(self._config or {})
+        config["categories"] = self._categories
+
+        def callback(result: dict) -> None:
+            if result.get("ok"):
+                self._status.setText("Saved category rules.")
+                self._parent._panop_config = config
+                self._parent._categories_list = config.get("categories") or []
+                self._parent._phone_tab.populate_categories(self._parent._categories_list)
+                self._parent.refresh_status()
+            else:
+                self._status.setText(f"Save failed: {result.get('error') or 'unknown error'}")
+
+        t = _spawn_http(self._parent, "POST", f"{_PANOP_BASE}/config", callback, json_body=config, timeout=15.0)
+        self._parent._threads.append(t)
+        t.finished.connect(lambda: self._parent._threads.remove(t) if t in self._parent._threads else None)
+
+    def _add_category(self) -> None:
+        idx = len(self._categories) + 1
+        cat = {
+            "id": f"category_{idx}",
+            "name": f"Category {idx}",
+            "dest_folder": f"Android Category {idx}",
+            "domain_keywords": [],
+            "body_required": [],
+            "body_forbidden": [],
+            "body_required_mode": "ANY",
+        }
+        self._categories.append(cat)
+        self._list.addItem(self._list_item_for(cat))
+        self._summary.setText(self._summary_text())
+        self._list.setCurrentRow(len(self._categories) - 1)
+
+    def _delete_selected(self) -> None:
+        row = self._list.currentRow()
+        if row < 0 or row >= len(self._categories):
+            return
+        removed = self._categories.pop(row)
+        self._list.takeItem(row)
+        self._summary.setText(self._summary_text())
+        self._status.setText(f"Deleted unsaved category: {removed.get('name') or removed.get('id')}")
+        if self._categories:
+            self._active_row = min(row, len(self._categories) - 1)
+            self._list.setCurrentRow(self._active_row)
+        else:
+            self._active_row = -1
+            self._clear_editor()
+
+    def _on_selected_category(self, row: int) -> None:
+        if self._loading:
+            return
+        self._commit_current()
+        if 0 <= row < len(self._categories):
+            self._active_row = row
+            self._load_editor(self._categories[row])
+
+    def _load_editor(self, cat: dict[str, Any]) -> None:
+        self._loading = True
+        self._detail_title.setText(str(cat.get("name") or "Untitled category"))
+        self._id_edit.setText(str(cat.get("id") or ""))
+        self._name_edit.setText(str(cat.get("name") or ""))
+        self._dest_edit.setText(str(cat.get("dest_folder") or ""))
+        mode = str(cat.get("body_required_mode") or "ANY").upper()
+        idx = self._mode_combo.findText(mode)
+        self._mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._keep_open.setChecked(bool(cat.get("keep_open_after_extract")))
+        self._domains_edit.setPlainText(self._join_rules(cat.get("domain_keywords")))
+        self._body_required_edit.setPlainText(self._join_rules(cat.get("body_required")))
+        self._body_forbidden_edit.setPlainText(self._join_rules(cat.get("body_forbidden")))
+        self._loading = False
+
+    def _clear_editor(self) -> None:
+        self._loading = True
+        self._detail_title.setText("No category selected")
+        for widget in [self._id_edit, self._name_edit, self._dest_edit,
+                       self._domains_edit, self._body_required_edit, self._body_forbidden_edit]:
+            if isinstance(widget, QTextEdit):
+                widget.clear()
+            else:
+                widget.clear()
+        self._mode_combo.setCurrentIndex(0)
+        self._keep_open.setChecked(False)
+        self._loading = False
+
+    def _commit_current(self) -> None:
+        if self._loading:
+            return
+        row = self._active_row
+        if row < 0 or row >= len(self._categories):
+            return
+        cat = self._categories[row]
+        cat_id = self._id_edit.text().strip()
+        name = self._name_edit.text().strip()
+        if not cat_id and name:
+            cat_id = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+            self._id_edit.setText(cat_id)
+        cat.update({
+            "id": cat_id,
+            "name": name,
+            "dest_folder": self._dest_edit.text().strip() or name,
+            "domain_keywords": self._split_rules(self._domains_edit.toPlainText()),
+            "body_required": self._split_rules(self._body_required_edit.toPlainText()),
+            "body_forbidden": self._split_rules(self._body_forbidden_edit.toPlainText()),
+            "body_required_mode": self._mode_combo.currentText().upper(),
+            "keep_open_after_extract": self._keep_open.isChecked(),
+        })
+        self._detail_title.setText(name or "Untitled category")
+        item = self._list.item(row)
+        if item:
+            fresh = self._list_item_for(cat)
+            item.setText(fresh.text())
+            item.setToolTip(fresh.toolTip())
+        self._summary.setText(self._summary_text())
+
+    def _list_item_for(self, cat: dict[str, Any]) -> QListWidgetItem:
+        domains = len(cat.get("domain_keywords") or [])
+        body_required = len(cat.get("body_required") or [])
+        body_forbidden = len(cat.get("body_forbidden") or [])
+        keep = "keep open" if cat.get("keep_open_after_extract") else "close allowed"
+        name = str(cat.get("name") or cat.get("id") or "Untitled")
+        item = QListWidgetItem(
+            f"{name}\n{domains} domains · {body_required} required · {body_forbidden} forbidden · {keep}"
+        )
+        item.setToolTip(str(cat.get("dest_folder") or "No destination folder"))
+        return item
+
+    def _summary_text(self) -> str:
+        domain_count = sum(len(c.get("domain_keywords") or []) for c in self._categories)
+        body_count = sum(len(c.get("body_required") or []) + len(c.get("body_forbidden") or []) for c in self._categories)
+        return f"{len(self._categories)} categories · {domain_count} domain rules · {body_count} body rules"
+
+    def _line_edit(self) -> QLineEdit:
+        edit = QLineEdit()
+        edit.setStyleSheet(_INPUT_QSS)
+        return edit
+
+    def _rules_box(self, placeholder: str) -> QTextEdit:
+        edit = QTextEdit()
+        edit.setPlaceholderText(f"{placeholder}: one per line, or comma-separated")
+        edit.setStyleSheet(_INPUT_QSS)
+        edit.setMinimumHeight(260)
+        return edit
+
+    @staticmethod
+    def _form_label(text: str) -> QLabel:
+        lab = QLabel(text)
+        lab.setStyleSheet("color: #A1A1AA; font-size: 11px; font-weight: 600;")
+        return lab
+
+    @staticmethod
+    def _join_rules(value: Any) -> str:
+        if isinstance(value, list):
+            return "\n".join(str(v) for v in value if str(v).strip())
+        return str(value or "")
+
+    @staticmethod
+    def _split_rules(value: str) -> list[str]:
+        parts = re.split(r"[\n,]+", value or "")
+        return [p.strip() for p in parts if p.strip()]
+
+
 class InboxPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet("background-color: #030303;")
         self._threads: list[QThread] = []
+        self._phone_tabs_loading = False
         self._categories_list: list[dict] = []
+        self._panop_config: dict[str, Any] = {}
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 8, 12, 8)
@@ -1417,7 +2022,7 @@ class InboxPage(QWidget):
             "border-radius: 6px; padding: 4px; }"
         )
         btn_frame.setMaximumHeight(42)
-        
+
         btn_layout = QHBoxLayout(btn_frame)
         btn_layout.setContentsMargins(6, 4, 6, 4)
         btn_layout.setSpacing(6)
@@ -1481,18 +2086,29 @@ class InboxPage(QWidget):
         btn_sync_ops.setFixedHeight(26)
         sync_menu = QMenu(btn_sync_ops)
         sync_menu.setStyleSheet("QMenu { background-color: #09090B; color: #E4E4E7; border: 1px solid #27272A; }")
-        
+
         act_z_resync = sync_menu.addAction("Zotero Resync All")
         act_z_resync.triggered.connect(self._make_action_handler("Z Resync All", "POST", "/reconcile"))
-        
+
         act_b_resync = sync_menu.addAction("Bookmarks Resync All")
         act_b_resync.triggered.connect(self._make_action_handler("B Resync All", "POST", "/bookmarks/flush"))
-        
+
         act_sync_all = sync_menu.addAction("Sync All Pending")
         act_sync_all.triggered.connect(self._make_action_handler("Sync All Pending", "POST", "/history/sync"))
-        
+
         btn_sync_ops.setMenu(sync_menu)
         btn_layout.addWidget(btn_sync_ops)
+
+        btn_auto_phone = QPushButton("Auto Connect Phone")
+        btn_auto_phone.setCursor(Qt.PointingHandCursor)
+        btn_auto_phone.setStyleSheet(
+            "QPushButton { background: #18181B; color: #E4E4E7; border: 1px solid #27272A; "
+            "padding: 4px 12px; border-radius: 4px; font-weight: 700; font-size: 12px; }"
+            "QPushButton:hover { background: #27272A; color: white; }"
+        )
+        btn_auto_phone.setFixedHeight(26)
+        btn_auto_phone.clicked.connect(self._make_action_handler("Auto Connect Phone", "POST", "/phone/reconnect"))
+        btn_layout.addWidget(btn_auto_phone)
 
         # 6. Phone Admin Dropdown
         btn_phone_admin = QPushButton("Phone Admin ▾")
@@ -1505,22 +2121,22 @@ class InboxPage(QWidget):
         btn_phone_admin.setFixedHeight(26)
         phone_menu = QMenu(btn_phone_admin)
         phone_menu.setStyleSheet("QMenu { background-color: #09090B; color: #E4E4E7; border: 1px solid #27272A; }")
-        
+
         act_check = phone_menu.addAction("Check Connection")
         act_check.triggered.connect(self._make_action_handler("Check Connection", "GET", "/status"))
-        
-        act_reconnect = phone_menu.addAction("Phone Reconnect")
-        act_reconnect.triggered.connect(self._make_action_handler("Phone Reconnect", "POST", "/phone/reconnect"))
-        
-        act_pair = phone_menu.addAction("Pair Phone (ADB)")
-        act_pair.triggered.connect(self._make_action_handler("Pair Phone", "POST", "/phone/pair"))
-        
+
+        act_reconnect = phone_menu.addAction("Auto Connect / Repair")
+        act_reconnect.triggered.connect(self._make_action_handler("Auto Connect Phone", "POST", "/phone/reconnect"))
+
+        act_pair = phone_menu.addAction("Pair with Code (first time)")
+        act_pair.triggered.connect(self._pair_phone_action)
+
         act_keep = phone_menu.addAction("Keep Phone Awake")
         act_keep.triggered.connect(self._make_action_handler("Keep Phone Awake", "POST", "/phone/keep_awake"))
-        
+
         act_diag = phone_menu.addAction("Diagnose USB")
         act_diag.triggered.connect(self._make_action_handler("Diagnose USB", "POST", "/phone/usb_diagnose"))
-        
+
         btn_phone_admin.setMenu(phone_menu)
         btn_layout.addWidget(btn_phone_admin)
 
@@ -1549,7 +2165,7 @@ class InboxPage(QWidget):
         )
         self._diag_panel.setMinimumHeight(48)
         self._diag_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        
+
         diag_layout = QHBoxLayout(self._diag_panel)
         diag_layout.setContentsMargins(8, 4, 8, 4)
         diag_layout.setSpacing(10)
@@ -1557,22 +2173,22 @@ class InboxPage(QWidget):
         self._diag_icon = QLabel("ℹ️")
         self._diag_icon.setStyleSheet("font-size: 14px;")
         diag_layout.addWidget(self._diag_icon)
-        
+
         text_layout = QVBoxLayout()
         text_layout.setSpacing(1)
         text_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         self._diag_title = QLabel("Connection Diagnostics")
         self._diag_title.setStyleSheet("font-size: 12px; font-weight: 600; color: #F4F4F5;")
         self._diag_title.setTextFormat(Qt.TextFormat.RichText)
         text_layout.addWidget(self._diag_title)
-        
+
         self._diag_detail = QLabel("No diagnostics run yet. Use 'Diagnose USB' in Phone Admin dropdown to troubleshoot connection.")
         self._diag_detail.setStyleSheet("color: #A1A1AA; font-size: 11px;")
         self._diag_detail.setWordWrap(True)
         self._diag_detail.setTextFormat(Qt.TextFormat.RichText)
         text_layout.addWidget(self._diag_detail)
-        
+
         diag_layout.addLayout(text_layout, 1)
         outer.addWidget(self._diag_panel)
 
@@ -1590,6 +2206,9 @@ class InboxPage(QWidget):
         self._history_tab = _SavedHistoryTab(self)
         self._tabs.addTab(self._history_tab, "📜 Saved History")
 
+        self._categories_tab = _CategoriesRulesTab(self)
+        self._tabs.addTab(self._categories_tab, "Categories / Rules")
+
         # Load category config
         self._load_local_categories_list()
 
@@ -1602,6 +2221,27 @@ class InboxPage(QWidget):
         # Initial refresh
         self.refresh()
 
+
+    def closeEvent(self, event) -> None:
+        try:
+            self._timer.stop()
+        except Exception:
+            pass
+        for thread in list(self._threads):
+            try:
+                if thread.isRunning():
+                    thread.requestInterruption()
+                    thread.quit()
+                    if not thread.wait(750):
+                        thread.terminate()
+                        thread.wait(750)
+            except RuntimeError:
+                pass
+            except Exception as exc:
+                print(f"[Inbox] failed to stop worker thread: {type(exc).__name__}: {exc}")
+        self._threads.clear()
+        super().closeEvent(event)
+
     def _load_local_categories_list(self) -> None:
         try:
             from pathlib import Path
@@ -1609,7 +2249,8 @@ class InboxPage(QWidget):
             config_path = root / "state" / "panop" / "panop_config.json"
             if config_path.exists():
                 with open(config_path, "r", encoding="utf-8") as f:
-                    self._categories_list = json.load(f).get("categories", [])
+                    self._panop_config = json.load(f)
+                    self._categories_list = self._panop_config.get("categories", [])
         except Exception:
             pass
         if not self._categories_list:
@@ -1619,17 +2260,38 @@ class InboxPage(QWidget):
                 {"id": "science_news", "name": "Science News", "dest_folder": "Android Science News"},
                 {"id": "science_longform", "name": "Science Longform (read-in-place)", "dest_folder": "Android Science Longform"}
             ]
+            self._panop_config = {"categories": self._categories_list}
         self._phone_tab.populate_categories(self._categories_list)
+        self._categories_tab.load_config(self._panop_config or {"categories": self._categories_list})
 
     def refresh(self) -> None:
         self._queue_tab.refresh()
         self.refresh_status()
-        self.refresh_phone_tabs()
         self.refresh_history()
+        self.refresh_config()
 
     def _on_timer_timeout(self) -> None:
         self.refresh_status()
         self._queue_tab.refresh()
+
+    def refresh_config(self) -> None:
+        t = _spawn_http(self, "GET", f"{_PANOP_BASE}/config", self._on_config_result, timeout=10.0)
+        self._threads.append(t)
+        t.finished.connect(lambda: self._threads.remove(t) if t in self._threads else None)
+
+    def _on_config_result(self, result: dict) -> None:
+        if not result or not result.get("ok"):
+            return
+        config = result.get("data") or {}
+        if not isinstance(config, dict):
+            return
+        cats = config.get("categories") or []
+        if not isinstance(cats, list):
+            cats = []
+        self._panop_config = config
+        self._categories_list = cats
+        self._phone_tab.populate_categories(self._categories_list)
+        self._categories_tab.load_config(config)
 
     # -- status pills refresh -----------------------------------------------
     def refresh_status(self) -> None:
@@ -1655,61 +2317,113 @@ class InboxPage(QWidget):
         if not isinstance(d, dict):
             d = {}
         adb = bool(d.get("adb_connected"))
-        
+        chrome = bool(d.get("chrome_running"))
+        sweep = bool(d.get("running"))
+        tabs = d.get("tabs_seen") if d.get("tabs_seen") is not None else "-"
+        matched = d.get("tabs_matched") if d.get("tabs_matched") is not None else "-"
+        bmarks = d.get("bookmarks_pending") if d.get("bookmarks_pending") is not None else "-"
+        last_sweep = d.get("last_run") if d.get("last_run") is not None else "-"
+        last_fetch = d.get("last_tab_fetch_at") if d.get("last_tab_fetch_at") is not None else "-"
+
         # Sync the diagnostics panel with the live ADB status
         if not adb:
             if self._diag_detail.text().startswith("No diagnostics") or "successfully" in self._diag_detail.text():
-                self._update_diagnostics_display("error", "Phone is not connected. Click 'Diagnose USB' in Phone Admin to automatically configure connection.", False)
+                if last_fetch != "-":
+                    msg = (
+                        f"Phone is not currently connected. Last capture is preserved: "
+                        f"{tabs} tabs seen, {matched} matched at {last_fetch}. "
+                        "Click Auto Connect Phone or plug in the phone with USB debugging authorized."
+                    )
+                else:
+                    msg = "Phone is not connected. Click Auto Connect Phone, or plug in the phone with USB debugging authorized and Egon will remember it."
+                self._update_diagnostics_display("warning", msg, False)
         else:
             dev_id = d.get("device_id") or "Connected Device"
-            self._update_diagnostics_display("ok", f"Phone is connected successfully!\nDevice ID: {dev_id}\n\nYou are ready to sweep tabs and bookmarks.", True)
-            
-        chrome = bool(d.get("chrome_running"))
-        sweep = bool(d.get("sweep_running"))
-        tabs = d.get("tabs_seen") if d.get("tabs_seen") is not None else "—"
-        bmarks = d.get("bookmarks_pending") if d.get("bookmarks_pending") is not None else "—"
-        last_sweep = d.get("last_sweep") if d.get("last_sweep") is not None else "—"
+            if chrome:
+                self._update_diagnostics_display("ok", f"Phone and Chrome are connected.\nDevice ID: {dev_id}\n\nYou are ready to load, sweep, or drain tabs.", True)
+            else:
+                self._update_diagnostics_display(
+                    "warning",
+                    f"Phone is connected, but Android Chrome tabs are not visible yet.\n"
+                    f"Device ID: {dev_id}\n\nOpen Chrome on the phone or click Auto Connect Phone again; Egon will rebuild the DevTools bridge.",
+                    False,
+                )
 
         try:
             bmarks_is_zero = int(bmarks) == 0
         except (ValueError, TypeError):
             bmarks_is_zero = False
 
+        if sweep:
+            self._status_lbl.setText(f"Sweep running: {tabs} targets seen, {matched} matched so far.")
+        elif d.get("last_error"):
+            self._status_lbl.setText(f"Last sweep failed: {d.get('last_error')}")
+        elif last_sweep != "-":
+            self._status_lbl.setText(f"Last sweep finished: {tabs} targets seen, {matched} matched.")
+
         for label, val, ok in [
             ("ADB Connected",      "Yes" if adb else "No",         adb),
             ("Chrome Running",     "Yes" if chrome else "No",      chrome),
             ("Sweep Running",      "Yes" if sweep else "No",       sweep),
-            ("Active Tabs",        str(tabs),                      True),
+            ("Last Capture",       str(tabs),                      last_fetch != "-"),
+            ("Matched",            str(matched),                   True),
             ("Bookmarks Pending",  str(bmarks),                    bmarks_is_zero),
-            ("Last Sweep",         str(last_sweep),                last_sweep != "—"),
+            ("Last Sweep",         str(last_sweep),                last_sweep != "-"),
         ]:
             self._pills_row.addWidget(_pill(label, val, ok))
         self._pills_row.addStretch(1)
 
     # -- phone tabs inspect -------------------------------------------------
-    def refresh_phone_tabs(self) -> None:
-        self._status_lbl.setText("⏳ Fetching open tabs from phone's Android Chrome...")
-        t = _spawn_http(self, "GET", f"{_PANOP_BASE}/tabs/inspect?wake=false", self._on_phone_tabs_result, timeout=180.0)
+    def refresh_phone_tabs(self, *_args) -> None:
+        if self._phone_tabs_loading:
+            return
+        self._phone_tabs_loading = True
+        self._status_lbl.setText("Classifying phone tabs before sweep...")
+        t = _spawn_http(
+            self,
+            "GET",
+            f"{_PANOP_BASE}/tabs/inspect?wake=false&view=all&limit=0",
+            self._on_phone_tabs_result,
+            timeout=180.0,
+        )
         self._threads.append(t)
         t.finished.connect(lambda: self._threads.remove(t) if t in self._threads else None)
 
     def _on_phone_tabs_result(self, result: dict) -> None:
+        self._phone_tabs_loading = False
         if not result or not result.get("ok"):
             self._status_lbl.setText(f"❌ Failed to fetch phone tabs: {result.get('error') if result else 'no response'}")
             return
-        
+
         data_dict = result.get("data") or {}
         if not isinstance(data_dict, dict):
             data_dict = {}
         if data_dict.get("status") == "error":
             self._status_lbl.setText(f"❌ {data_dict.get('message')}")
             return
-            
+
         tabs = data_dict.get("tabs") or []
         if not isinstance(tabs, list):
             tabs = []
         woken = data_dict.get("woken") or 0
-        self._status_lbl.setText(f"✅ Found {len(tabs)} tabs on phone. Woken: {woken}.")
+        total = data_dict.get("total")
+        buckets = data_dict.get("buckets") if isinstance(data_dict.get("buckets"), dict) else {}
+        matched = buckets.get("matched", 0)
+        body_required = buckets.get("body_required", 0)
+        saved = buckets.get("saved", 0)
+        no_match = buckets.get("no_match", 0)
+        ready = int(matched or 0) + int(body_required or 0)
+        if data_dict.get("snapshot"):
+            snapshot_at = data_dict.get("snapshot_at") or "previous run"
+            self._status_lbl.setText(
+                f"Classified {total or len(tabs)} tabs from last capture ({snapshot_at}); "
+                f"showing {ready} ready for sweep by default ({saved} already saved, {no_match} unmatched hidden). Reconnect phone for live refresh."
+            )
+        else:
+            self._status_lbl.setText(
+                f"Classified {total or len(tabs)} phone tabs; showing {ready} ready for sweep by default "
+                f"({saved} already saved, {no_match} unmatched hidden). Woken: {woken}."
+            )
         self._phone_tab.load_tabs(tabs)
 
     # -- history ledger refresh ---------------------------------------------
@@ -1725,7 +2439,7 @@ class InboxPage(QWidget):
         raw_data = result.get("data")
         if not isinstance(raw_data, (list, dict)):
             raw_data = []
-        
+
         items = []
         if isinstance(raw_data, dict):
             if "items" in raw_data or "history" in raw_data:
@@ -1747,13 +2461,76 @@ class InboxPage(QWidget):
 
         self._history_tab.load_history(items)
 
+
+    def _pair_phone_action(self, *_args) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Pair Phone (ADB)")
+        dialog.setModal(True)
+        dialog.setStyleSheet("QDialog { background: #09090B; color: #E4E4E7; }")
+
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight)
+
+        host_input = QLineEdit()
+        host_input.setPlaceholderText("192.168.0.2")
+        host_input.setStyleSheet(_INPUT_QSS)
+
+        port_input = QLineEdit()
+        port_input.setPlaceholderText("Pairing port")
+        port_input.setStyleSheet(_INPUT_QSS)
+
+        code_input = QLineEdit()
+        code_input.setPlaceholderText("Pairing code")
+        code_input.setStyleSheet(_INPUT_QSS)
+
+        form.addRow("Host", host_input)
+        form.addRow("Port", port_input)
+        form.addRow("Code", code_input)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            self._status_lbl.setText("Pair Phone cancelled")
+            return
+
+        host = host_input.text().strip()
+        port_text = port_input.text().strip()
+        code = code_input.text().strip()
+        if not host or not port_text or not code:
+            self._status_lbl.setText("Pair Phone: host, port and code are all required")
+            self._update_diagnostics_display("error", "Pair Phone requires host, pairing port, and pairing code.", False)
+            return
+        try:
+            port = int(port_text)
+        except ValueError:
+            self._status_lbl.setText("Pair Phone: port must be numeric")
+            self._update_diagnostics_display("error", "Pair Phone port must be numeric.", False)
+            return
+
+        self._status_lbl.setText("Pairing phone...")
+        query = urlencode({"host": host, "port": port, "code": code})
+        url = f"{_PANOP_BASE}/phone/pair?{query}"
+        timeout = _ACTION_TIMEOUTS.get("Pair Phone", 25.0)
+        t = _spawn_http(self, "POST", url,
+                        lambda res: self._on_action_result("Pair Phone", res),
+                        timeout=timeout)
+        self._threads.append(t)
+        t.finished.connect(lambda: self._threads.remove(t) if t in self._threads else None)
+
     # -- action button factory ---------------------------------------------
     def _make_action_handler(self, label: str, method: str, path: str):
-        def handler():
+        def handler(*_args):
             self._status_lbl.setText(f"⏳  {label}…")
             url = f"{_PANOP_BASE}{path}"
+            timeout = _ACTION_TIMEOUTS.get(label, 8.0 if method.upper() == "POST" else 3.0)
             t = _spawn_http(self, method, url,
-                            lambda res, _l=label: self._on_action_result(_l, res))
+                            lambda res, _l=label: self._on_action_result(_l, res),
+                            timeout=timeout)
             self._threads.append(t)
             t.finished.connect(lambda: self._threads.remove(t) if t in self._threads else None)
         return handler
@@ -1767,48 +2544,103 @@ class InboxPage(QWidget):
             if body is None:
                 body = ""
             if isinstance(body, dict):
-                status = str(body.get("status") or "ok")
-                if label == "Drain All Tabs":
+                if label in ("Check Connection", "Diagnose USB", "Phone Reconnect", "Auto Connect Phone"):
+                    status, msg, connected = _summarize_connection_status(body)
+                elif label == "Drain All Tabs":
+                    status = str(body.get("status") or "ok")
                     msg = "Drain loop started. Saving and closing phone tabs..."
                 elif "message" in body and body["message"] is not None:
+                    status = str(body.get("status") or "ok")
                     msg = str(body["message"])
                 elif "status" in body and body["status"] is not None:
+                    status = str(body.get("status") or "ok")
                     msg = f"Status: {body['status']}"
                 else:
-                    msg = ", ".join(f"{k}: {v}" for k, v in body.items())
-                connected = bool(body.get("connected"))
+                    status = str(body.get("status") or "ok")
+                    visible = {k: v for k, v in body.items() if k not in {"last_tab_urls", "tabs"}}
+                    msg = ", ".join(f"{k}: {v}" for k, v in visible.items())
+                if label not in ("Check Connection", "Diagnose USB", "Phone Reconnect", "Auto Connect Phone"):
+                    connected = bool(body.get("connected"))
             else:
                 status = "ok"
                 msg = str(body)[:500]
                 connected = False
             first_line = msg.splitlines()[0] if msg else "Done"
             self._status_lbl.setText(f"✅  {label}: {first_line}")
-            
+
             # Reactive visual updates
             if label in ("Drain All Tabs", "Cancel Drain", "Merge Duplicates", "Z Resync All", "B Resync All", "Sync All Pending"):
                 QTimer.singleShot(1500, self.refresh)
-            
-            if label in ("Diagnose USB", "Check Connection", "Phone Reconnect"):
+
+            if label in ("Diagnose USB", "Check Connection", "Phone Reconnect", "Auto Connect Phone"):
                 self._update_diagnostics_display(status, msg, connected)
+                if connected:
+                    QTimer.singleShot(500, self.refresh_status)
+                    QTimer.singleShot(900, lambda: self._tabs.setCurrentIndex(1))
+                    QTimer.singleShot(1000, self.refresh_phone_tabs)
         else:
             err = result.get("error") or "unknown error"
             self._status_lbl.setText(f"❌  {label}: {err}")
-            if label in ("Diagnose USB", "Check Connection", "Phone Reconnect"):
-                self._update_diagnostics_display("error", f"Connection failed: {err}", False)
+            if label in ("Diagnose USB", "Check Connection", "Phone Reconnect", "Auto Connect Phone"):
+                body = result.get("data") if isinstance(result, dict) else None
+                msg = f"Connection failed: {err}"
+                if isinstance(body, dict):
+                    details = body.get("message") or body.get("hint") or body.get("connect_log")
+                    if details:
+                        msg = str(details)
+                self._update_diagnostics_display("error", msg, False)
 
     def _fetch_now_action(self) -> None:
         self._status_lbl.setText("⏳ Fetching now (running sweep on server)...")
-        
+
         def callback(res):
             res = res if isinstance(res, dict) else {}
             if res.get("ok"):
-                self._status_lbl.setText("✅ Sweep triggered on server. Loading phone tabs list...")
-                QTimer.singleShot(2000, self.refresh)
+                self._status_lbl.setText("Sweep triggered. Waiting for completion before loading the phone queue...")
+                QTimer.singleShot(1200, lambda: self._poll_sweep_after_fetch(0))
             else:
                 err = str(res.get("error") or "Unknown error")
                 self._status_lbl.setText(f"❌ Fetch trigger failed: {err}")
-                
+
         t = _spawn_http(self, "POST", f"{_PANOP_BASE}/fetch_now", callback)
+        self._threads.append(t)
+        t.finished.connect(lambda: self._threads.remove(t) if t in self._threads else None)
+
+    def _poll_sweep_after_fetch(self, attempt: int = 0) -> None:
+        def callback(res):
+            res = res if isinstance(res, dict) else {}
+            body = res.get("data") if isinstance(res.get("data"), dict) else {}
+            if not res.get("ok"):
+                if attempt < 8:
+                    QTimer.singleShot(2000, lambda: self._poll_sweep_after_fetch(attempt + 1))
+                else:
+                    self._status_lbl.setText("Sweep status did not answer; refresh manually if the queue stays empty.")
+                return
+
+            running = bool(body.get("running"))
+            tabs_seen = body.get("tabs_seen", 0)
+            matched = body.get("tabs_matched", 0)
+            if running and attempt < 90:
+                self._status_lbl.setText(
+                    f"Sweep still running... {tabs_seen} tabs seen, {matched} matched so far."
+                )
+                QTimer.singleShot(2000, lambda: self._poll_sweep_after_fetch(attempt + 1))
+                return
+
+            if running:
+                self._status_lbl.setText(
+                    "Sweep is still running after 3 minutes. You can keep working; the queue will load when refreshed."
+                )
+                self.refresh()
+                return
+
+            self._status_lbl.setText(
+                f"Sweep finished: {tabs_seen} tabs seen, {matched} matched. Loading the actionable phone queue..."
+            )
+            self.refresh()
+            self.refresh_phone_tabs()
+
+        t = _spawn_http(self, "GET", f"{_PANOP_BASE}/status", callback, timeout=8.0)
         self._threads.append(t)
         t.finished.connect(lambda: self._threads.remove(t) if t in self._threads else None)
 
@@ -1839,10 +2671,10 @@ class InboxPage(QWidget):
             f"border-left: 4px solid {border_left_color}; "
             f"border-radius: 6px; padding: 6px 12px; }}"
         )
-        
+
         self._diag_icon.setText(icon)
         self._diag_title.setText(f"Connection Status: <span style='color:{color};'>{status_text}</span>")
 
-        html_msg = str(message or "").replace("\n", "<br/>")
+        html_msg = html.escape(str(message or "")).replace("\n", "<br/>")
         html_msg = re.sub(r"(\d+\.)", r"<b>\1</b>", html_msg)
         self._diag_detail.setText(html_msg)

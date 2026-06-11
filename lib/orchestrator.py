@@ -14,7 +14,7 @@ import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import httpx
+from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
 
 from lib.ledger import load_config, save_config
 from lib.egon_paths import ROUTSTER_PATH, MOUSEION_PATH, PANOP_PATH

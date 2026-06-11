@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import socket
 
-import httpx
+from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
 
 HOST = "127.0.0.1"
 PORT = 3333

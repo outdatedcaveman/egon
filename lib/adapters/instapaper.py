@@ -21,7 +21,22 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import httpx
+# httpx is heavy (~1.7s import with its rich/pygments extras) and this module
+# is pulled in by lib.adapters at Egon boot. Defer it to first use.
+# Bruno 2026-06-11 startup-perf pass.
+import importlib
+
+
+class _LazyHttpx:
+    _mod = None
+
+    def __getattr__(self, name):
+        if _LazyHttpx._mod is None:
+            _LazyHttpx._mod = importlib.import_module("httpx")
+        return getattr(_LazyHttpx._mod, name)
+
+
+httpx = _LazyHttpx()
 
 from lib.ledger import load_config
 from lib.snapshot_store import latest_snapshot

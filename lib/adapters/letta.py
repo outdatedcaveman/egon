@@ -21,7 +21,7 @@ import json
 import socket
 from pathlib import Path
 
-import httpx
+from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_HOST = "127.0.0.1"

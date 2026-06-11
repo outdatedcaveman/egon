@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-import httpx
+from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
 from lib import secrets
 
 _ROOT = Path(__file__).resolve().parent.parent

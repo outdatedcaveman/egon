@@ -24,7 +24,7 @@ import json
 import socket
 from pathlib import Path
 
-import httpx
+from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_PROXY_HOST = "127.0.0.1"
@@ -55,9 +55,13 @@ def _proxy_url() -> str:
 
 
 def _library_available() -> bool:
+    # find_spec, NOT import: importing litellm takes 30-60s (it's enormous)
+    # and this runs inside every snapshot sweep — it was the "probe exceeded
+    # 45s" timeout in last_pass.json and stalled the whole pass. We only need
+    # to know the package EXISTS. 2026-06-11 perf pass.
     try:
-        import litellm  # type: ignore  # noqa: F401
-        return True
+        import importlib.util
+        return importlib.util.find_spec("litellm") is not None
     except Exception:
         return False
 

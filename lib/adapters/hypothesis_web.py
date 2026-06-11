@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import httpx
+from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 BASE = "https://hypothes.is/api"
