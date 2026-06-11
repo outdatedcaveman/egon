@@ -148,23 +148,70 @@ def _archive_hits(terms: list[str], limit: int = 18) -> list[dict[str, Any]]:
     return hits
 
 
+def _semantic_connect(text: str, terms: list[str], limit: int) -> list[dict] | None:
+    """Embedding-based ranking over the cached index. Returns None if the index
+    isn't built yet (caller falls back to lexical). Finds conceptually related
+    material even with zero word overlap."""
+    try:
+        from lib import semantic_index as si
+    except Exception:
+        return None
+    si.ensure_built_async()           # keep the index fresh in the background
+    if not si.is_ready():
+        return None
+    hits = si.search(text, top_k=limit + 14)
+    if not hits:
+        return []
+    tset = set(terms)
+    per_source = {}
+    out = []
+    for h in hits:
+        src = h.get("source") or "?"
+        # light per-archive diversity so one big source can't dominate
+        if src != "mind-memory":
+            per_source[src] = per_source.get(src, 0) + 1
+            if per_source[src] > 6:
+                continue
+        why = _matched((h.get("title", "") + " " + (h.get("snippet") or "")), tset)
+        out.append({
+            "source": src,
+            "title": h.get("title", ""),
+            "snippet": h.get("snippet") or "",
+            "url": h.get("url"),
+            "score": h.get("score", 0.0),
+            "why": why[:6],
+        })
+    return out
+
+
 def connect(text: str, limit: int = 18) -> dict[str, Any]:
     """The button. Give it what you're writing; get ranked connections from
-    your archives + the shared mind, with provenance and matched terms."""
+    your archives + the shared mind. Semantic (embedding) ranking when the
+    index is ready, lexical fallback otherwise; matched terms attached as 'why'."""
     text = (text or "").strip()
     if len(text) < 3:
         return {"status": "error", "error": "give me at least a few words"}
     terms = _salient_terms(text)
+
+    semantic = _semantic_connect(text, terms, limit)
+    if semantic is not None:
+        return {
+            "status": "ok",
+            "mode": "semantic",
+            "terms": terms[:12],
+            "count": len(semantic),
+            "connections": semantic[:limit + 8],
+        }
+
+    # Lexical fallback (index still building, or no model).
     if not terms:
-        return {"status": "ok", "terms": [], "connections": [],
+        return {"status": "ok", "mode": "lexical", "terms": [], "connections": [],
                 "note": "no salient terms found in input"}
-    archive = _archive_hits(terms, limit=limit)
-    memory = _memory_hits(terms, limit=8)
-    # Interleave: archives are the star; memories give agent/work context.
-    connections = sorted(archive + memory,
+    connections = sorted(_archive_hits(terms, limit=limit) + _memory_hits(terms, limit=8),
                          key=lambda h: h["score"], reverse=True)
     return {
         "status": "ok",
+        "mode": "lexical",
         "terms": terms[:12],
         "count": len(connections),
         "connections": connections[:limit + 8],
