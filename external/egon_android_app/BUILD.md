@@ -18,3 +18,12 @@ jars with the local JDK directly):
   zipalign -f 4 unsigned aligned
   java -jar apksigner.jar sign --ks debug.keystore ...
   adb install -r out/EgonConnect.apk
+
+## v1.1 — floating bubble (2026-06-11)
+BubbleService: draggable ✨ chat-head over every app (TYPE_APPLICATION_OVERLAY;
+permission pre-granted via `adb shell appops set <pkg> SYSTEM_ALERT_WINDOW
+allow`). Tap bubble -> compact WebView Connect panel over the current app;
+✕ collapses, ✖ quits. Started by MainActivity on launch.
+Build gotchas added: no lambdas with -source 8 against android.jar (use
+anonymous classes); feed d8 a classes.jar (shell eats the $1 in inner-class
+filenames if passed individually).
