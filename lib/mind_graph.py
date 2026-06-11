@@ -133,9 +133,23 @@ def _text_matches(text: str, tokens: set[str]) -> int:
     return sum(1 for t in tokens if t in low)
 
 
+# Whole-graph TTL cache. The dashboard polls every 5s and scorecard/
+# enforcement/capsule each rebuild the same graph; one build per minute is
+# plenty (the underlying data is an append-only ledger — 60s staleness is
+# invisible). Keyed by (project, query, limit). Cold build also writes the
+# Gephi export; cache hits skip that disk write. Bruno 2026-06-11 perf pass.
+_GRAPH_CACHE: dict[tuple, tuple[float, dict]] = {}
+_GRAPH_TTL_S = 60.0
+
+
 def build_mind_graph(project: str | None = None,
                      query: str | None = None,
                      limit_activity: int = 1500) -> dict[str, Any]:
+    cache_key = (project, query, limit_activity)
+    hit = _GRAPH_CACHE.get(cache_key)
+    if hit and time.time() - hit[0] < _GRAPH_TTL_S:
+        return hit[1]
+
     graph = MindGraph()
     tokens = _query_tokens(query)
     if not DB_PATH.exists():
@@ -260,7 +274,7 @@ def build_mind_graph(project: str | None = None,
 
     insights = _make_insights(graph, degrees, artifact_hits, bridge_pairs, tokens)
     path = export_gexf(graph, project=project, query=query)
-    return {
+    result = {
         "status": "ok",
         "generated_at": _now(),
         "project": project,
@@ -271,13 +285,34 @@ def build_mind_graph(project: str | None = None,
         "insights": insights,
         "graph": graph.to_dict(),
     }
+    _GRAPH_CACHE[cache_key] = (time.time(), result)
+    if len(_GRAPH_CACHE) > 32:   # different queries accumulate; keep it tiny
+        oldest = min(_GRAPH_CACHE, key=lambda k: _GRAPH_CACHE[k][0])
+        _GRAPH_CACHE.pop(oldest, None)
+    return result
 
 
-def _add_category_layer(graph: MindGraph, tokens: set[str]) -> None:
+# Category-layer scan cache. 2026-06-11 perf post-mortem: this layer rglob'd
+# ~120 directory trees and read up to 2000 markdown files ON EVERY
+# build_mind_graph call (~8s of the ~10s capsule build) — and the capsule is
+# behind every agent context pull, the scorecard, enforcement status AND the
+# dashboard's 5s refresh, so slow calls stacked up and starved the whole mind
+# service. The markdown corpus changes rarely; parse at most once per TTL.
+# Query tokens only affect per-call scores (computed after the parse), so the
+# cache is query-independent.
+_CATEGORY_CACHE: dict[str, Any] = {"ts": 0.0, "items": []}
+_CATEGORY_TTL_S = 600.0
+
+
+def _scan_categories() -> list[tuple[Any, str]]:
+    """Return [(category, source_path_str)], cached for _CATEGORY_TTL_S."""
+    now = time.time()
+    if now - _CATEGORY_CACHE["ts"] < _CATEGORY_TTL_S:
+        return _CATEGORY_CACHE["items"]
     try:
         from lib.categorical_mind import parse_categories_from_markdown
     except Exception:
-        return
+        return []
 
     paths = list(ROOT.glob("*.md"))
     for folder in (ROOT / "docs", ROOT / "state"):
@@ -287,13 +322,22 @@ def _add_category_layer(graph: MindGraph, tokens: set[str]) -> None:
     if brain.exists():
         paths.extend(brain.rglob("*.md"))
 
-    seen_categories = set()
+    items: list[tuple[Any, str]] = []
     for path in paths[:2000]:
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             continue
         for cat in parse_categories_from_markdown(text):
+            items.append((cat, str(path)))
+    _CATEGORY_CACHE["ts"] = now
+    _CATEGORY_CACHE["items"] = items
+    return items
+
+
+def _add_category_layer(graph: MindGraph, tokens: set[str]) -> None:
+    seen_categories = set()
+    for cat, path in _scan_categories():
             cid = graph.node(_norm_id("category", cat.name), cat.name, "category",
                              source=str(path),
                              query_score=_text_matches(cat.name, tokens))

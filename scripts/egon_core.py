@@ -78,12 +78,25 @@ def _http_ok(url: str, timeout: float = 3.0) -> tuple[bool, str]:
 
 # ── units ────────────────────────────────────────────────────────────────────
 class Unit:
+    # Consecutive probe failures required before a unit counts as down.
+    # 2026-06-11 post-mortem: 14 phantom "mind restarts" in one day — every
+    # single one found the service already running. The probe (3s, one
+    # strike) was timing out while the mind was merely BUSY (MiniLM encode
+    # for /connect saturates the process for a few seconds). Busy ≠ dead.
+    FAILS_REQUIRED = 3
+
     def __init__(self, name: str):
         self.name = name
         self.ok = False
         self.detail = ""
         self.restarts = 0
         self.last_restart = 0.0
+        self.fails = 0
+
+    def probe(self, ok: bool) -> bool:
+        """Record a probe result; True only when down is CONFIRMED."""
+        self.fails = 0 if ok else self.fails + 1
+        return self.fails >= self.FAILS_REQUIRED
 
     def can_restart(self) -> bool:
         return time.time() - self.last_restart > RESTART_BACKOFF_S
@@ -91,16 +104,24 @@ class Unit:
     def mark_restart(self):
         self.restarts += 1
         self.last_restart = time.time()
+        self.fails = 0
 
     def as_dict(self) -> dict:
         return {"ok": self.ok, "detail": self.detail, "restarts": self.restarts}
 
 
 def check_mind(u: Unit) -> None:
-    ok, body = _http_ok(MIND_STATS)
-    u.ok = ok and '"status":"ok"' in body.replace(" ", "")
-    u.detail = "serving" if u.ok else body
-    if u.ok or not u.can_restart():
+    t0 = time.time()
+    ok, body = _http_ok(MIND_STATS, timeout=8.0)
+    ok = ok and '"status":"ok"' in body.replace(" ", "")
+    ms = int((time.time() - t0) * 1000)
+    confirmed_down = u.probe(ok)
+    u.ok = ok or not confirmed_down   # busy-but-alive still counts as ok
+    u.detail = (f"serving ({ms}ms)" if ok
+                else f"slow/failed probe {u.fails}/{u.FAILS_REQUIRED}: {body}")
+    if ms > 2000 or not ok:
+        log("info", "mind_probe_slow", ms=ms, ok=ok, fails=u.fails)
+    if not confirmed_down or not u.can_restart():
         return
     u.mark_restart()
     log("warn", "mind_down_restarting", attempt=u.restarts)
@@ -118,11 +139,12 @@ def check_mind(u: Unit) -> None:
 
 
 def check_headroom(u: Unit) -> None:
-    ok, body = _http_ok(HEADROOM_HEALTH, timeout=2.5)
-    u.ok = ok
+    ok, body = _http_ok(HEADROOM_HEALTH, timeout=6.0)
+    confirmed_down = u.probe(ok)
+    u.ok = ok or not confirmed_down
     u.detail = ("healthy" + (" (python-degraded)" if "disabled" in body else "")
-                ) if ok else body
-    if u.ok or not u.can_restart():
+                ) if ok else f"probe {u.fails}/{u.FAILS_REQUIRED}: {body}"
+    if not confirmed_down or not u.can_restart():
         return
     u.mark_restart()
     log("warn", "headroom_down_restarting", attempt=u.restarts)
@@ -138,10 +160,11 @@ def check_ollama(u: Unit) -> None:
     """Keep the local synthesis brain (Ollama, qwen2.5:3b) serving. The model
     itself loads on demand and auto-unloads when idle, so a running server
     costs almost nothing. Bruno 2026-06-12 (#2: retrieval → answers)."""
-    ok, _ = _http_ok(OLLAMA_TAGS, timeout=2.5)
-    u.ok = ok
-    u.detail = "serving" if ok else "down"
-    if u.ok or not u.can_restart():
+    ok, _ = _http_ok(OLLAMA_TAGS, timeout=6.0)
+    confirmed_down = u.probe(ok)
+    u.ok = ok or not confirmed_down
+    u.detail = "serving" if ok else f"probe {u.fails}/{u.FAILS_REQUIRED}"
+    if not confirmed_down or not u.can_restart():
         return
     if not OLLAMA_EXE.exists():
         u.detail = "ollama not installed"

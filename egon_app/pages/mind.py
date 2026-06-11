@@ -11,7 +11,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-import httpx
+from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -109,12 +109,12 @@ def _lock_pill(lease: dict) -> QFrame:
 def _api_get(path: str, params: dict | None = None,
              timeout: float = 1.5) -> dict | None:
     try:
-        with httpx.Client(timeout=timeout) as c:
-            r = c.get(f"{_API}{path}", params=params or {})
-        if r.status_code == 200:
-            res = r.json()
-            if isinstance(res, dict):
-                return res
+        from urllib.parse import urlencode
+        from egon_app.api import get_json
+        q = ("?" + urlencode(params)) if params else ""
+        res = get_json(f"{_API}{path}{q}", timeout=timeout)
+        if isinstance(res, dict):
+            return res
     except Exception:
         return None
     return None
@@ -134,14 +134,13 @@ class _HttpWorker(QObject):
 
     def run(self) -> None:
         try:
-            with httpx.Client(timeout=self._timeout) as client:
-                if self._method.upper() == "GET":
-                    r = client.get(self._url)
-                else:
-                    if self._json_body:
-                        r = client.post(self._url, json=self._json_body)
-                    else:
-                        r = client.post(self._url)
+            from egon_app.api import get_compat, post_compat
+            if self._method.upper() == "GET":
+                r = get_compat(self._url, timeout=self._timeout)
+            else:
+                r = post_compat(self._url, self._json_body,
+                                timeout=self._timeout)
+            if True:
                 if r.status_code < 400:
                     try:
                         body = r.json()

@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import httpx
+from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
 
 # Egon root in Notion — set NOTION_EGON_PAGE_ID to your own page id
 EGON_PAGE_ID = os.environ.get("NOTION_EGON_PAGE_ID", "")

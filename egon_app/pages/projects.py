@@ -27,7 +27,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-import httpx
+from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -81,10 +81,10 @@ def _icon_for(slug: str) -> str:
 def _api_get(path: str, params: dict | None = None,
              timeout: float = 1.5) -> dict | None:
     try:
-        with httpx.Client(timeout=timeout) as c:
-            r = c.get(f"{_MIND}{path}", params=params or {})
-        if r.status_code == 200:
-            return r.json()
+        from urllib.parse import urlencode
+        from egon_app.api import get_json
+        q = ("?" + urlencode(params)) if params else ""
+        return get_json(f"{_MIND}{path}{q}", timeout=timeout)
     except Exception:
         return None
     return None

@@ -23,7 +23,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-import httpx
+from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
 from bs4 import BeautifulSoup
 
 from lib import secrets

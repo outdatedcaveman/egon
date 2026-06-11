@@ -9,7 +9,7 @@ Docs: https://search.marginalia.nu/api
 """
 from __future__ import annotations
 
-import httpx
+from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
 
 BASE = "https://api.marginalia.nu"
 

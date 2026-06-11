@@ -16,7 +16,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-import httpx
+from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
 
 from lib.snapshot_store import latest_snapshot
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import httpx
+from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
 
 from lib.egon_paths import ENV_FILE as ENV_PATH
 KMS_ROOT_ID = os.environ.get("NOTION_KMS_ROOT_ID", "")   # your Notion KMS root page id

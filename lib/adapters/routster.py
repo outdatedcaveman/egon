@@ -8,7 +8,7 @@ import os
 import sqlite3
 import time
 from datetime import datetime, timedelta
-import httpx
+from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
 
 DB_PATH = os.path.expandvars(r"%APPDATA%\routster\kms_local_data.sqlite")
 

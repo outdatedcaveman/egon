@@ -8,7 +8,7 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
-import httpx
+from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
 
 from lib import secrets
 from lib.snapshot_store import latest_snapshot
