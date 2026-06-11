@@ -193,6 +193,110 @@ def check_index(u: Unit) -> None:
     threading.Thread(target=_build, daemon=True, name="core-index").start()
 
 
+DIGEST_JSON = ROOT / "state" / "daily_digest.json"
+DIGEST_MD = ROOT / "state" / "daily_digest.md"
+DIGEST_AFTER_HOUR = 8          # generate once per day, first cycle after 08:00
+_digest_running = False
+
+
+def check_digest(u: Unit) -> None:
+    """Proactivity (strategy #3): once a day, run the introspection engine and
+    assemble a digest Bruno never asked for but wants — what Egon noticed,
+    what the other agents did in the last 24h, substrate health. Written to
+    state/daily_digest.{json,md}; the Connect widget's tray toasts when a new
+    one lands. Rule-based + read-only over mind.db: no LLM, no tokens."""
+    global _digest_running
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        prev = json.loads(DIGEST_JSON.read_text(encoding="utf-8")).get("date")
+    except Exception:
+        prev = None
+    u.ok = prev == today
+    u.detail = f"last={prev or 'never'}"
+    if _digest_running or prev == today or datetime.now().hour < DIGEST_AFTER_HOUR:
+        return
+    _digest_running = True
+
+    def _build():
+        global _digest_running
+        try:
+            _generate_digest(today)
+            log("info", "digest_generated", date=today)
+        except Exception as e:
+            log("warn", "digest_failed", error=str(e)[:200])
+        finally:
+            _digest_running = False
+
+    threading.Thread(target=_build, daemon=True, name="core-digest").start()
+
+
+def _generate_digest(today: str) -> None:
+    import sqlite3
+    # 1) fresh introspection proposals (rule-based, cheap)
+    proposals = []
+    try:
+        from lib.mind_introspection import run_introspection
+        res = run_introspection()
+        proposals = res.get("proposals", res) if isinstance(res, dict) else res
+    except Exception as e:
+        log("warn", "introspection_failed", error=str(e)[:160])
+    # 2) what the other agents did in the last 24h (durable memories)
+    agent_work = []
+    try:
+        con = sqlite3.connect(ROOT / "state" / "mind.db", timeout=10)
+        con.row_factory = sqlite3.Row
+        day_ago = int(time.time()) - 86400
+        rows = con.execute(
+            """SELECT m.id, m.kind, substr(m.content,1,200) AS preview,
+                      COALESCE(a.name,'?') AS agent
+               FROM memory m LEFT JOIN agents a ON a.id = m.attribution_agent_id
+               WHERE m.created_at >= ? AND m.kind IN ('decision','note','plan')
+               ORDER BY m.created_at DESC LIMIT 12""", (day_ago,)).fetchall()
+        agent_work = [dict(r) for r in rows]
+        con.close()
+    except Exception:
+        pass
+    # 3) substrate health snapshot
+    health = {}
+    try:
+        health = json.loads(HEALTH.read_text(encoding="utf-8")).get("units", {})
+    except Exception:
+        pass
+
+    digest = {"date": today,
+              "generated": datetime.now().isoformat(timespec="seconds"),
+              "proposals": proposals if isinstance(proposals, list) else [],
+              "agent_work_24h": agent_work,
+              "substrate": {k: v.get("ok") for k, v in health.items()}}
+    DIGEST_JSON.write_text(json.dumps(digest, indent=2, ensure_ascii=False),
+                           encoding="utf-8")
+    # human-readable twin
+    lines = [f"# Egon Daily Digest — {today}", ""]
+    props = digest["proposals"]
+    lines.append(f"## Egon noticed ({len(props)} insight{'s' if len(props)!=1 else ''})")
+    if props:
+        for p in props[:10]:
+            lines.append(f"- **{p.get('title','?')}** [{p.get('severity','info')}] — "
+                         f"{p.get('description','')[:260]}")
+    else:
+        lines.append("- Nothing flagged by introspection in the last week.")
+    lines.append("")
+    lines.append(f"## What your agents did in the last 24h ({len(agent_work)})")
+    if agent_work:
+        for w in agent_work:
+            lines.append(f"- [{w['agent']}] ({w['kind']}) {w['preview'][:160]}…")
+    else:
+        lines.append("- No durable memories written in the last 24h.")
+    lines.append("")
+    ok_units = [k for k, v in digest["substrate"].items() if v]
+    bad_units = [k for k, v in digest["substrate"].items() if not v]
+    lines.append("## Substrate")
+    lines.append(f"- healthy: {', '.join(ok_units) or '—'}")
+    if bad_units:
+        lines.append(f"- ⚠ down: {', '.join(bad_units)}")
+    DIGEST_MD.write_text("\n".join(lines), encoding="utf-8")
+
+
 def write_health(units: dict[str, Unit]) -> None:
     try:
         HEALTH.parent.mkdir(parents=True, exist_ok=True)
@@ -217,13 +321,15 @@ def main() -> int:
     log("info", "core_start")
     units = {"mind": Unit("mind"), "headroom": Unit("headroom"),
              "ollama": Unit("ollama"),
-             "connect_index": Unit("connect_index")}
+             "connect_index": Unit("connect_index"),
+             "daily_digest": Unit("daily_digest")}
     while True:
         try:
             check_mind(units["mind"])
             check_headroom(units["headroom"])
             check_ollama(units["ollama"])
             check_index(units["connect_index"])
+            check_digest(units["daily_digest"])
             write_health(units)
         except Exception as e:
             log("error", "core_cycle_error", error=str(e)[:200])
