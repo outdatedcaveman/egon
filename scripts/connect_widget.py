@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 CONNECT_URL = "http://127.0.0.1:8000/api/v1/mind/connect"
+SYNTH_URL = "http://127.0.0.1:8000/api/v1/mind/synthesize"
 DEFAULT_HOTKEY = "ctrl+alt+e"
 
 _SRC_ICON = {
@@ -95,6 +96,20 @@ def _connect_api(text: str) -> dict:
             return json.loads(r.read())
     except Exception as e:
         return {"status": "error", "error": f"mind not reachable ({e})"}
+
+
+def _synthesize_api(text: str) -> dict:
+    """Retrieval + local-LLM insight (qwen2.5:3b — small model, can take ~30s
+    on first call while it loads into RAM). Explicit user action only."""
+    try:
+        body = json.dumps({"text": text[:6000], "limit": 14}).encode()
+        req = urllib.request.Request(SYNTH_URL, data=body,
+                                     headers={"Content-Type": "application/json"},
+                                     method="POST")
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        return {"status": "error", "error": f"synthesis failed ({e})"}
 
 
 # ── overlay ──────────────────────────────────────────────────────────────────
@@ -255,11 +270,29 @@ class ResultPanel(QFrame):
         self._text.setPlaceholderText("recognized text appears here — edit it and re-ask")
         v.addWidget(self._text)
 
-        ask = QPushButton("Ask again with this text")
+        btnrow = QHBoxLayout(); btnrow.setSpacing(6)
+        ask = QPushButton("Ask again")
         ask.setStyleSheet("QPushButton{background:#D4A24C; color:#0E2630; border:none;"
                           "border-radius:6px; padding:6px; font-weight:700;}")
         ask.clicked.connect(self._re_ask)
-        v.addWidget(ask)
+        btnrow.addWidget(ask, 1)
+        syn = QPushButton("🧠 Synthesize")
+        syn.setToolTip("Local LLM (qwen2.5:3b) reads the matches and tells you "
+                       "what connects, what contradicts, what to open first. "
+                       "Runs on your machine; first call loads the model (~30s).")
+        syn.setStyleSheet("QPushButton{background:#7BC5C7; color:#0E2630; border:none;"
+                          "border-radius:6px; padding:6px; font-weight:700;}")
+        syn.clicked.connect(self._synthesize)
+        btnrow.addWidget(syn, 1)
+        v.addLayout(btnrow)
+
+        self._insight = QLabel("")
+        self._insight.setWordWrap(True)
+        self._insight.setVisible(False)
+        self._insight.setStyleSheet(
+            "color:#F0E9D5; background:#143038; border:1px solid #7BC5C7;"
+            "border-radius:6px; padding:8px; font-size:12px;")
+        v.addWidget(self._insight)
 
         self._scroll = QScrollArea(); self._scroll.setWidgetResizable(True)
         self._scroll.setStyleSheet("QScrollArea{border:1px solid #1F4858; border-radius:6px; background:transparent;}")
@@ -297,6 +330,38 @@ class ResultPanel(QFrame):
             self._list.insertWidget(i, self._row(c))
 
     # — internals —
+    def _synthesize(self):
+        text = self._text.toPlainText().strip()
+        if len(text) < 3:
+            return
+        self._insight.setVisible(True)
+        self._insight.setText("🧠 thinking… (first call loads the model, ~30s)")
+        self._status.setText("synthesizing…")
+
+        def work():
+            res = _synthesize_api(text)
+            QTimer.singleShot(0, lambda: self._render_synthesis(res))
+        threading.Thread(target=work, daemon=True, name="connect-synth").start()
+
+    def _render_synthesis(self, res: dict):
+        syn = (res or {}).get("synthesis") or {}
+        if res.get("status") == "ok" and syn.get("status") == "ok":
+            self._insight.setText("🧠 " + syn.get("insight", ""))
+            self._status.setText(f"{res.get('mode','')} · synthesized ({syn.get('model','')})")
+            # refresh the list too — synthesize re-ran retrieval
+            self.render_result_keep_insight(res)
+        else:
+            err = syn.get("error") or res.get("error") or "synthesis unavailable"
+            self._insight.setText("🧠 " + str(err))
+            self._status.setText("")
+
+    def render_result_keep_insight(self, res: dict):
+        keep = self._insight.text()
+        visible = self._insight.isVisible()
+        self.render_result(res)
+        self._insight.setText(keep)
+        self._insight.setVisible(visible)
+
     def _re_ask(self):
         text = self._text.toPlainText().strip()
         if len(text) < 3:

@@ -41,7 +41,7 @@ _ROOT = Path(__file__).resolve().parent.parent.parent
 _DB_PATH = _ROOT / "state" / "mind.db"
 _DB_LOCK = threading.RLock()
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = [
     "PRAGMA journal_mode = WAL",
@@ -96,7 +96,8 @@ _SCHEMA = [
         ease_factor REAL NOT NULL DEFAULT 2.5,
         repetitions INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        superseded_by_memory_id INTEGER REFERENCES memory(id)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_memory_kind ON memory (kind)",
     "CREATE INDEX IF NOT EXISTS idx_memory_updated ON memory (updated_at)",
@@ -175,6 +176,8 @@ def _init_db() -> None:
                 cur.execute("ALTER TABLE memory ADD COLUMN ease_factor REAL NOT NULL DEFAULT 2.5")
             if "repetitions" not in cols:
                 cur.execute("ALTER TABLE memory ADD COLUMN repetitions INTEGER NOT NULL DEFAULT 0")
+            if "superseded_by_memory_id" not in cols:
+                cur.execute("ALTER TABLE memory ADD COLUMN superseded_by_memory_id INTEGER REFERENCES memory(id)")
 
             v = cur.execute("PRAGMA user_version").fetchone()[0]
             if v < SCHEMA_VERSION:
@@ -412,6 +415,8 @@ async def mind_memory_upsert(req: Request):
         related = body.get("related_memory_ids") or []
         if isinstance(related, list):
             related = ",".join(str(x) for x in related)
+        superseded_by = body.get("superseded_by_memory_id")
+        supersedes_id = body.get("supersedes_memory_id")
         with _DB_LOCK:
             conn = _connect()
             try:
@@ -419,19 +424,23 @@ async def mind_memory_upsert(req: Request):
                     conn.execute(
                         """UPDATE memory SET kind=?, content=?, tags=?,
                            attribution_agent_id=?, attribution_session_id=?,
-                           related_memory_ids=?, updated_at=? WHERE id=?""",
+                           related_memory_ids=?, superseded_by_memory_id=?, updated_at=? WHERE id=?""",
                         (kind, content, tags, a_agent, a_session,
-                         related, _now(), mid))
+                         related, superseded_by, _now(), mid))
                     out_id = mid
                 else:
                     cur = conn.execute(
                         """INSERT INTO memory (kind, content, tags,
                            attribution_agent_id, attribution_session_id,
-                           related_memory_ids, created_at, updated_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                           related_memory_ids, superseded_by_memory_id, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (kind, content, tags, a_agent, a_session,
-                         related, _now(), _now()))
+                         related, superseded_by, _now(), _now()))
                     out_id = cur.lastrowid
+                if supersedes_id:
+                    conn.execute(
+                        "UPDATE memory SET superseded_by_memory_id = ?, updated_at = ? WHERE id = ?",
+                        (out_id, _now(), supersedes_id))
             finally:
                 conn.close()
         return {"status": "ok", "id": out_id}
@@ -443,9 +452,12 @@ async def mind_memory_upsert(req: Request):
 def mind_memory_search(kind: str | None = None,
                        tags: str | None = None,
                        q: str | None = None,
+                       include_superseded: bool = False,
                        limit: int = 50):
     try:
         sql = "SELECT * FROM memory WHERE 1=1"
+        if not include_superseded:
+            sql += " AND superseded_by_memory_id IS NULL"
         params: list = []
         if kind:
             sql += " AND kind = ?"
@@ -492,6 +504,7 @@ def mind_memory_recall():
                 # Find oldest due card (either never reviewed, or current time is past due date)
                 sql = """SELECT * FROM memory 
                          WHERE (kind = 'fact' OR kind = 'concept') 
+                           AND superseded_by_memory_id IS NULL
                            AND (last_reviewed IS NULL OR ? >= last_reviewed + interval_days * 86400)
                          ORDER BY last_reviewed ASC, created_at ASC LIMIT 1"""
                 row = conn.execute(sql, (now_ts,)).fetchone()
@@ -501,6 +514,7 @@ def mind_memory_recall():
                 if not row:
                     sql_fb = """SELECT * FROM memory 
                                 WHERE (kind = 'fact' OR kind = 'concept') 
+                                  AND superseded_by_memory_id IS NULL
                                 ORDER BY RANDOM() LIMIT 1"""
                     row = conn.execute(sql_fb).fetchone()
                     if row:
@@ -699,6 +713,34 @@ async def mind_connect(req: Request):
             text=str(body.get("text") or ""),
             limit=int(body.get("limit") or 18),
         )
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.post("/api/v1/mind/synthesize")
+async def mind_synthesize(req: Request):
+    """Retrieval → answer. POST {"text": …} runs the Connection Engine, then a
+    local LLM (Ollama qwen2.5:3b by default, see lib/synthesis.py) produces one
+    grounded insight: strongest connection, tensions, what to open first.
+    Returns the insight AND the connections. Only ever called on an explicit
+    user action — synthesis is never automatic. Bruno 2026-06-12 (#2 of the
+    strategy order: close the loop from links to answers)."""
+    try:
+        body = await req.json()
+        text = str(body.get("text") or "")
+        from lib.connection_engine import connect as _ce
+        conn_res = _ce(text, limit=int(body.get("limit") or 14))
+        if conn_res.get("status") != "ok":
+            return conn_res
+        from lib.synthesis import synthesize as _syn
+        syn = _syn(text, conn_res.get("connections") or [])
+        return {
+            "status": "ok",
+            "mode": conn_res.get("mode"),
+            "terms": conn_res.get("terms"),
+            "connections": conn_res.get("connections"),
+            "synthesis": syn,      # {"status":"ok","insight":…} or "unavailable"
+        }
     except Exception as e:
         return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
