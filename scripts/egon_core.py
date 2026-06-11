@@ -51,6 +51,8 @@ RESTART_BACKOFF_S = 120          # per-unit: at most one restart per 2 min
 
 MIND_STATS = "http://127.0.0.1:8000/api/v1/mind/stats"
 HEADROOM_HEALTH = "http://127.0.0.1:8787/health"
+OLLAMA_TAGS = "http://127.0.0.1:11434/api/tags"
+OLLAMA_EXE = Path(r"C:/Users/bruno/AppData/Local/Programs/Ollama/ollama.exe")
 
 
 def log(level: str, event: str, **kw) -> None:
@@ -132,6 +134,31 @@ def check_headroom(u: Unit) -> None:
         log("error", "headroom_start_failed", error=str(e)[:160])
 
 
+def check_ollama(u: Unit) -> None:
+    """Keep the local synthesis brain (Ollama, qwen2.5:3b) serving. The model
+    itself loads on demand and auto-unloads when idle, so a running server
+    costs almost nothing. Bruno 2026-06-12 (#2: retrieval → answers)."""
+    ok, _ = _http_ok(OLLAMA_TAGS, timeout=2.5)
+    u.ok = ok
+    u.detail = "serving" if ok else "down"
+    if u.ok or not u.can_restart():
+        return
+    if not OLLAMA_EXE.exists():
+        u.detail = "ollama not installed"
+        return
+    u.mark_restart()
+    log("warn", "ollama_down_restarting", attempt=u.restarts)
+    try:
+        subprocess.Popen(
+            [str(OLLAMA_EXE), "serve"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008
+                           | 0x08000000),
+        )
+    except Exception as e:
+        log("error", "ollama_spawn_failed", error=str(e)[:160])
+
+
 _index_building = False
 _index_last = 0.0
 
@@ -189,11 +216,13 @@ def main() -> int:
 
     log("info", "core_start")
     units = {"mind": Unit("mind"), "headroom": Unit("headroom"),
+             "ollama": Unit("ollama"),
              "connect_index": Unit("connect_index")}
     while True:
         try:
             check_mind(units["mind"])
             check_headroom(units["headroom"])
+            check_ollama(units["ollama"])
             check_index(units["connect_index"])
             write_health(units)
         except Exception as e:
