@@ -256,6 +256,31 @@ def cmd_stop() -> int:
     _post("/sessions/end",
           {"session_id": sid, "summary": str(summary)[:2000] if summary else None,
            "ended_at": int(time.time())})
+    # Durable-memory coverage (Bruno 2026-06-12, discipline → 90%): the audit
+    # flags sessions that end without durable memory. Sessions that did real
+    # work (token turns ingested) now auto-leave an attributed note, so future
+    # agents can recall what happened even when the agent forgot to write one
+    # explicitly. Cheap, programmatic, 0 LLM tokens.
+    if ledger_rows and summary:
+        try:
+            agent_id = None
+            reg = _post("/agents/register",
+                        {"name": AGENT_NAME, "kind": "ide-agent"})
+            if reg and reg.get("id"):
+                agent_id = reg["id"]
+            project = _project_from_cwd(event.get("cwd"))
+            _post("/memory", {
+                "kind": "note",
+                "content": (f"[auto session summary] {AGENT_NAME}"
+                            + (f" on {project}" if project else "")
+                            + f": {str(summary)[:900]}"),
+                "tags": ",".join(filter(None,
+                    ["auto-summary", AGENT_NAME, project])),
+                "attribution_agent_id": agent_id,
+                "attribution_session_id": sid,
+            })
+        except Exception:
+            pass
     # Release all leases for this session
     _post("/files/release", {"session_id": sid})
     return 0

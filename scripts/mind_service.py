@@ -91,6 +91,23 @@ def main() -> int:
     if _mind_ready():
         _log("info", "already_running")
         return 0
+
+    try:
+        from lib.single_instance_mutex import claim_or_exit
+        claimed = claim_or_exit("Egon-Mind-Service-2026-06")
+    except Exception:
+        claimed = True
+    if not claimed:
+        _log("info", "singleton_already_claimed")
+        if _wait_ready(timeout_s=25.0):
+            _log("info", "singleton_peer_ready")
+            return 0
+        if _port_open():
+            _log("warn", "singleton_peer_port_busy_without_mind")
+            return 2
+        _log("warn", "singleton_peer_not_ready")
+        return 2
+
     if _port_open() and not _mind_ready():
         _log("warn", "port_8000_busy_without_mind")
         return 2
@@ -113,6 +130,25 @@ def main() -> int:
         lifespan="on",
     )
     server = uvicorn.Server(config)
+
+    # Mobile Connect (strategy #4): a SEPARATE tiny token-guarded app on the
+    # LAN (0.0.0.0:8765) so Bruno's phone can paste text and get connections +
+    # synthesis. The full mind API above stays loopback-only — only /m,
+    # /m/connect and /m/synthesize are exposed, all requiring the secret token
+    # from egon-config.json. See lib/mobile_connect.py.
+    try:
+        from lib.mobile_connect import build_app, write_url_file, MOBILE_PORT
+        m_cfg = uvicorn.Config(build_app(), host="0.0.0.0", port=MOBILE_PORT,
+                               log_config=None, log_level="warning",
+                               access_log=False)
+        m_srv = uvicorn.Server(m_cfg)
+        threading.Thread(target=m_srv.run, name="egon-mobile-uvicorn",
+                         daemon=True).start()
+        url = write_url_file()
+        _log("info", "mobile_connect_up", port=MOBILE_PORT, url=url)
+    except Exception as e:
+        _log("warn", "mobile_connect_failed",
+             error=f"{type(e).__name__}: {str(e)[:200]}")
 
     def _run() -> None:
         try:
