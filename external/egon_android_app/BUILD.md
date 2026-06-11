@@ -27,3 +27,33 @@ allow`). Tap bubble -> compact WebView Connect panel over the current app;
 Build gotchas added: no lambdas with -source 8 against android.jar (use
 anonymous classes); feed d8 a classes.jar (shell eats the $1 in inner-class
 filenames if passed individually).
+
+## v1.2 — bubble reads the whole screen (2026-06-11)
+The bubble now CAPTURES the current screen's text on tap and auto-searches —
+no copy/paste. Implemented with an **AccessibilityService** (EgonA11yService):
+reads the foreground app's text node tree (text + contentDescription), passes
+it to the mobile page as `&shared=` which auto-runs /m/connect. Text only — no
+screenshot, no OCR; nothing leaves the LAN.
+
+Enable over adb (NO user prompt needed), order matters on Android 13+:
+```
+# 1. lift the "Restricted settings" block that silently reverts a11y grants
+#    for sideloaded apps (else `settings put` reads back null):
+adb shell appops set org.brunosaramago.egonconnect ACCESS_RESTRICTED_SETTINGS allow
+# 2. enable the service (append to existing list with ':' — don't clobber):
+adb shell settings put secure enabled_accessibility_services \
+  org.brunosaramago.egonconnect/org.brunosaramago.egonconnect.EgonA11yService
+adb shell settings put secure accessibility_enabled 1
+```
+Gotchas:
+- `getRootInActiveWindow()` returns the accessibility/input-focused window,
+  which is often a STALE background app (first test captured a backgrounded
+  WhatsApp voice button instead of Chrome). Fixed by enumerating `getWindows()`
+  and taking the focused TYPE_APPLICATION window that isn't our own package,
+  falling back to the largest. Requires `flagRetrieveInteractiveWindows` in the
+  service config (res/xml/egon_a11y.xml).
+- Build now compiles resources: `aapt2 compile --dir app/res -o out/res.zip`
+  then pass `out/res.zip` to `aapt2 link` (needed for @xml/egon_a11y +
+  @string). No R.java required (Java doesn't reference resources).
+- A11y enablement survives `install -r`; SYSTEM_ALERT_WINDOW + restricted-
+  settings appops also persist, but reassert them after install to be safe.
