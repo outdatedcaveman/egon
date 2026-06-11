@@ -5,9 +5,11 @@
 ' screenshots, no OCR) and queries the local mind's Connection Engine
 ' (POST 127.0.0.1:8000/api/v1/mind/connect, semantic index).
 '
-' Global hotkey once running: Ctrl+Alt+Space — capture what you're
-' reading/writing anywhere (Word, editors, PDFs, browsers) and surface
-' connections from your archives in an always-on-top panel.
+' Global hotkey once running: Ctrl+Alt+E — freezes the screen into a dimmed
+' overlay; drag to select any region (Circle-to-Search style). The region is
+' OCR'd with Windows' built-in engine and connected to your archives.
+' Enter/double-click = whole screen. Esc = cancel.
+' Hotkey configurable in egon-config.json: {"connect_widget":{"hotkey":"..."}}
 '
 ' Runs hidden via pythonw (no console window). Double-click to start.
 ' To auto-start at login, copy this file into:

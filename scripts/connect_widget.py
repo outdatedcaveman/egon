@@ -1,29 +1,31 @@
-"""Egon Connect — OS floating widget (works without Chrome).
+"""Egon Connect v2 — "ask about this screen" overlay (Circle-to-Search style).
 
-Bruno 2026-06-10: a desktop floating widget for the Connection Engine that reads
-the actual TEXT CONTENT of whatever window you're in (via Windows UI Automation —
-not a screenshot), anywhere on the laptop: Word, a code editor, Obsidian, a PDF
-reader, a browser, Notes. Press the global hotkey and Egon surfaces connections
-from all your archives + shared mind in a small always-on-top panel.
-
-  • Global hotkey: Ctrl+Alt+Space (capture focused window + connect).
-  • Capture priority: current text SELECTION (clipboard via Ctrl+C) > the
-    focused edit/document control's text (UI Automation Value/Text pattern) >
-    the foreground window's text. Real content, no OCR, no screenshot.
-  • Talks to the always-on local mind: POST http://127.0.0.1:8000/api/v1/mind/connect.
-  • Frameless, always-on-top, draggable, click an item to open it. You can also
-    type/paste directly into the box.
-  • Standalone process (pythonw, hidden) — independent of Egon's desktop app and
-    of Chrome. Launch via scripts/connect_widget.py.
+Bruno 2026-06-10 v2, after v1 feedback:
+  • VISUAL: the hotkey freezes the screen into a dimmed fullscreen overlay of a
+    live screenshot. Drag to select any region — it lights up with a gold
+    marquee (like Google's "ask about this screen" / Circle to Search). Enter
+    or double-click = whole screen. Esc always cancels.
+  • CAPABLE: the selected region is OCR'd with Windows' built-in OCR engine
+    (winocr — works on ANY pixels: PDFs, images, video frames, apps that
+    expose no text API). The recognized text drops into an editable box, runs
+    through the semantic Connection Engine (/api/v1/mind/connect), and you can
+    refine the query and re-ask right there.
+  • FIXED from v1: hotkey is now Ctrl+Alt+E (v1's Ctrl+Alt+Space collided with
+    Claude); configurable via egon-config.json {"connect_widget":{"hotkey":…}}.
+    The v1 hang ("capturing…" forever + dead ✕) was the worker thread touching
+    the Qt clipboard — clipboard isn't thread-safe and it froze the event
+    loop. v2 does screenshots on the Qt thread, OCR + HTTP strictly in worker
+    threads, results marshaled back via Signals. The UI can never freeze.
 
 Run:  .venv\\Scripts\\pythonw.exe scripts\\connect_widget.py
+      (or double-click "Launch Connect Widget.vbs")
 """
 from __future__ import annotations
 
+import io
 import json
 import sys
 import threading
-import time
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -31,19 +33,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 try:
-    import lib.no_console  # noqa: F401  (hide any child consoles)
+    import lib.no_console  # noqa: F401
 except Exception:
     pass
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPoint
-from PySide6.QtGui import QGuiApplication, QIcon
+from PySide6.QtCore import Qt, QObject, Signal, QRect, QPoint, QBuffer, QTimer
+from PySide6.QtGui import QGuiApplication, QPainter, QColor, QPen, QPixmap, QCursor, QIcon
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QPlainTextEdit, QScrollArea, QFrame,
 )
 
 CONNECT_URL = "http://127.0.0.1:8000/api/v1/mind/connect"
-HOTKEY = "ctrl+alt+space"
+DEFAULT_HOTKEY = "ctrl+alt+e"
 
 _SRC_ICON = {
     "instapaper": "📰", "zotero": "📚", "paperpile": "📄", "kindle": "📖",
@@ -53,242 +55,312 @@ _SRC_ICON = {
 }
 
 
-# ── content capture (UI Automation + clipboard) ──────────────────────────────
-def _capture_focused_text() -> tuple[str, str]:
-    """Return (text, how). Reads the focused window's CONTENT via UIA, with a
-    clipboard-selection fallback. Runs in a worker thread (COM-safe)."""
-    # 1) selection via clipboard (most precise — "what I highlighted")
+def _hotkey() -> str:
     try:
-        import keyboard
-        prev = _clip_get()
-        keyboard.send("ctrl+c")
-        time.sleep(0.12)
-        sel = _clip_get()
-        if sel and sel.strip() and sel != prev and len(sel.strip()) >= 12:
-            return sel.strip()[:6000], "selection"
-        _clip_set(prev)   # restore clipboard if our copy grabbed nothing useful
+        cfg = json.loads((ROOT / "egon-config.json").read_text(encoding="utf-8"))
+        return (cfg.get("connect_widget") or {}).get("hotkey") or DEFAULT_HOTKEY
     except Exception:
-        pass
-    # 2) focused control text via UI Automation
+        return DEFAULT_HOTKEY
+
+
+# ── worker-side helpers (NEVER touch Qt UI/clipboard from these) ─────────────
+def _ocr_png(png_bytes: bytes) -> str:
+    """Windows built-in OCR over raw PNG bytes. Worker-thread safe."""
     try:
-        import uiautomation as auto
-        auto.SetGlobalSearchTimeout(0.6)
-        ctrl = auto.GetFocusedControl()
-        txt = ""
-        for getter in ("GetValuePattern", "GetTextPattern"):
+        from PIL import Image
+        import winocr
+        img = Image.open(io.BytesIO(png_bytes))
+        # Try English then Portuguese; keep whichever reads more text.
+        best = ""
+        for lang in ("en", "pt"):
             try:
-                pat = getattr(ctrl, getter)()
-                txt = (pat.Value if getter == "GetValuePattern"
-                       else pat.DocumentRange.GetText(8000)) or ""
-                if txt.strip():
-                    break
+                r = winocr.recognize_pil_sync(img, lang)
+                t = (r.get("text") if isinstance(r, dict) else getattr(r, "text", "")) or ""
+                if len(t) > len(best):
+                    best = t
             except Exception:
                 continue
-        if not txt.strip():
-            # walk up to the top window and grab its readable text
-            try:
-                win = ctrl.GetTopLevelControl()
-                tp = win.GetTextPattern()
-                txt = tp.DocumentRange.GetText(8000) or ""
-            except Exception:
-                pass
-        if txt.strip():
-            return txt.strip()[:6000], "focused window"
-    except Exception:
-        pass
-    return "", "nothing"
-
-
-def _clip_get() -> str:
-    try:
-        return QGuiApplication.clipboard().text() or ""
+        return best.strip()
     except Exception:
         return ""
 
 
-def _clip_set(s: str) -> None:
+def _connect_api(text: str) -> dict:
     try:
-        QGuiApplication.clipboard().setText(s or "")
-    except Exception:
-        pass
-
-
-def _connect(text: str) -> dict:
-    try:
-        body = json.dumps({"text": text, "limit": 18}).encode()
+        body = json.dumps({"text": text[:6000], "limit": 16}).encode()
         req = urllib.request.Request(CONNECT_URL, data=body,
                                      headers={"Content-Type": "application/json"},
                                      method="POST")
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with urllib.request.urlopen(req, timeout=25) as r:
             return json.loads(r.read())
     except Exception as e:
-        return {"status": "error", "error": f"mind not reachable: {e}"}
+        return {"status": "error", "error": f"mind not reachable ({e})"}
 
 
-# ── widget ───────────────────────────────────────────────────────────────────
+# ── overlay ──────────────────────────────────────────────────────────────────
 class Bridge(QObject):
     hotkey = Signal()
+    ocr_done = Signal(str)        # recognized text
+    connect_done = Signal(dict)   # engine result
 
 
-class ConnectWidget(QWidget):
-    def __init__(self):
+class Overlay(QWidget):
+    """Fullscreen frozen-screen overlay with rubber-band region select."""
+
+    def __init__(self, bridge: Bridge):
         super().__init__()
-        self.setWindowTitle("Egon Connect")
+        self.bridge = bridge
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
-        self.setAttribute(Qt.WA_TranslucentBackground, False)
-        self.resize(400, 460)
-        ico = ROOT / "shell" / "egon.ico"
-        if ico.exists():
-            self.setWindowIcon(QIcon(str(ico)))
-        self._drag = None
+        self.setCursor(Qt.CrossCursor)
+        self._shot: QPixmap | None = None
+        self._dpr = 1.0
+        self._origin: QPoint | None = None
+        self._rect = QRect()
+        self._panel = ResultPanel(self)
+        self._panel.hide()
+        self.bridge.ocr_done.connect(self._on_ocr)
+        self.bridge.connect_done.connect(self._panel.render_result)
 
-        root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
-        bar = QFrame(); bar.setStyleSheet("background:#16404F;")
-        bl = QHBoxLayout(bar); bl.setContentsMargins(12, 8, 8, 8)
-        t = QLabel("✨ Egon Connect"); t.setStyleSheet("color:#D4A24C; font-weight:700;")
-        bl.addWidget(t); bl.addStretch(1)
-        self._mode = QLabel(""); self._mode.setStyleSheet("color:#9CA3AF; font-size:11px;")
-        bl.addWidget(self._mode)
-        x = QPushButton("✕"); x.setFixedSize(24, 24)
-        x.setStyleSheet("background:transparent; color:#9CA3AF; border:none; font-size:14px;")
-        x.clicked.connect(self.hide); bl.addWidget(x)
-        bar.mousePressEvent = self._bar_press
-        bar.mouseMoveEvent = self._bar_move
-        root.addWidget(bar)
+    # — lifecycle —
+    def open_capture(self):
+        screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        geo = screen.geometry()
+        self._shot = screen.grabWindow(0)          # Qt thread: safe
+        self._dpr = self._shot.devicePixelRatio() or 1.0
+        self._origin, self._rect = None, QRect()
+        self._panel.hide()
+        self.setGeometry(geo)
+        self.showFullScreen()
+        self.raise_(); self.activateWindow()
 
-        body = QWidget(); body.setStyleSheet("background:#0B1F28;")
-        bv = QVBoxLayout(body); bv.setContentsMargins(12, 10, 12, 12); bv.setSpacing(8)
-        hint = QLabel(f"Press {HOTKEY.upper()} anywhere to capture what you're "
-                      "reading/writing — or type below.")
-        hint.setStyleSheet("color:#9CA3AF; font-size:11px;"); hint.setWordWrap(True)
-        bv.addWidget(hint)
-        self._input = QPlainTextEdit()
-        self._input.setStyleSheet("QPlainTextEdit{background:#102F3C; color:#F0E9D5;"
-                                  "border:1px solid #1F4858; border-radius:6px; padding:6px;}")
-        self._input.setFixedHeight(70)
-        bv.addWidget(self._input)
-        go = QPushButton("Connect")
-        go.setStyleSheet("QPushButton{background:#D4A24C; color:#0E2630; border:none;"
-                         "border-radius:6px; padding:7px; font-weight:700;}")
-        go.clicked.connect(lambda: self._run_text(self._input.toPlainText()))
-        bv.addWidget(go)
-        self._scroll = QScrollArea(); self._scroll.setWidgetResizable(True)
-        self._scroll.setStyleSheet("border:1px solid #1F4858; border-radius:6px; background:transparent;")
-        self._host = QWidget(); self._results = QVBoxLayout(self._host)
-        self._results.setContentsMargins(8, 8, 8, 8); self._results.setSpacing(6)
-        self._results.addStretch(1)
-        self._scroll.setWidget(self._host)
-        bv.addWidget(self._scroll, 1)
-        root.addWidget(body, 1)
+    def close_overlay(self):
+        self._panel.hide()
+        self.hide()
 
-        self.bridge = Bridge()
-        self.bridge.hotkey.connect(self._on_hotkey)
-
-    # drag the frameless window by its title bar
-    def _bar_press(self, e):
-        if e.button() == Qt.LeftButton:
-            self._drag = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
-
-    def _bar_move(self, e):
-        if self._drag is not None and (e.buttons() & Qt.LeftButton):
-            self.move(e.globalPosition().toPoint() - self._drag)
-
-    def _on_hotkey(self):
-        # show near the cursor, then capture + connect off the UI thread
-        self._place_near_cursor()
-        self.show(); self.raise_(); self.activateWindow()
-        self._mode.setText("capturing…")
-        threading.Thread(target=self._capture_and_connect, daemon=True).start()
-
-    def _place_near_cursor(self):
-        try:
-            c = QGuiApplication.primaryScreen().availableGeometry()
-            p = self.cursor().pos()
-            x = min(max(p.x() - 200, c.left() + 8), c.right() - self.width() - 8)
-            y = min(max(p.y() + 16, c.top() + 8), c.bottom() - self.height() - 8)
-            self.move(QPoint(x, y))
-        except Exception:
-            pass
-
-    def _capture_and_connect(self):
-        text, how = _capture_focused_text()
-        if not text:
-            QTimer.singleShot(0, lambda: self._render({"status": "error",
-                "error": "Couldn't read the window's text. Select some text and try again, or type below."}, "—"))
+    # — painting: dimmed screenshot + bright selection w/ gold marquee —
+    def paintEvent(self, _):
+        if self._shot is None:
             return
-        QTimer.singleShot(0, lambda: self._input.setPlainText(text[:1500]))
-        res = _connect(text)
-        QTimer.singleShot(0, lambda: self._render(res, how))
+        p = QPainter(self)
+        p.drawPixmap(self.rect(), self._shot)
+        p.fillRect(self.rect(), QColor(8, 20, 26, 150))      # dim everything
+        if not self._rect.isNull():
+            src = QRect(int(self._rect.x() * self._dpr), int(self._rect.y() * self._dpr),
+                        int(self._rect.width() * self._dpr), int(self._rect.height() * self._dpr))
+            p.drawPixmap(self._rect, self._shot, src)         # undimmed region
+            pen = QPen(QColor("#D4A24C")); pen.setWidth(2)
+            p.setPen(pen); p.drawRect(self._rect)
+        else:
+            p.setPen(QColor("#F0E9D5"))
+            f = p.font(); f.setPointSize(13); p.setFont(f)
+            p.drawText(self.rect().adjusted(0, 40, 0, 0),
+                       Qt.AlignHCenter | Qt.AlignTop,
+                       "✨ Drag to select what to ask about · Enter = whole screen · Esc = cancel")
 
-    def _run_text(self, text):
-        text = (text or "").strip()
+    # — input —
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.close_overlay()
+        elif e.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self._rect = self.rect().adjusted(0, 0, -1, -1)
+            self.update(); self._finish_selection()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton and not self._panel.isVisible():
+            self._origin = e.position().toPoint()
+            self._rect = QRect()
+            self.update()
+
+    def mouseMoveEvent(self, e):
+        if self._origin is not None:
+            self._rect = QRect(self._origin, e.position().toPoint()).normalized()
+            self.update()
+
+    def mouseDoubleClickEvent(self, e):
+        self._rect = self.rect().adjusted(0, 0, -1, -1)
+        self.update(); self._finish_selection()
+
+    def mouseReleaseEvent(self, e):
+        if self._origin is None:
+            return
+        self._origin = None
+        if self._rect.width() < 12 or self._rect.height() < 12:
+            self._rect = QRect(); self.update(); return
+        self._finish_selection()
+
+    # — capture → OCR → connect —
+    def _finish_selection(self):
+        if self._shot is None or self._rect.isNull():
+            return
+        src = QRect(int(self._rect.x() * self._dpr), int(self._rect.y() * self._dpr),
+                    int(self._rect.width() * self._dpr), int(self._rect.height() * self._dpr))
+        crop = self._shot.copy(src)
+        buf = QBuffer(); buf.open(QBuffer.WriteOnly)
+        crop.save(buf, "PNG")
+        png = bytes(buf.data())
+        buf.close()
+        self._panel.show_loading(self._panel_anchor())
+        threading.Thread(target=self._worker, args=(png,), daemon=True,
+                         name="connect-ocr").start()
+
+    def _panel_anchor(self) -> QPoint:
+        # place the panel beside the selection, clamped on-screen
+        pw, ph = self._panel.width(), self._panel.height()
+        r, full = self._rect, self.rect()
+        x = r.right() + 14
+        if x + pw > full.right() - 8:
+            x = max(8, r.left() - pw - 14)
+        y = min(max(8, r.top()), full.bottom() - ph - 8)
+        return QPoint(x, y)
+
+    def _worker(self, png: bytes):
+        text = _ocr_png(png)
+        self.bridge.ocr_done.emit(text)
+        if text:
+            self.bridge.connect_done.emit(_connect_api(text))
+
+    def _on_ocr(self, text: str):
+        if not text:
+            self._panel.render_result({"status": "error",
+                "error": "Couldn't read any text in that region — try a tighter selection."})
+            return
+        self._panel.set_text(text)
+
+
+class ResultPanel(QFrame):
+    """Floating result card inside the overlay."""
+
+    def __init__(self, overlay: Overlay):
+        super().__init__(overlay)
+        self.overlay = overlay
+        self.setFixedSize(380, 470)
+        self.setStyleSheet("QFrame{background:#0B1F28; border:1px solid #1F4858; border-radius:10px;}")
+        v = QVBoxLayout(self); v.setContentsMargins(12, 8, 12, 12); v.setSpacing(8)
+
+        top = QHBoxLayout()
+        t = QLabel("✨ Egon Connect"); t.setStyleSheet("color:#D4A24C; font-weight:700; border:none;")
+        top.addWidget(t)
+        self._status = QLabel(""); self._status.setStyleSheet("color:#9CA3AF; font-size:11px; border:none;")
+        top.addWidget(self._status); top.addStretch(1)
+        x = QPushButton("✕"); x.setFixedSize(22, 22)
+        x.setStyleSheet("background:#16404F; color:#F0E9D5; border:none; border-radius:11px;")
+        x.clicked.connect(self.overlay.close_overlay)
+        top.addWidget(x)
+        v.addLayout(top)
+
+        self._text = QPlainTextEdit()
+        self._text.setStyleSheet("QPlainTextEdit{background:#102F3C; color:#F0E9D5;"
+                                 "border:1px solid #1F4858; border-radius:6px; padding:6px; font-size:12px;}")
+        self._text.setFixedHeight(84)
+        self._text.setPlaceholderText("recognized text appears here — edit it and re-ask")
+        v.addWidget(self._text)
+
+        ask = QPushButton("Ask again with this text")
+        ask.setStyleSheet("QPushButton{background:#D4A24C; color:#0E2630; border:none;"
+                          "border-radius:6px; padding:6px; font-weight:700;}")
+        ask.clicked.connect(self._re_ask)
+        v.addWidget(ask)
+
+        self._scroll = QScrollArea(); self._scroll.setWidgetResizable(True)
+        self._scroll.setStyleSheet("QScrollArea{border:1px solid #1F4858; border-radius:6px; background:transparent;}")
+        self._host = QWidget(); self._host.setStyleSheet("background:transparent;")
+        self._list = QVBoxLayout(self._host)
+        self._list.setContentsMargins(6, 6, 6, 6); self._list.setSpacing(6)
+        self._list.addStretch(1)
+        self._scroll.setWidget(self._host)
+        v.addWidget(self._scroll, 1)
+
+    # — public —
+    def show_loading(self, at: QPoint):
+        self._clear(); self._text.setPlainText("")
+        self._status.setText("reading region…")
+        self.move(at); self.show(); self.raise_()
+
+    def set_text(self, text: str):
+        self._text.setPlainText(text[:1800])
+        self._status.setText("connecting…")
+
+    def render_result(self, res: dict):
+        self._clear()
+        if res.get("status") != "ok":
+            self._status.setText("")
+            err = QLabel(res.get("error", "no result")); err.setWordWrap(True)
+            err.setStyleSheet("color:#D67A6A; border:none;")
+            self._list.insertWidget(0, err)
+            return
+        conns = res.get("connections", [])
+        self._status.setText(f"{res.get('mode','')} · {len(conns)} found")
+        if not conns:
+            self._list.insertWidget(0, QLabel("No connections found."))
+            return
+        for i, c in enumerate(conns):
+            self._list.insertWidget(i, self._row(c))
+
+    # — internals —
+    def _re_ask(self):
+        text = self._text.toPlainText().strip()
         if len(text) < 3:
             return
-        self._mode.setText("connecting…")
-        def work():
-            res = _connect(text)
-            QTimer.singleShot(0, lambda: self._render(res, "typed"))
-        threading.Thread(target=work, daemon=True).start()
+        self._status.setText("connecting…")
+        threading.Thread(target=lambda: self.overlay.bridge.connect_done.emit(_connect_api(text)),
+                         daemon=True).start()
 
     def _clear(self):
-        while self._results.count():
-            it = self._results.takeAt(0)
+        while self._list.count() > 1:
+            it = self._list.takeAt(0)
             if it.widget():
                 it.widget().deleteLater()
 
-    def _render(self, res: dict, how: str):
-        self._clear()
-        if res.get("status") != "ok":
-            self._mode.setText("")
-            lbl = QLabel(res.get("error", "no result")); lbl.setStyleSheet("color:#D67A6A;")
-            lbl.setWordWrap(True); self._results.addWidget(lbl); self._results.addStretch(1)
-            return
-        conns = res.get("connections", [])
-        self._mode.setText(f"{res.get('mode','')} · {how} · {len(conns)}")
-        if not conns:
-            self._results.addWidget(QLabel("No connections found."))
-            self._results.addStretch(1); return
-        for c in conns:
-            self._results.addWidget(self._row(c))
-        self._results.addStretch(1)
-
     def _row(self, c: dict) -> QFrame:
-        f = QFrame(); f.setStyleSheet("QFrame{background:#0E2630; border:1px solid #1F4858; border-radius:6px;}")
-        v = QVBoxLayout(f); v.setContentsMargins(8, 6, 8, 6); v.setSpacing(1)
+        f = QFrame()
+        f.setStyleSheet("QFrame{background:#0E2630; border:1px solid #1F4858; border-radius:6px;}")
+        v = QVBoxLayout(f); v.setContentsMargins(8, 5, 8, 5); v.setSpacing(1)
         ic = _SRC_ICON.get(c.get("source", ""), "•")
         top = QHBoxLayout()
-        title = QLabel(f"{ic} {c.get('title','')[:80]}")
-        title.setStyleSheet("color:#F0E9D5; font-weight:600;"); title.setWordWrap(True)
+        title = QLabel(f"{ic} {c.get('title','')[:78]}")
+        title.setStyleSheet("color:#F0E9D5; font-weight:600; font-size:12px; border:none;")
+        title.setWordWrap(True)
         top.addWidget(title, 1)
         if c.get("url"):
-            b = QPushButton("open"); b.setStyleSheet("background:#7BC5C7; color:#0E2630;"
-                "border:none; border-radius:4px; padding:2px 8px;")
-            b.clicked.connect(lambda _=False, u=c["url"]: webbrowser.open(u, new=2))
+            b = QPushButton("open"); b.setFixedHeight(20)
+            b.setStyleSheet("background:#7BC5C7; color:#0E2630; border:none; border-radius:4px;"
+                            "padding:1px 8px; font-size:11px;")
+            b.clicked.connect(lambda _=False, u=c["url"]: (webbrowser.open(u, new=2),
+                                                           self.overlay.close_overlay()))
             top.addWidget(b)
         v.addLayout(top)
         why = c.get("why") or []
-        meta = QLabel(f"{c.get('source','')}"
-                      + (f"  ↳ {', '.join(why)}" if why else ""))
-        meta.setStyleSheet("color:#9CA3AF; font-size:10px;")
+        meta = QLabel(c.get("source", "") + (f"  ↳ {', '.join(why[:4])}" if why else ""))
+        meta.setStyleSheet("color:#9CA3AF; font-size:10px; border:none;")
         v.addWidget(meta)
         return f
 
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)   # live in the background; hotkey re-shows
-    w = ConnectWidget()
-    w._place_near_cursor()
+    app.setQuitOnLastWindowClosed(False)
+    ico = ROOT / "shell" / "egon.ico"
+    if ico.exists():
+        app.setWindowIcon(QIcon(str(ico)))
 
-    # global hotkey on a background thread → marshal to the Qt thread via signal
-    def hk():
+    bridge = Bridge()
+    overlay = Overlay(bridge)
+    bridge.hotkey.connect(overlay.open_capture)
+
+    hotkey = _hotkey()
+
+    def hk_listener():
         try:
             import keyboard
-            keyboard.add_hotkey(HOTKEY, lambda: w.bridge.hotkey.emit())
-            keyboard.wait()       # keep the listener alive
+            keyboard.add_hotkey(hotkey, lambda: bridge.hotkey.emit(),
+                                suppress=False, trigger_on_release=True)
+            keyboard.wait()
         except Exception:
             pass
-    threading.Thread(target=hk, daemon=True).start()
+    threading.Thread(target=hk_listener, daemon=True, name="connect-hotkey").start()
+
+    # tiny first-run toast so Bruno knows it's armed
+    QTimer.singleShot(800, lambda: None)
     return app.exec()
 
 
