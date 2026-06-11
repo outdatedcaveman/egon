@@ -401,6 +401,77 @@ class ResultPanel(QFrame):
         return f
 
 
+def _setup_tray(app, overlay) -> object | None:
+    """Ambient delivery surface (strategy #3 proactivity): tray icon that
+    toasts when the core publishes a new daily digest, with a menu to open the
+    digest, trigger a capture, or quit. The widget is always-on, so this works
+    with both Chrome and the Egon app closed."""
+    from PySide6.QtWidgets import QSystemTrayIcon, QMenu
+    from PySide6.QtGui import QAction
+    import os as _os
+    if not QSystemTrayIcon.isSystemTrayAvailable():
+        return None
+    tray = QSystemTrayIcon(app)
+    ico = ROOT / "shell" / "egon.ico"
+    if ico.exists():
+        tray.setIcon(QIcon(str(ico)))
+    tray.setToolTip("Egon Connect — Ctrl+Alt+E to ask about the screen")
+
+    digest_md = ROOT / "state" / "daily_digest.md"
+    digest_json = ROOT / "state" / "daily_digest.json"
+
+    def open_digest():
+        if digest_md.exists():
+            try:
+                _os.startfile(str(digest_md))
+            except Exception:
+                pass
+
+    menu = QMenu()
+    a1 = QAction("📰 Open daily digest"); a1.triggered.connect(open_digest)
+    a2 = QAction("✨ Capture screen (Ctrl+Alt+E)")
+    a2.triggered.connect(overlay.open_capture)
+    a3 = QAction("Quit Egon Connect"); a3.triggered.connect(app.quit)
+    for a in (a1, a2, a3):
+        menu.addAction(a)
+    tray.setContextMenu(menu)
+    tray._egon_actions = (a1, a2, a3)          # keep refs alive
+    tray.activated.connect(
+        lambda r: open_digest() if r == QSystemTrayIcon.ActivationReason.Trigger else None)
+    tray.show()
+
+    # toast once per NEW digest
+    state = {"last": None}
+    try:
+        state["last"] = json.loads(digest_json.read_text(encoding="utf-8")).get("date")
+    except Exception:
+        pass
+
+    def poll():
+        try:
+            d = json.loads(digest_json.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if d.get("date") and d["date"] != state["last"]:
+            state["last"] = d["date"]
+            n = len(d.get("proposals") or [])
+            w = len(d.get("agent_work_24h") or [])
+            try:
+                tray.showMessage("📰 Egon — your daily digest is ready",
+                                 f"{n} insight(s) · {w} agent update(s). "
+                                 "Click the tray icon to read.",
+                                 QSystemTrayIcon.MessageIcon.Information, 15000)
+            except Exception:
+                pass
+
+    timer = QTimer(tray)
+    timer.setInterval(5 * 60 * 1000)
+    timer.timeout.connect(poll)
+    timer.start()
+    QTimer.singleShot(10_000, poll)
+    return tray
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
@@ -411,6 +482,7 @@ def main() -> int:
     bridge = Bridge()
     overlay = Overlay(bridge)
     bridge.hotkey.connect(overlay.open_capture)
+    app._egon_tray = _setup_tray(app, overlay)   # keep ref alive
 
     hotkey = _hotkey()
 
