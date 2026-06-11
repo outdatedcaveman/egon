@@ -13,13 +13,15 @@ from egon_app import data
 from egon_app.theme import QSS
 from egon_app.pages import (
     HomePage, InboxPage, NavigationPage, LedgerPage, SyncPage, MemoryPage, SettingsPage,
-    ReferencesPage, MediaPage, SearchPage, MindPage, ProjectsPage, make_generic_page,
+    ReferencesPage, MediaPage, SearchPage, MindPage, ProjectsPage, ConnectPage,
+    make_generic_page,
 )
 
 
 # Nav definition: (slug, icon-char, label, is_ledger_emphasis)
 NAV = [
     ("home",       "🏠", "Home",           False),
+    ("connect",    "✨", "Connect",        False),
     ("inbox",      "📥", "Inbox",          False),
     ("artifacts",  "🗂", "Artifacts",      False),
     ("navigation", "🧭", "Navigation",     False),
@@ -231,6 +233,7 @@ class MainWindow(QMainWindow):
             "search":     SearchPage,
             "mind":       MindPage,
             "projects":   ProjectsPage,
+            "connect":    ConnectPage,
         }
         self._idx_slug: dict[int, str] = {}
         self._built_slugs: set[str] = set()

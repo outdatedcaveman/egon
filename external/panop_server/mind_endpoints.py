@@ -684,6 +684,25 @@ def mind_context_v2(project: str | None = None,
         return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
+@app.post("/api/v1/mind/connect")
+async def mind_connect(req: Request):
+    """Connection Engine: POST {"text": <what you're writing>, "limit": 18}
+    → ranked connections from Bruno's archives (Instapaper, Zotero, Paperpile,
+    Kindle, Letterboxd, YouTube, bookmarks, Notion, …) + durable mind memory,
+    each with provenance and the matched terms ("why"). 100% local, 0 LLM
+    tokens. Bruno 2026-06-06 — the "click a button while writing" surface.
+    Served by both the standalone mind service and Egon's in-process Panop."""
+    try:
+        body = await req.json()
+        from lib.connection_engine import connect as _connect_engine
+        return _connect_engine(
+            text=str(body.get("text") or ""),
+            limit=int(body.get("limit") or 18),
+        )
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
 @app.get("/api/v1/mind/stats")
 def mind_stats():
     """Dashboard counts. Used by the Mind tab in Egon's UI."""
