@@ -82,6 +82,65 @@ def _trace(msg: str) -> None:
         pass
 
 
+def _mind_ready(timeout_s: float = 2.0) -> bool:
+    try:
+        import urllib.request
+        with urllib.request.urlopen(
+            "http://127.0.0.1:8000/api/v1/mind/stats",
+            timeout=timeout_s,
+        ) as r:
+            return 200 <= int(getattr(r, "status", 0)) < 300
+    except Exception:
+        return False
+
+
+def _mind_service_python() -> str:
+    pyw = _ROOT / ".venv" / "Scripts" / "pythonw.exe"
+    if pyw.exists():
+        return str(pyw)
+    py = _ROOT / ".venv" / "Scripts" / "python.exe"
+    if py.exists():
+        return str(py)
+    return sys.executable
+
+
+def _start_mind_service(log_fn=None) -> bool:
+    if _mind_ready():
+        return True
+    script = _ROOT / "scripts" / "mind_service.py"
+    if not script.exists():
+        if log_fn:
+            log_fn("error", event="mind_service_missing", path=str(script))
+        return False
+    try:
+        import subprocess
+        env = os.environ.copy()
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["PYTHONPATH"] = str(_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+        kwargs = {
+            "cwd": str(_ROOT),
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "env": env,
+        }
+        if sys.platform == "win32":
+            kwargs["creationflags"] = (
+                getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | 0x00000008
+            )
+        subprocess.Popen([_mind_service_python(), str(script)], **kwargs)
+        if log_fn:
+            log_fn("info", event="mind_service_start_requested", script=str(script))
+        return True
+    except Exception as e:
+        if log_fn:
+            log_fn("error", event="mind_service_start_failed",
+                   error=f"{type(e).__name__}: {str(e)[:240]}")
+        return False
+
+
 def main() -> int:
     _trace("main() entered")
     _set_appusermodelid()
@@ -249,6 +308,26 @@ def main() -> int:
     health = start_health_server()
     _trace("health server started")
 
+    # ---- Standalone mind supervisor -----------------------------------------
+    # The shared mind must not depend on the Inbox/Panop UI being open. Launch
+    # the guarded standalone service first; if :8000 is already owned by the
+    # in-process Panop app or another healthy mind service, this is a no-op.
+    def _mind_log(level, **kw):
+        try:
+            from datetime import datetime
+            line = f"{datetime.now().isoformat(timespec='seconds')} [{level}] " + \
+                   " ".join(f"{k}={v}" for k, v in kw.items())
+            with (_ROOT / "logs" / "mind-service-bootstrap.log").open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+
+    def _ensure_mind_service():
+        _start_mind_service(log_fn=_mind_log)
+
+    import threading as _th
+    _th.Thread(target=_ensure_mind_service, daemon=True, name="mind-service-bootstrap").start()
+
     # ---- Panop supervisor ----------------------------------------------------
     # The native app never started Panop, so the Kindle/Instapaper/Paperpile
     # harvest endpoints (served by Panop on :8000) went dead whenever Panop
@@ -274,7 +353,6 @@ def main() -> int:
         except Exception as e:
             _panop_log("error", event="ensure_panop_exception",
                        error=f"{type(e).__name__}: {str(e)[:240]}")
-    import threading as _th
     _th.Thread(target=_ensure_panop, daemon=True, name="panop-bootstrap").start()
 
     # ---- Phone keepalive (in-process service) --------------------------------
@@ -362,10 +440,31 @@ def main() -> int:
     # it still dies with Egon. Idempotent — if Routster is already serving
     # on :4000 (Bruno launched it directly, or it was left over), we don't
     # double-spawn. See lib/routster_proc.py for the lifecycle.
+    # Opt-out: egon-config.json {"routster": {"autostart": false}} keeps
+    # Routster fully manual (Bruno asked why it always rises with Egon,
+    # 2026-06-11 — answer: Phase 3 embedding; this flag is the off switch).
     try:
         from lib import routster_proc
-        routster_proc.ensure_running_async(log_fn=lambda l, **k: None)
-        app.aboutToQuit.connect(routster_proc.stop)
+        _r_cfg = {}
+        try:
+            import json as _json
+            _r_cfg = (_json.loads((_ROOT / "egon-config.json").read_text(
+                encoding="utf-8")).get("routster") or {})
+        except Exception:
+            pass
+        if _r_cfg.get("autostart", True):
+            routster_proc.ensure_running_async(log_fn=lambda l, **k: None)
+            app.aboutToQuit.connect(routster_proc.stop)
+    except Exception:
+        pass
+
+    # ---- Headroom supervisor (Egon-managed context compression proxy) --------
+    # Spawns local headroom proxy server on :8787 for LLM context compression
+    # across all local agent runs. Dies with Egon. Idempotent.
+    try:
+        from lib import headroom_proc
+        headroom_proc.ensure_running_async(log_fn=lambda l, **k: None)
+        app.aboutToQuit.connect(headroom_proc.stop)
     except Exception:
         pass
 
@@ -389,6 +488,27 @@ def main() -> int:
         lambda: _th.Thread(target=_ensure_panop, daemon=True).start())
     _panop_timer.start()
     app._egon_panop_timer = _panop_timer  # type: ignore[attr-defined]
+
+    _mind_timer = _QTimer()
+    _mind_timer.setInterval(60_000)
+    _mind_timer.timeout.connect(
+        lambda: _th.Thread(target=_ensure_mind_service, daemon=True).start())
+    _mind_timer.start()
+    app._egon_mind_service_timer = _mind_timer  # type: ignore[attr-defined]
+
+    def _ensure_headroom():
+        try:
+            from lib import headroom_proc
+            headroom_proc.ensure_running()
+        except Exception:
+            pass
+
+    _headroom_timer = _QTimer()
+    _headroom_timer.setInterval(60_000)   # re-check Headroom every 60s
+    _headroom_timer.timeout.connect(
+        lambda: _th.Thread(target=_ensure_headroom, daemon=True).start())
+    _headroom_timer.start()
+    app._egon_headroom_timer = _headroom_timer  # type: ignore[attr-defined]
 
     return app.exec()
 

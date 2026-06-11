@@ -412,9 +412,22 @@ def _setup_tray(app, overlay) -> object | None:
     if not QSystemTrayIcon.isSystemTrayAvailable():
         return None
     tray = QSystemTrayIcon(app)
-    ico = ROOT / "shell" / "egon.ico"
-    if ico.exists():
-        tray.setIcon(QIcon(str(ico)))
+    # Distinct icon, NOT shell/egon.ico: this widget sat in the tray wearing
+    # the same icon as the Egon app, which read as a duplicate-instance bug
+    # (Bruno 2026-06-11). Gold disc + dark spark = the Connect surface.
+    from PySide6.QtGui import QPixmap, QPainter, QColor, QFont
+    pm = QPixmap(64, 64)
+    pm.fill(QColor(0, 0, 0, 0))
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setBrush(QColor("#D4A24C"))
+    p.setPen(QColor("#0B1F28"))
+    p.drawEllipse(2, 2, 60, 60)
+    f = QFont(); f.setPixelSize(40); f.setBold(True)
+    p.setFont(f)
+    p.drawText(pm.rect(), 0x84, "✦")   # AlignCenter, four-pointed star
+    p.end()
+    tray.setIcon(QIcon(pm))
     tray.setToolTip("Egon Connect — Ctrl+Alt+E to ask about the screen")
 
     digest_md = ROOT / "state" / "daily_digest.md"
