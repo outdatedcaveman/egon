@@ -97,7 +97,7 @@ def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
         try:
             # The window is small, so mirror_to_notion's per-call existing-keys
             # read stays bounded; dedup still protects against double-insert.
-            res = notion_mirror.mirror_to_notion(source, window, max_items=take)
+            res = notion_mirror.mirror_to_notion(source, window, max_items=take, assume_new=True)
             advanced = res.get("inserted", 0) + res.get("updated", 0)
             cursors[source] = done + take
             spent += take

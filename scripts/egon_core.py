@@ -229,6 +229,15 @@ def check_index(u: Unit) -> None:
             log("info", "index_refresh", **{k: v for k, v in st.items()})
         except Exception as e:
             log("warn", "index_refresh_failed", error=str(e)[:160])
+        try:
+            # Obsidian full mirror — local writes, no API limit, so the whole
+            # corpus stays instantiated every cycle. Notion fills separately
+            # and incrementally via check_mirror. Bruno 2026-06-12.
+            from lib import obsidian_mirror
+            ost = obsidian_mirror.mirror_all()
+            log("info", "obsidian_mirror", total=ost.get("total_written"))
+        except Exception as e:
+            log("warn", "obsidian_mirror_failed", error=str(e)[:160])
         finally:
             _index_building = False
 
