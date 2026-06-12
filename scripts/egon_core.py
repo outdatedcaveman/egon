@@ -389,6 +389,17 @@ def check_mirror(u: Unit) -> None:
     def _run():
         global _mirror_running
         try:
+            # Bruno's manual Notion content: refresh page BODIES first (cached
+            # by last_edited_time, ~60 pages/run) so the Obsidian mirror
+            # carries full text, not stubs. #66, 2026-06-12.
+            from lib import notion_body
+            bres = notion_body.refresh()
+            if bres.get("fetched"):
+                log("info", "notion_bodies", **{k: bres[k] for k in
+                    ("fetched", "cached_total") if k in bres})
+        except Exception as e:
+            log("warn", "notion_bodies_failed", error=str(e)[:120])
+        try:
             from lib import mirror_runner
             res = mirror_runner.run_notion_increment()
             log("info", "mirror_increment", pushed=res.get("pushed"),
