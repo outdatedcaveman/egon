@@ -24,10 +24,30 @@ from typing import Any
 
 from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
 
-# Egon root in Notion — set NOTION_EGON_PAGE_ID to your own page id
-EGON_PAGE_ID = os.environ.get("NOTION_EGON_PAGE_ID", "")
+# Egon root in Notion. Resolution order (first hit wins):
+#   1. NOTION_EGON_PAGE_ID env var (OSS-genericized default)
+#   2. egon-config.json {"notion": {"egon_page_id": ...}}  ← Bruno's machine
+# 2026-06-12: the env var was never set, so the mirror had no root and never
+# ran. The config fallback mirrors how the Notion TOKEN is resolved.
 MIRRORS_PAGE_TITLE = "050 · Mirrors"
 from lib.egon_paths import ENV_FILE as ENV_PATH
+
+
+def _egon_page_id() -> str:
+    pid = os.environ.get("NOTION_EGON_PAGE_ID", "").strip()
+    if pid:
+        return pid
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        cfg = _json.loads((_Path(__file__).resolve().parent.parent
+                           / "egon-config.json").read_text(encoding="utf-8"))
+        return ((cfg.get("notion") or {}).get("egon_page_id") or "").strip()
+    except Exception:
+        return ""
+
+
+EGON_PAGE_ID = _egon_page_id()
 
 
 def _token() -> str | None:

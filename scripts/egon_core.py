@@ -351,6 +351,47 @@ def write_health(units: dict[str, Unit]) -> None:
         pass
 
 
+# Notion mirror increment cadence — every 5 min advance one bounded batch.
+# Obsidian is fully mirrored by the index cycle (cheap local writes); Notion
+# fills slowly to respect its API. Bruno 2026-06-12.
+MIRROR_EVERY_S = 300
+_mirror_last = 0.0
+_mirror_running = False
+
+
+def check_mirror(u: Unit) -> None:
+    global _mirror_last, _mirror_running
+    state_file = ROOT / "state" / "mirror_runner.json"
+    try:
+        import json as _json
+        cur = _json.loads(state_file.read_text(encoding="utf-8")).get(
+            "notion_cursor", {}) if state_file.exists() else {}
+        u.ok = True
+        u.detail = "notion: " + ", ".join(
+            f"{k}={v}" for k, v in list(cur.items())[:4]) if cur else "idle"
+    except Exception:
+        u.ok = True
+        u.detail = "idle"
+    if _mirror_running or time.time() - _mirror_last < MIRROR_EVERY_S:
+        return
+    _mirror_last = time.time()
+    _mirror_running = True
+
+    def _run():
+        global _mirror_running
+        try:
+            from lib import mirror_runner
+            res = mirror_runner.run_notion_increment()
+            log("info", "mirror_increment", pushed=res.get("pushed"),
+                status=res.get("status"))
+        except Exception as e:
+            log("warn", "mirror_failed", error=str(e)[:160])
+        finally:
+            _mirror_running = False
+
+    threading.Thread(target=_run, name="egon-mirror", daemon=True).start()
+
+
 def main() -> int:
     try:
         from lib.single_instance_mutex import claim_or_exit
@@ -364,7 +405,8 @@ def main() -> int:
     units = {"mind": Unit("mind"), "headroom": Unit("headroom"),
              "ollama": Unit("ollama"),
              "connect_index": Unit("connect_index"),
-             "daily_digest": Unit("daily_digest")}
+             "daily_digest": Unit("daily_digest"),
+             "mirror": Unit("mirror")}
     while True:
         try:
             check_mind(units["mind"])
@@ -372,6 +414,7 @@ def main() -> int:
             check_ollama(units["ollama"])
             check_index(units["connect_index"])
             check_digest(units["daily_digest"])
+            check_mirror(units["mirror"])
             write_health(units)
         except Exception as e:
             log("error", "core_cycle_error", error=str(e)[:200])
