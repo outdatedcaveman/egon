@@ -75,21 +75,70 @@ def _item_key(item: dict) -> str:
                or item.get("title") or "?")
 
 
-def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
-    """Advance the Notion mirror by one bounded batch of UNPUSHED items.
+def _item_hash(item: dict) -> str:
+    import hashlib
+    blob = "|".join(str(item.get(f, "")) for f in
+                    ("title", "url", "subtitle", "author", "year", "kind"))
+    return hashlib.md5(blob.encode("utf-8", "ignore")).hexdigest()[:10]
 
-    Keyed by stable item id, NOT a positional offset (2026-06-12 fix): new
-    Zotero refs land at the top of the newest-first snapshot, so an index
-    cursor silently skipped them. We persist the SET of already-pushed keys
-    per source; any item whose key isn't in that set is pending, so brand-new
-    references flow automatically the next time the runner fires.
+
+def reconcile_existing() -> dict:
+    """One-time: import every page already in the Notion mirror DBs into the
+    page map (key→{pid,hash}), matched to current snapshot items by title.
+    After this, all existing pages are tracked, so the runner can use the
+    fast no-scan insert path and never duplicate an orphan. Idempotent."""
+    from lib import notion_mirror
+    state = _load()
+    pages_map = state.setdefault("notion_pages", {})
+    report = {}
+    for source in _SOURCES:
+        if source not in notion_mirror.SCHEMAS:
+            continue
+        try:
+            db_id = notion_mirror._find_or_create_source_db(source)
+            title_to_id = notion_mirror._existing_keys(db_id)  # {title_lower: pid}
+            snap = _snapshot_for(source)
+            items = (snap or {}).get("items") or []
+            schema = notion_mirror.SCHEMAS[source]
+            pm = pages_map.setdefault(source, {})
+            matched = 0
+            for it in items:
+                title = (schema["title_from"](it) or "").lower()
+                pid = title_to_id.get(title)
+                if pid:
+                    pm[_item_key(it)] = {"pid": pid, "h": _item_hash(it)}
+                    matched += 1
+            report[source] = f"{matched} tracked / {len(title_to_id)} pages"
+        except Exception as e:
+            report[source] = f"error: {str(e)[:60]}"
+    _save(state)
+    return {"status": "ok", "by_source": report}
+
+
+def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
+    """Advance the Notion mirror by one bounded batch — TRUE UPSERT.
+
+    Per source we persist a page map {key: {"pid": notion_page_id, "h":
+    content_hash}}. An item is pending when:
+      • its key is new (→ POST, create), or
+      • its content hash changed since we last pushed (→ PATCH that page).
+    So we never create a second page for an item we've already mirrored
+    (Bruno 2026-06-12: "make Notion update instead of create new ones"), and
+    edits flow as updates. Migrates the old key-set/positional state in place.
     """
     from lib import notion_mirror
     if not notion_mirror.EGON_PAGE_ID:
         return {"status": "no_root",
                 "error": "notion.egon_page_id not set in egon-config.json"}
     state = _load()
-    pushed_map = state.setdefault("notion_pushed", {})
+    pages_map = state.setdefault("notion_pages", {})
+    # one-time migration: old {source: [key,...]} set → {key: {pid:None,h:None}}
+    old = state.get("notion_pushed")
+    if old and not pages_map:
+        for src, keys in old.items():
+            pages_map[src] = {k: {"pid": None, "h": None} for k in keys}
+        state.pop("notion_pushed", None)
+
     spent = 0
     report = {}
     for source in _SOURCES:
@@ -100,23 +149,61 @@ def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
         if not items:
             report[source] = "no items"
             continue
-        pushed = set(pushed_map.get(source, []))
-        pending = [it for it in items if _item_key(it) not in pushed]
+        pm = pages_map.setdefault(source, {})
+
+        # Reconcile any entries we pushed before we tracked page ids (the
+        # migrated set): look up their existing Notion pages by title ONCE so
+        # we PATCH them instead of creating duplicates. Runs only while no-pid
+        # entries remain; cheap because those DBs are still small.
+        if any(rec.get("pid") is None for rec in pm.values()):
+            try:
+                from lib import notion_mirror
+                db_id = notion_mirror._find_or_create_source_db(source)
+                title_to_id = notion_mirror._existing_keys(db_id)
+                key_to_item = {_item_key(it): it for it in items}
+                for k, rec in pm.items():
+                    if rec.get("pid"):
+                        continue
+                    it = key_to_item.get(k)
+                    if not it:
+                        continue
+                    title = (notion_mirror.SCHEMAS[source]["title_from"](it)
+                             or "").lower()
+                    pid = title_to_id.get(title)
+                    if pid:
+                        rec["pid"] = pid
+            except Exception:
+                pass
+        pending = []
+        for it in items:
+            k = _item_key(it)
+            rec = pm.get(k)
+            if rec is None or rec.get("h") != _item_hash(it):
+                pending.append(it)
         if not pending:
-            report[source] = f"caught up ({len(pushed)})"
+            report[source] = f"in sync ({len(pm)})"
             continue
         take = min(batch - spent, len(pending))
-        window = {"items": pending[:take]}
+        window_items = []
+        for it in pending[:take]:
+            k = _item_key(it)
+            d = dict(it)
+            d["_key"] = k
+            d["_page_id"] = (pm.get(k) or {}).get("pid")
+            window_items.append(d)
         try:
-            res = notion_mirror.mirror_to_notion(source, window,
-                                                 max_items=take, assume_new=True)
-            advanced = res.get("inserted", 0) + res.get("updated", 0)
-            pushed.update(_item_key(it) for it in pending[:take])
-            pushed_map[source] = sorted(pushed)
+            res = notion_mirror.mirror_to_notion(
+                source, {"items": window_items}, max_items=take,
+                assume_new=True)
+            new_ids = res.get("ids") or {}
+            for it in pending[:take]:
+                k = _item_key(it)
+                pid = new_ids.get(k) or (pm.get(k) or {}).get("pid")
+                pm[k] = {"pid": pid, "h": _item_hash(it)}
             spent += take
             report[source] = (
-                f"+{advanced} ({len(pushed)}/{len(items)}, "
-                f"{len(pending) - take} pending)"
+                f"+{res.get('inserted',0)} new / {res.get('updated',0)} upd "
+                f"({len(pm)}/{len(items)}, {len(pending)-take} pending)"
                 + (f" {res.get('errors')} err" if res.get("errors") else ""))
         except Exception as e:
             report[source] = f"error: {str(e)[:80]}"

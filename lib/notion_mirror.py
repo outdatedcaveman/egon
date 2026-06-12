@@ -197,12 +197,20 @@ def _existing_keys(db_id: str, key_prop: str = "_key") -> dict[str, str]:
 
 def mirror_to_notion(source: str, snapshot: dict, max_items: int = 500,
                      assume_new: bool = False) -> dict:
-    """Upsert every snapshot item to the source's Notion DB. Returns stats.
+    """Upsert every snapshot item to the source's Notion DB.
 
-    assume_new=True skips the O(all-rows) existing-keys read and inserts
-    directly — used by the incremental runner, whose persistent cursor
-    already guarantees each window is pushed once (Bruno 2026-06-12: the
-    dedup scan made every batch slower as the DB grew, ~3.5s/item)."""
+    TRUE UPSERT (Bruno 2026-06-12: "make Notion update instead of create new
+    ones"). Each window item may carry:
+        _key       — the stable item key (echoed back so the runner can
+                     record the page id it maps to)
+        _page_id   — the Notion page id, if we created/updated it before
+    If _page_id is present → PATCH (update in place). Else → POST (create)
+    and the new page id is returned in result["ids"][_key], so re-runs
+    never duplicate. Optional title-based dedup (existing) still applies
+    when assume_new is False, for items the runner has no page id for yet.
+
+    Returns: {..., inserted, updated, errors, ids: {key: page_id}}.
+    """
     if source not in SCHEMAS:
         return {"status": "no_schema", "error": f"no slim schema for {source}"}
 
@@ -213,10 +221,8 @@ def mirror_to_notion(source: str, snapshot: dict, max_items: int = 500,
     items_to_process = snapshot.get("items", [])[:max_items]
 
     # Parallel writer: Notion's documented ceiling is ~3 req/sec average, so
-    # 3 workers sharing a 3-token/sec bucket keeps us at the limit (≈3x the
-    # old serial 0.34s-sleep path) without tripping 429s. Each worker retries
-    # a 429 once after honouring Retry-After. Bruno 2026-06-12: full fill
-    # speed matters, he wants all 250k+ mirrored.
+    # 3 workers sharing a 3-token/sec bucket keeps us at the limit without
+    # tripping 429s; each worker retries a 429 once honouring Retry-After.
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
@@ -232,6 +238,7 @@ def mirror_to_notion(source: str, snapshot: dict, max_items: int = 500,
             time.sleep(wait)
 
     counts = {"inserted": 0, "updated": 0, "errors": 0}
+    ids: dict[str, str] = {}
     cl = threading.Lock()
 
     def _one(item):
@@ -242,23 +249,28 @@ def mirror_to_notion(source: str, snapshot: dict, max_items: int = 500,
                                        "text": {"content": title[:200]}}]},
                 **schema["values"](item),
             }
-            existing_id = existing.get(title.lower())
+            ikey = item.get("_key")
+            # Prefer the runner-supplied page id; fall back to title match.
+            page_id = item.get("_page_id") or existing.get(title.lower())
             for attempt in (1, 2):
                 _throttle()
-                if existing_id:
+                if page_id:
                     r = httpx.patch(
-                        f"https://api.notion.com/v1/pages/{existing_id}",
+                        f"https://api.notion.com/v1/pages/{page_id}",
                         headers=_h(), json={"properties": properties}, timeout=20)
-                    key = "updated"
+                    bucket = "updated"
                 else:
                     r = httpx.post(
                         "https://api.notion.com/v1/pages", headers=_h(),
                         json={"parent": {"database_id": db_id},
                               "properties": properties}, timeout=20)
-                    key = "inserted"
+                    bucket = "inserted"
                 if r.status_code == 200:
+                    new_id = page_id or (r.json() or {}).get("id")
                     with cl:
-                        counts[key] += 1
+                        counts[bucket] += 1
+                        if ikey and new_id:
+                            ids[ikey] = new_id
                     return
                 if r.status_code == 429 and attempt == 1:
                     try:
@@ -279,6 +291,7 @@ def mirror_to_notion(source: str, snapshot: dict, max_items: int = 500,
     return {
         "status": "ok",
         "db_id": db_id,
+        "ids": ids,
         **counts,
         "total": len(items_to_process),
     }
