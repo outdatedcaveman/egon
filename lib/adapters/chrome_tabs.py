@@ -37,13 +37,16 @@ META = {
     "read_only_default": True,
 }
 
-PANOP_STATE_URL = "http://127.0.0.1:8000/api/v1/chrome_tabs/state"
+# 2026-06-12: the /chrome_tabs/state route was removed in the 2026-05-26
+# panop_server rewrite (lives only in .backups now); the live surface is
+# /api/v1/tabs/inspect. The adapter sat "unconfigured" ever since.
+PANOP_STATE_URL = "http://127.0.0.1:8000/api/v1/tabs/inspect"
 _STALE_AFTER_S = 90   # if extension hasn't pushed in this long, mark stale
 
 
 def _read_state() -> dict | None:
     try:
-        r = httpx.get(PANOP_STATE_URL, timeout=2.0)
+        r = httpx.get(PANOP_STATE_URL, timeout=8.0)   # inspect walks all tabs
         if r.status_code == 200:
             return r.json()
     except Exception:

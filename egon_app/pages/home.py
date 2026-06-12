@@ -39,6 +39,7 @@ _ERR     = "#D67A6A"
 def _status_color(status: str) -> str:
     return {"ok": _OK, "alive": _OK, "ready": _OK,
             "warming": _WARN, "stale": _WARN, "unconfigured": _MUTED,
+            "off": _MUTED,
             "timeout": _ERR, "error": _ERR}.get(str(status).lower(), _MUTED)
 
 
@@ -503,14 +504,19 @@ class HomePage(QWidget):
                 return "ok"
             if s in ("unconfigured", "skip"):
                 return "setup"
+            if s == "off":
+                return "off"
             return "broken"
 
         n_ok = sum(1 for v in sources.values() if _bucket(v) == "ok")
         n_setup = sum(1 for v in sources.values() if _bucket(v) == "setup")
-        n_bad = len(sources) - n_ok - n_setup
+        n_off = sum(1 for v in sources.values() if _bucket(v) == "off")
+        n_bad = len(sources) - n_ok - n_setup - n_off
         parts = [f"{n_ok} healthy"]
         if n_setup:
             parts.append(f"{n_setup} awaiting setup (optional/tokens)")
+        if n_off:
+            parts.append(f"{n_off} off by choice")
         if n_bad:
             parts.append(f"{n_bad} broken")
         self._subhead.setText(
