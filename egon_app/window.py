@@ -42,6 +42,12 @@ NAV = [
 
 
 
+
+def _artifacts_page():
+    from egon_app.pages.artifacts import ArtifactsPage
+    return ArtifactsPage()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -234,6 +240,7 @@ class MainWindow(QMainWindow):
             "mind":       MindPage,
             "projects":   ProjectsPage,
             "connect":    ConnectPage,
+            "artifacts":  _artifacts_page,
         }
         self._idx_slug: dict[int, str] = {}
         self._built_slugs: set[str] = set()
