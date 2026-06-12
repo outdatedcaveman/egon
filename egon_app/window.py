@@ -21,7 +21,7 @@ from egon_app.pages import (
 # Nav definition: (slug, icon-char, label, is_ledger_emphasis)
 NAV = [
     ("home",       "🏠", "Home",           False),
-    ("connect",    "✨", "Connect",        False),
+    ("connect",    "✨", "Connect & Search", False),
     ("inbox",      "📥", "Inbox",          False),
     ("artifacts",  "🗂", "Artifacts",      False),
     ("navigation", "🧭", "Navigation",     False),
@@ -30,7 +30,6 @@ NAV = [
     ("databases",  "🗄", "Databases",      False),
     ("apps",       "🧰", "Apps",           False),
     ("projects",   "📁", "Projects",       False),
-    ("search",     "🔍", "Search",         False),
     ("sync",       "🔄", "Sync",           False),
     ("ledger",     "💰", "Token Ledger",   True),
     ("memory",     "🧠", "Memory & rules", False),
@@ -46,6 +45,11 @@ NAV = [
 def _artifacts_page():
     from egon_app.pages.artifacts import ArtifactsPage
     return ArtifactsPage()
+
+
+def _connect_search_page():
+    from egon_app.pages.connect_search import ConnectSearchPage
+    return ConnectSearchPage()
 
 
 class MainWindow(QMainWindow):
@@ -236,10 +240,9 @@ class MainWindow(QMainWindow):
             "settings":   SettingsPage,
             "references": ReferencesPage,
             "media":      MediaPage,
-            "search":     SearchPage,
             "mind":       MindPage,
             "projects":   ProjectsPage,
-            "connect":    ConnectPage,
+            "connect":    _connect_search_page,
             "artifacts":  _artifacts_page,
         }
         self._idx_slug: dict[int, str] = {}

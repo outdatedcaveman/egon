@@ -486,6 +486,15 @@ def _setup_tray(app, overlay) -> object | None:
 
 
 def main() -> int:
+    # Single instance: the Connect & Search tab has a "launch capturer"
+    # button that spawns this blindly — a second copy would double the
+    # hotkey handler and the tray icon. Bruno 2026-06-12.
+    try:
+        from lib.single_instance_mutex import claim_or_exit
+        if not claim_or_exit("Egon-Connect-Widget-2026-06"):
+            return 0
+    except Exception:
+        pass
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     ico = ROOT / "shell" / "egon.ico"
