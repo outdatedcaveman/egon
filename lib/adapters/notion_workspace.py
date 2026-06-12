@@ -110,8 +110,9 @@ def snapshot() -> dict:
                 if not data.get("has_more"):
                     break
                 cursor = data.get("next_cursor")
-                # safety cap so we don't run forever on huge workspaces
-                if pages_seen >= 5000:
+                # safety cap (raised 5000->50000 2026-06-12 so Bruno's full
+                # manual Notion content flows to Obsidian, not just recent 5k)
+                if pages_seen >= 50000:
                     break
     except Exception as e:
         return {"status": "error", "error": str(e)}
