@@ -31,9 +31,11 @@ STATE = ROOT / "state" / "mirror_runner.json"
 _SOURCES = ["zotero", "paperpile", "chrome_bookmarks", "letterboxd",
             "instapaper", "notion_workspace"]
 
-# Notion budget per run — keep well under rate limits and leave the API
-# responsive for everything else. ~150 writes ≈ a minute of API time.
-_NOTION_BATCH = 150
+# Notion budget per run. At ~1.33s/item (3 parallel workers) a 500-item
+# run is ~11min; the runner's _mirror_running guard lets it span core
+# cycles, so the fill is effectively continuous (~65k/day). Bruno wants the
+# full 360k mirrored even if it takes days.
+_NOTION_BATCH = 500
 
 
 def _load() -> dict:
@@ -127,8 +129,9 @@ def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
 def status() -> dict:
     """Mirror progress for the Databases observatory."""
     state = _load()
-    cur = state.get("notion_cursor", {})
-    out = {"notion_cursor": cur}
+    pushed = {k: len(v) for k, v in
+              (state.get("notion_pushed") or {}).items()}
+    out = {"notion_pushed": pushed}
     try:
         from lib import obsidian_mirror
         out["obsidian"] = obsidian_mirror.stats()

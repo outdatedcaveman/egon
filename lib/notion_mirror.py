@@ -210,41 +210,75 @@ def mirror_to_notion(source: str, snapshot: dict, max_items: int = 500,
     db_id = _find_or_create_source_db(source)
     existing = {} if assume_new else _existing_keys(db_id)
 
-    inserted = updated = errors = 0
     items_to_process = snapshot.get("items", [])[:max_items]
-    for item in items_to_process:
+
+    # Parallel writer: Notion's documented ceiling is ~3 req/sec average, so
+    # 3 workers sharing a 3-token/sec bucket keeps us at the limit (≈3x the
+    # old serial 0.34s-sleep path) without tripping 429s. Each worker retries
+    # a 429 once after honouring Retry-After. Bruno 2026-06-12: full fill
+    # speed matters, he wants all 250k+ mirrored.
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    _bucket_lock = threading.Lock()
+    _next_slot = [0.0]
+
+    def _throttle():
+        with _bucket_lock:
+            now = time.monotonic()
+            wait = max(0.0, _next_slot[0] - now)
+            _next_slot[0] = max(now, _next_slot[0]) + 0.34
+        if wait:
+            time.sleep(wait)
+
+    counts = {"inserted": 0, "updated": 0, "errors": 0}
+    cl = threading.Lock()
+
+    def _one(item):
         try:
             title = schema["title_from"](item) or "(untitled)"
-            values = schema["values"](item)
             properties = {
-                schema["title_prop"]: {"title": [{"type": "text", "text": {"content": title[:200]}}]},
-                **values,
+                schema["title_prop"]: {"title": [{"type": "text",
+                                       "text": {"content": title[:200]}}]},
+                **schema["values"](item),
             }
             existing_id = existing.get(title.lower())
-            if existing_id:
-                r = httpx.patch(f"https://api.notion.com/v1/pages/{existing_id}",
-                                headers=_h(), json={"properties": properties}, timeout=20)
-                if r.status_code == 200:
-                    updated += 1
+            for attempt in (1, 2):
+                _throttle()
+                if existing_id:
+                    r = httpx.patch(
+                        f"https://api.notion.com/v1/pages/{existing_id}",
+                        headers=_h(), json={"properties": properties}, timeout=20)
+                    key = "updated"
                 else:
-                    errors += 1
-            else:
-                r = httpx.post("https://api.notion.com/v1/pages",
-                               headers=_h(), json={"parent": {"database_id": db_id},
-                                                   "properties": properties}, timeout=20)
+                    r = httpx.post(
+                        "https://api.notion.com/v1/pages", headers=_h(),
+                        json={"parent": {"database_id": db_id},
+                              "properties": properties}, timeout=20)
+                    key = "inserted"
                 if r.status_code == 200:
-                    inserted += 1
-                else:
-                    errors += 1
-            time.sleep(0.34)  # rate-limit: Notion allows 3 req/sec
+                    with cl:
+                        counts[key] += 1
+                    return
+                if r.status_code == 429 and attempt == 1:
+                    try:
+                        time.sleep(float(r.headers.get("Retry-After", "1")) + 0.5)
+                    except Exception:
+                        time.sleep(1.5)
+                    continue
+                with cl:
+                    counts["errors"] += 1
+                return
         except Exception:
-            errors += 1
+            with cl:
+                counts["errors"] += 1
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        list(pool.map(_one, items_to_process))
 
     return {
         "status": "ok",
         "db_id": db_id,
-        "inserted": inserted,
-        "updated":  updated,
-        "errors":   errors,
-        "total":    len(items_to_process),
+        **counts,
+        "total": len(items_to_process),
     }
