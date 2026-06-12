@@ -260,10 +260,23 @@ class MainWindow(QMainWindow):
         try:
             real = cls() if cls else make_generic_page(slug)
         except Exception:
-            # If a page fails to build, leave the placeholder so the rest of
-            # the app stays usable rather than crashing the whole window.
-            self._built_slugs.add(slug)  # don't retry on every click
-            return
+            # A failed page build must never take the window down — but a
+            # silent placeholder is just as bad (Bruno clicked Token Ledger,
+            # saw "crash", and had no evidence to report). Show the traceback.
+            import traceback
+            from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+            err = QWidget()
+            lay = QVBoxLayout(err)
+            head = QLabel(f"⚠️  The {slug} page failed to build")
+            head.setStyleSheet("color: #D67A6A; font-size: 16px; font-weight: 700;")
+            lay.addWidget(head)
+            tb = QLabel(traceback.format_exc()[-1800:])
+            tb.setStyleSheet("color: #9CA3AF; font-family: Consolas, monospace; font-size: 11px;")
+            tb.setWordWrap(True)
+            tb.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            lay.addWidget(tb)
+            lay.addStretch(1)
+            real = err
         placeholder = self._pages.get(slug)
         if placeholder is not None:
             self._stack.removeWidget(placeholder)
