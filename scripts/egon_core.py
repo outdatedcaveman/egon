@@ -205,6 +205,16 @@ def check_index(u: Unit) -> None:
     def _build():
         global _index_building
         try:
+            # tier-2 first: extract text for pinned files (budgeted), so the
+            # rebuild below embeds their content. lib/hydration_worker.
+            from lib import hydration_worker
+            hst = hydration_worker.process_queue()
+            if hst.get("status") == "ok":
+                log("info", "hydration_run", **{k: v for k, v in hst.items()
+                                                if k != "status"})
+        except Exception as e:
+            log("warn", "hydration_failed", error=str(e)[:160])
+        try:
             # files first so the fresh files_index.jsonl feeds this build
             # (big-play tier 1: Drive+PC filenames into the Connect engine)
             from lib import file_indexer

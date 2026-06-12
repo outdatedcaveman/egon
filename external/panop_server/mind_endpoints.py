@@ -264,7 +264,8 @@ def mind_list_projects():
             conn = _connect()
             try:
                 rows = conn.execute(
-                    "SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
+                    "SELECT * FROM projects WHERE COALESCE(status,'active')='active' "
+                    "ORDER BY updated_at DESC").fetchall()
             finally:
                 conn.close()
         return {"status": "ok", "projects": [dict(r) for r in rows]}
@@ -804,7 +805,8 @@ def mind_projects_summary():
             conn = _connect()
             try:
                 projects = conn.execute(
-                    "SELECT * FROM projects ORDER BY updated_at DESC LIMIT 50"
+                    "SELECT * FROM projects WHERE COALESCE(status,'active')='active' "
+                    "ORDER BY updated_at DESC LIMIT 50"
                 ).fetchall()
 
                 summaries = []

@@ -151,14 +151,26 @@ def _file_items() -> list[dict]:
                 parents = " ".join(
                     pathlib.PurePath(it.get("path", "")).parts[-3:-1])
                 stem = pathlib.PurePath(name).stem.replace("_", " ")
+                digest = hashlib.md5(
+                    it.get("path", "").encode("utf-8", "ignore")).hexdigest()
+                text = stem + " " + parents
+                # Tier-2 upgrade: pinned files have an extract on disk
+                # (lib/hydration_worker) — fold it in for a content-level
+                # embedding instead of filename-only.
+                xp = ROOT / "state" / "file_extracts" / f"{digest}.txt"
+                if xp.exists():
+                    try:
+                        text += " " + xp.read_text(
+                            encoding="utf-8", errors="replace")[:1500]
+                    except Exception:
+                        pass
                 out.append({
-                    "uid": "file:" + hashlib.md5(
-                        it.get("path", "").encode("utf-8", "ignore")).hexdigest(),
+                    "uid": "file:" + digest,
                     "source": "files",
                     "title": name[:200],
                     "url": "file:///" + it.get("path", "").replace("\\", "/"),
                     "snippet": (it.get("path") or "")[-200:],
-                    "text": (stem + " " + parents)[:_MAX_TEXT],
+                    "text": text[:_MAX_TEXT],
                 })
     except Exception:
         return []
