@@ -360,6 +360,81 @@ def write_health(units: dict[str, Unit]) -> None:
         pass
 
 
+# Source snapshots — the store everything downstream reads (mirrors, Connect
+# index, dashboards). Was only refreshed by the 06:00 in-app pass, which never
+# fired unless the Egon UI happened to be open at 6AM — kindle went stale
+# 2026-05-27 and instapaper (3,212 harvested items) NEVER got a snapshot.
+# Bruno 2026-06-12: the always-on core owns freshness now. Daily, off-thread.
+SNAPSHOTS_EVERY_S = 24 * 3600
+_snap_running = False
+_snap_last = 0.0
+
+
+def check_snapshots(u: Unit) -> None:
+    global _snap_running, _snap_last
+    store = ROOT / "state" / "snapshots"
+    newest = 0.0
+    try:
+        for d in store.iterdir():
+            for f in d.glob("*.json"):
+                newest = max(newest, f.stat().st_mtime)
+    except Exception:
+        pass
+    age_h = (time.time() - newest) / 3600 if newest else None
+    u.ok = age_h is not None and age_h < 48
+    u.detail = (f"age={age_h:.0f}h" if age_h is not None else "never") +                (" (refreshing)" if _snap_running else "")
+    due = age_h is None or age_h * 3600 > SNAPSHOTS_EVERY_S
+    if _snap_running or not due or time.time() - _snap_last < 3600:
+        return
+    _snap_last = time.time()
+    _snap_running = True
+
+    def _run():
+        global _snap_running
+        try:
+            import importlib
+            from lib.snapshot_store import write_snapshot
+            import scripts.pass_sources as _ps  # single source of truth
+            pairs = _ps.SNAPSHOT_ADAPTERS
+        except Exception:
+            # fallback: inline list mirrors scripts/pass.py
+            pairs = (
+                ("chrome_bookmarks", "lib.adapters.chrome_bookmarks"),
+                ("zotero", "lib.adapters.zotero_local"),
+                ("letterboxd", "lib.adapters.letterboxd"),
+                ("youtube_music", "lib.adapters.youtube"),
+                ("notion_workspace", "lib.adapters.notion_workspace"),
+                ("tvtime", "lib.adapters.tvtime"),
+                ("kindle", "lib.adapters.kindle"),
+                ("pocketcasts", "lib.adapters.pocketcasts"),
+                ("paperpile", "lib.adapters.paperpile"),
+                ("instapaper", "lib.adapters.instapaper"),
+                ("youtube_history", "lib.adapters.youtube_history"),
+            )
+        try:
+            import importlib
+            from lib.snapshot_store import write_snapshot
+            done = failed = 0
+            for source, modpath in pairs:
+                try:
+                    mod = importlib.import_module(modpath)
+                    snap = mod.snapshot()
+                    if snap and snap.get("status") == "ok" and snap.get("items"):
+                        write_snapshot(source, snap)
+                        done += 1
+                except Exception as e:
+                    failed += 1
+                    log("warn", "snapshot_failed", source=source,
+                        error=str(e)[:100])
+            log("info", "snapshots_refreshed", ok=done, failed=failed)
+        except Exception as e:
+            log("warn", "snapshots_run_failed", error=str(e)[:160])
+        finally:
+            _snap_running = False
+
+    threading.Thread(target=_run, name="egon-snapshots", daemon=True).start()
+
+
 # Notion mirror increment cadence — every 5 min advance one bounded batch.
 # Obsidian is fully mirrored by the index cycle (cheap local writes); Notion
 # fills slowly to respect its API. Bruno 2026-06-12.
@@ -426,6 +501,7 @@ def main() -> int:
              "ollama": Unit("ollama"),
              "connect_index": Unit("connect_index"),
              "daily_digest": Unit("daily_digest"),
+             "snapshots": Unit("snapshots"),
              "mirror": Unit("mirror")}
     while True:
         try:
@@ -434,6 +510,7 @@ def main() -> int:
             check_ollama(units["ollama"])
             check_index(units["connect_index"])
             check_digest(units["daily_digest"])
+            check_snapshots(units["snapshots"])
             check_mirror(units["mirror"])
             write_health(units)
         except Exception as e:
