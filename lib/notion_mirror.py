@@ -64,6 +64,42 @@ def _h() -> dict:
 
 
 # Schema per source — TITLE first, then 4 more properties. That's the cap.
+# Generic slim schema — used for ANY source without a bespoke entry below.
+# Bruno 2026-06-12 ("FULLNESS and COMPREHENSIVENESS… full and updated on
+# BOTH"): youtube_music, pocketcasts, kindle, tvtime, instapaper, the mind's
+# sessions/projects/memories/skills — everything mirrors to Notion, not just
+# the three hand-schemed sources.
+def _rt(v, cap=400):
+    return {"rich_text": [{"type": "text",
+                           "text": {"content": str(v or "")[:cap]}}]}
+
+
+GENERIC_SCHEMA: dict = {
+    "title_prop": "Title",
+    "title_from": lambda i: (i.get("title") or i.get("name")
+                             or str(i.get("url") or "?")[:80]),
+    "key_from":   lambda i: str(i.get("id") or i.get("key")
+                                or i.get("url") or i.get("title") or "?"),
+    "properties": {
+        "Title":   {"title": {}},
+        "URL":     {"url": {}},
+        "Detail":  {"rich_text": {}},
+        "Kind":    {"rich_text": {}},
+        "Year":    {"rich_text": {}},
+        "Key":     {"rich_text": {}},
+    },
+    "values": lambda i: {
+        "URL":    {"url": (i.get("url") or None)},
+        "Detail": _rt(i.get("subtitle") or i.get("abstract")
+                      or i.get("summary") or i.get("snippet")
+                      or i.get("content") or ""),
+        "Kind":   _rt(i.get("kind") or i.get("object") or ""),
+        "Year":   _rt(i.get("year") or i.get("added") or i.get("started") or ""),
+        "Key":    _rt(i.get("id") or i.get("key") or ""),
+    },
+}
+
+
 SCHEMAS: dict[str, dict] = {
     "letterboxd": {
         "title_prop":   "Title",
@@ -152,7 +188,7 @@ def _find_or_create_source_db(source: str) -> str:
                 if t == title:
                     return b["id"]
 
-    schema = SCHEMAS[source]
+    schema = SCHEMAS.get(source) or GENERIC_SCHEMA
     r = httpx.post("https://api.notion.com/v1/databases", headers=_h(), timeout=20, json={
         "parent": {"page_id": mirrors_page, "type": "page_id"},
         "icon":   {"type": "emoji", "emoji": "🪞"},
@@ -211,10 +247,7 @@ def mirror_to_notion(source: str, snapshot: dict, max_items: int = 500,
 
     Returns: {..., inserted, updated, errors, ids: {key: page_id}}.
     """
-    if source not in SCHEMAS:
-        return {"status": "no_schema", "error": f"no slim schema for {source}"}
-
-    schema = SCHEMAS[source]
+    schema = SCHEMAS.get(source) or GENERIC_SCHEMA
     db_id = _find_or_create_source_db(source)
     existing = {} if assume_new else _existing_keys(db_id)
 
