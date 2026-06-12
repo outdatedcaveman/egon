@@ -126,6 +126,31 @@ def _end_session(sid: int, summary: str | None = None,
     return _post("/sessions/end", body) is not None
 
 
+def _codex_payload_text(inner: dict) -> str:
+    """Pull human-readable text from a Codex rollout payload. Content can be
+    a plain string, a list of {type, text} segments, or live under
+    text/message; compacted events carry a replacement_history."""
+    c = inner.get("content")
+    if isinstance(c, str) and c.strip():
+        return c
+    if isinstance(c, list):
+        t = " ".join(seg.get("text", "") for seg in c
+                     if isinstance(seg, dict)).strip()
+        if t:
+            return t
+    for k in ("text", "message"):
+        v = inner.get(k)
+        if isinstance(v, str) and v.strip():
+            return v
+    hist = inner.get("replacement_history")
+    if isinstance(hist, list):
+        for item in hist:
+            t = _codex_payload_text(item) if isinstance(item, dict) else ""
+            if t:
+                return t
+    return ""
+
+
 def _append_activity(sid: int, kind: str, payload: dict,
                      ts: int | None = None) -> bool:
     body = {"session_id": sid, "kind": kind, "payload": payload}
@@ -415,11 +440,15 @@ def _ingest_codex_rollout(uuid: str, path: Path) -> int | None:
             if isinstance(e.get("content"), str):
                 payload["content_preview"] = e["content"][:400]
             elif isinstance(e.get("payload"), dict):
-                # Codex rollouts nest the substance under "payload"
+                # Codex rollouts nest substance under "payload", and content
+                # is usually a LIST of segments [{type, text}] — the original
+                # string-only check missed 100% of it (the husk flood).
                 inner = e["payload"]
-                txt = inner.get("content") or inner.get("text") or ""
-                if isinstance(txt, str) and txt.strip():
+                txt = _codex_payload_text(inner)
+                if txt:
                     payload["content_preview"] = txt[:400]
+                    if inner.get("role"):
+                        payload["role"] = inner["role"]
             if "content_preview" not in payload:
                 # Contentless husk. One Codex session once flooded the mind
                 # with 105k of these ({"raw_keys": [...]} only) — over half
@@ -440,6 +469,79 @@ def _ingest_codex_rollout(uuid: str, path: Path) -> int | None:
 # ── Antigravity (Gemini) ────────────────────────────────────────────────────
 
 _AG_BRAIN = USER_HOME / ".gemini" / "antigravity" / "brain"
+
+
+# -- agent assets: skills, rules, configs --------------------------------------
+# Bruno 2026-06-12: "is absolutely every file, skill, memory, context, rules,
+# customization from all 3 AIs being shared in an ACTUAL FUNCTIONAL AND
+# ACCESSIBLE WAY?" Transcripts/brain/summaries were; skills + global rules +
+# configs were NOT. This scanner ingests each as ONE durable memory row
+# (kind='agent_asset', stable id tracked in state["assets"] so updates edit
+# the same row), making them searchable by every agent through the capsule
+# and mind_memory tools.
+
+def _frontmatter_desc(text: str) -> str:
+    """name/description out of a SKILL.md frontmatter, best effort."""
+    out = []
+    for line in text.splitlines()[:30]:
+        ls = line.strip()
+        if ls.startswith(("name:", "description:")):
+            out.append(ls)
+    return " | ".join(out)
+
+
+def _iter_assets():
+    """Yield (key, agent, asset_kind, path, max_chars)."""
+    H = USER_HOME
+    fixed = [
+        ("claude:settings", "claude-code", "rules",
+         H / ".claude" / "settings.local.json", 4000),
+        ("codex:agents-md", "codex", "rules", H / ".codex" / "AGENTS.md", 12000),
+        ("codex:config", "codex", "config", H / ".codex" / "config.toml", 6000),
+        ("antigravity:gemini-md", "antigravity", "rules",
+         H / ".gemini" / "GEMINI.md", 12000),
+    ]
+    for key, agent, kind, path, cap in fixed:
+        if path.exists():
+            yield key, agent, kind, path, cap
+    for agent, root in (("claude-code", H / ".claude" / "skills"),
+                        ("codex", H / ".codex" / "skills")):
+        if not root.is_dir():
+            continue
+        for d in sorted(root.iterdir()):
+            md = d / "SKILL.md"
+            if d.is_dir() and md.exists():
+                yield f"{agent}:skill:{d.name}", agent, "skill", md, 1600
+
+
+def _scan_agent_assets(state: dict) -> int:
+    seen = state.setdefault("assets", {})
+    n = 0
+    for key, agent, kind, path, cap in _iter_assets():
+        try:
+            mtime = int(path.stat().st_mtime)
+        except OSError:
+            continue
+        rec = seen.get(key) or {}
+        if mtime <= rec.get("mtime", 0) and rec.get("mid"):
+            continue
+        text = _safe_read(path)[:cap]
+        if not text.strip():
+            continue
+        head = _frontmatter_desc(text) if kind == "skill" else ""
+        content = (f"[{agent} {kind}] {path.name}"
+                   + (f" — {head}" if head else "")
+                   + f"\npath: {path}\n\n{text}")
+        body = {"kind": "agent_asset", "content": content[:cap + 400],
+                "tags": f"asset,{kind},{agent},shared"}
+        if rec.get("mid"):
+            body["id"] = rec["mid"]
+        r = _post("/memory", body)
+        if r is None:
+            continue
+        seen[key] = {"mtime": mtime, "mid": (r or {}).get("id") or rec.get("mid")}
+        n += 1
+    return n
 
 
 def _scan_antigravity(state: dict) -> int:
@@ -593,6 +695,7 @@ def ingest_once() -> dict:
         "claude": _scan_claude(state),
         "codex": _scan_codex(state),
         "antigravity": _scan_antigravity(state),
+        "agent_assets": _scan_agent_assets(state),
     }
     state["last_ingest_at"] = int(time.time())
     _save_state(state)
