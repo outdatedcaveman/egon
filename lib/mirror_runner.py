@@ -27,9 +27,29 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / "state" / "mirror_runner.json"
 
-# Sources to mirror, in priority order. Zotero first (the big one).
-_SOURCES = ["zotero", "paperpile", "chrome_bookmarks", "letterboxd",
-            "instapaper", "notion_workspace"]
+# Sources to mirror, in priority order: zotero first (the big one), then a
+# curated order, then ANYTHING ELSE cross_search discovers, then the mind's
+# own entities — Bruno 2026-06-12: full and comprehensive on BOTH mirrors.
+_PRIORITY = ["zotero", "paperpile", "chrome_bookmarks", "letterboxd",
+             "instapaper", "notion_workspace"]
+_MIND_SOURCES = ["mind_sessions", "mind_projects", "mind_memories",
+                 "mind_skills"]
+
+
+def _all_sources() -> list[str]:
+    extra: list[str] = []
+    try:
+        from lib import cross_search
+        extra = [s for s in cross_search._all_sources()
+                 if s not in _PRIORITY and s != "zotero"]
+    except Exception:
+        pass
+    # chrome_tabs is EPHEMERAL (open tabs churn by the minute): mirroring it
+    # to Notion would spend the whole API budget on stale updates. It stays
+    # in the Obsidian mirror (free local writes); everything durable goes to
+    # both. "Efficiently yet thoroughly" — Bruno 2026-06-12.
+    extra = [x for x in extra if x != "chrome_tabs"]
+    return _PRIORITY + sorted(extra) + _MIND_SOURCES
 
 # Notion budget per run. At ~1.33s/item (3 parallel workers) a 500-item
 # run is ~11min; the runner's _mirror_running guard lets it span core
@@ -50,6 +70,9 @@ def _save(d: dict) -> None:
     STATE.write_text(json.dumps(d, indent=2), encoding="utf-8")
 
 
+_mind_cache: dict = {}
+
+
 def _snapshot_for(source: str) -> dict | None:
     if source == "zotero":
         try:
@@ -57,6 +80,16 @@ def _snapshot_for(source: str) -> dict | None:
             return zotero_local.snapshot()
         except Exception:
             return None
+    if source.startswith("mind_"):
+        global _mind_cache
+        if not _mind_cache:
+            try:
+                from lib.obsidian_mirror import _mind_entities
+                _mind_cache = _mind_entities()
+            except Exception:
+                _mind_cache = {}
+        items = _mind_cache.get(source) or []
+        return {"items": items} if items else None
     try:
         from lib import cross_search
         return cross_search._latest_snapshot_for(source)
@@ -91,15 +124,14 @@ def reconcile_existing() -> dict:
     state = _load()
     pages_map = state.setdefault("notion_pages", {})
     report = {}
-    for source in _SOURCES:
-        if source not in notion_mirror.SCHEMAS:
-            continue
+    for source in _all_sources():
+        # generic schema covers every source now
         try:
             db_id = notion_mirror._find_or_create_source_db(source)
             title_to_id = notion_mirror._existing_keys(db_id)  # {title_lower: pid}
             snap = _snapshot_for(source)
             items = (snap or {}).get("items") or []
-            schema = notion_mirror.SCHEMAS[source]
+            schema = (notion_mirror.SCHEMAS.get(source) or notion_mirror.GENERIC_SCHEMA)
             pm = pages_map.setdefault(source, {})
             matched = 0
             for it in items:
@@ -141,7 +173,7 @@ def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
 
     spent = 0
     report = {}
-    for source in _SOURCES:
+    for source in _all_sources():
         if spent >= batch:
             break
         snap = _snapshot_for(source)
@@ -167,7 +199,7 @@ def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
                     it = key_to_item.get(k)
                     if not it:
                         continue
-                    title = (notion_mirror.SCHEMAS[source]["title_from"](it)
+                    title = ((notion_mirror.SCHEMAS.get(source) or notion_mirror.GENERIC_SCHEMA)["title_from"](it)
                              or "").lower()
                     pid = title_to_id.get(title)
                     if pid:
