@@ -195,14 +195,20 @@ def _existing_keys(db_id: str, key_prop: str = "_key") -> dict[str, str]:
     return out
 
 
-def mirror_to_notion(source: str, snapshot: dict, max_items: int = 500) -> dict:
-    """Upsert every snapshot item to the source's Notion DB. Returns stats."""
+def mirror_to_notion(source: str, snapshot: dict, max_items: int = 500,
+                     assume_new: bool = False) -> dict:
+    """Upsert every snapshot item to the source's Notion DB. Returns stats.
+
+    assume_new=True skips the O(all-rows) existing-keys read and inserts
+    directly — used by the incremental runner, whose persistent cursor
+    already guarantees each window is pushed once (Bruno 2026-06-12: the
+    dedup scan made every batch slower as the DB grew, ~3.5s/item)."""
     if source not in SCHEMAS:
         return {"status": "no_schema", "error": f"no slim schema for {source}"}
 
     schema = SCHEMAS[source]
     db_id = _find_or_create_source_db(source)
-    existing = _existing_keys(db_id)
+    existing = {} if assume_new else _existing_keys(db_id)
 
     inserted = updated = errors = 0
     items_to_process = snapshot.get("items", [])[:max_items]
