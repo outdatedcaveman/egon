@@ -68,20 +68,28 @@ def snapshot() -> dict:
         # Also exclude notes/annotations, not just attachments, so the count
         # is true reference items.
         cur.execute("""
-            SELECT it.itemID, it.dateAdded, idv_t.value AS title, idv_d.value AS doi
+            SELECT it.itemID, it.dateAdded, idv_t.value AS title, idv_d.value AS doi,
+                   idv_a.value AS abstract, idv_u.value AS url
             FROM items it
             LEFT JOIN itemData id_t ON id_t.itemID = it.itemID AND id_t.fieldID = (SELECT fieldID FROM fields WHERE fieldName='title')
             LEFT JOIN itemDataValues idv_t ON idv_t.valueID = id_t.valueID
             LEFT JOIN itemData id_d ON id_d.itemID = it.itemID AND id_d.fieldID = (SELECT fieldID FROM fields WHERE fieldName='DOI')
             LEFT JOIN itemDataValues idv_d ON idv_d.valueID = id_d.valueID
+            LEFT JOIN itemData id_a ON id_a.itemID = it.itemID AND id_a.fieldID = (SELECT fieldID FROM fields WHERE fieldName='abstractNote')
+            LEFT JOIN itemDataValues idv_a ON idv_a.valueID = id_a.valueID
+            LEFT JOIN itemData id_u ON id_u.itemID = it.itemID AND id_u.fieldID = (SELECT fieldID FROM fields WHERE fieldName='url')
+            LEFT JOIN itemDataValues idv_u ON idv_u.valueID = id_u.valueID
             WHERE it.itemTypeID NOT IN (
                 SELECT itemTypeID FROM itemTypes
                 WHERE typeName IN ('attachment','note','annotation'))
             ORDER BY it.dateAdded DESC
         """)
         rows = []
-        for itemID, dateAdded, title, doi in cur.fetchall():
-            rows.append({"id": itemID, "added": dateAdded, "title": title or "(untitled)", "doi": doi or ""})
+        for itemID, dateAdded, title, doi, abstract, url in cur.fetchall():
+            rows.append({"id": itemID, "added": dateAdded,
+                         "title": title or "(untitled)", "doi": doi or "",
+                         "url": url or "",
+                         "abstract": (abstract or "")[:2000]})
         c.close()
     except sqlite3.DatabaseError as e:
         return {"status": "error", "error": f"sqlite: {e}"}
