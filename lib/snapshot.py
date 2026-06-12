@@ -111,6 +111,22 @@ def snapshot(write: bool = True, max_workers: int = 12) -> dict[str, Any]:
     adapters = _list_adapters()
     sources: dict[str, dict] = {}
 
+    # Deliberately-disabled adapters (egon-config.json adapters.disabled:
+    # {name: reason}). These report "off" — a CHOICE, not a failure — so the
+    # UI stops counting redundant/heavy optional tools (letta, mem0,
+    # openrefine, anystyle) as work waiting to happen. Bruno 2026-06-12.
+    disabled: dict = {}
+    try:
+        cfg = json.loads((Path(__file__).resolve().parent.parent
+                          / "egon-config.json").read_text(encoding="utf-8"))
+        disabled = (cfg.get("adapters") or {}).get("disabled") or {}
+    except Exception:
+        pass
+    for name, reason in disabled.items():
+        if name in adapters:
+            adapters.remove(name)
+            sources[name] = {"status": "off", "note": str(reason)}
+
     # WARM the import graph sequentially before any threaded probing — Python
     # import locks aren't safe under concurrent first-imports of modules whose
     # transitive deps overlap. We hit this with `instapaper_full` (whose

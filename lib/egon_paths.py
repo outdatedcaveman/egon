@@ -71,7 +71,15 @@ VAULT_MIRROR_ROOT = VAULT_RESOURCES / "Mirrors"
 LAST_PASS = VAULT_STATE / "last_pass.json"
 
 # --- Credentials env file ------------------------------------------------
+# Default is egon/.env (gitignored). Fall back to the historical location,
+# claude-meta/.env — the 2026-06 OSS genericization silently orphaned the
+# tokens living there (NOTION_TOKEN etc.) and the Notion mirror went
+# "unconfigured" without anyone noticing. Found 2026-06-12.
 ENV_FILE = _env_path("EGON_ENV_FILE", EGON_ROOT / ".env")
+if not ENV_FILE.exists():
+    _legacy_env = EGON_ROOT.parent / "claude-meta" / ".env"
+    if _legacy_env.exists():
+        ENV_FILE = _legacy_env
 
 # --- Agent "brain" / log dirs ingested by the unified mind ---------------
 BRAIN_DIRS = _env_paths(

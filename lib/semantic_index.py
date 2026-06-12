@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pathlib
 import sqlite3
 import threading
 import time
@@ -128,6 +129,42 @@ def _memory_items() -> list[dict]:
     return out
 
 
+def _file_items() -> list[dict]:
+    """Local + Drive files from state/files_index.jsonl (lib/file_indexer).
+    Metadata-only tier: we embed filename + parent folders — rich enough for
+    academic PDFs — and never touch file contents (Drive placeholders would
+    force-download). Bruno 2026-06-12, the big play tier 1."""
+    path = ROOT / "state" / "files_index.jsonl"
+    if not path.exists():
+        return []
+    out = []
+    try:
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                try:
+                    it = json.loads(line)
+                except Exception:
+                    continue
+                name = it.get("name") or ""
+                if not name:
+                    continue
+                parents = " ".join(
+                    pathlib.PurePath(it.get("path", "")).parts[-3:-1])
+                stem = pathlib.PurePath(name).stem.replace("_", " ")
+                out.append({
+                    "uid": "file:" + hashlib.md5(
+                        it.get("path", "").encode("utf-8", "ignore")).hexdigest(),
+                    "source": "files",
+                    "title": name[:200],
+                    "url": "file:///" + it.get("path", "").replace("\\", "/"),
+                    "snippet": (it.get("path") or "")[-200:],
+                    "text": (stem + " " + parents)[:_MAX_TEXT],
+                })
+    except Exception:
+        return []
+    return out
+
+
 def _hash(text: str) -> str:
     return hashlib.md5(text.encode("utf-8", "ignore")).hexdigest()[:12]
 
@@ -142,7 +179,7 @@ def build(force: bool = False) -> dict:
         _building = True
     try:
         INDEX_DIR.mkdir(parents=True, exist_ok=True)
-        corpus = _archive_items() + _memory_items()
+        corpus = _archive_items() + _memory_items() + _file_items()
         if not corpus:
             return {"status": "empty"}
         # Load existing index for incremental reuse.

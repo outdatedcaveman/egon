@@ -205,6 +205,15 @@ def check_index(u: Unit) -> None:
     def _build():
         global _index_building
         try:
+            # files first so the fresh files_index.jsonl feeds this build
+            # (big-play tier 1: Drive+PC filenames into the Connect engine)
+            from lib import file_indexer
+            fst = file_indexer.build()
+            log("info", "files_index_refresh",
+                files=fst.get("files"), secs=fst.get("seconds"))
+        except Exception as e:
+            log("warn", "files_index_failed", error=str(e)[:160])
+        try:
             from lib import semantic_index
             st = semantic_index.build(force=False)
             log("info", "index_refresh", **{k: v for k, v in st.items()})
