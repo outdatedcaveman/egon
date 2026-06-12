@@ -78,6 +78,48 @@ def _icon_for(slug: str) -> str:
     return _PROJECT_ICON.get((slug or "").lower(), "📁")
 
 
+# -- repo detection (Bruno 2026-06-12: split repo-backed vs drafts) ----------
+# A project is "repo-backed" when a local working copy with .git exists.
+# The mind's projects table has no root_path yet, so we resolve slug -> dir by
+# scanning the known code bases once (cached); aliases cover renamed slugs.
+_REPO_BASES = [r"C:\Users\bruno\Claude Code", r"C:\Users\bruno"]
+_SLUG_ALIASES = {"careerops": "carrera", "navigation": "routster",
+                 "inbox": "panop", "egon-meta": "claude-meta"}
+_repo_cache: dict = {}
+
+
+def _repo_for(slug: str):
+    """Path of the local git working copy for this project slug, or None."""
+    if slug in _repo_cache:
+        return _repo_cache[slug]
+    import os
+    names = {slug.lower(), _SLUG_ALIASES.get(slug.lower(), slug.lower())}
+    found = None
+    for base in _REPO_BASES:
+        try:
+            for d in os.listdir(base):
+                if d.lower() in names and \
+                        os.path.isdir(os.path.join(base, d, ".git")):
+                    found = os.path.join(base, d)
+                    break
+        except OSError:
+            continue
+        if found:
+            break
+    _repo_cache[slug] = found
+    return found
+
+
+def _repo_branch(repo: str) -> str:
+    try:
+        import pathlib as _pl
+        head = (_pl.Path(repo) / ".git" / "HEAD").read_text(
+            encoding="utf-8").strip()
+        return head.rsplit("/", 1)[-1] if "/" in head else head[:10]
+    except Exception:
+        return "?"
+
+
 def _api_get(path: str, params: dict | None = None,
              timeout: float = 1.5) -> dict | None:
     try:
@@ -102,7 +144,7 @@ def _fmt_age(ts: int | None) -> str:
     return f"{delta // 86400}d ago"
 
 
-def _project_card(slug: str, summary: dict) -> QFrame:
+def _project_card(slug: str, summary: dict, repo: str | None = None) -> QFrame:
     """Render one project card. `summary` keys:
         agents (list of agent_name strings),
         activity_count_7d (int),
@@ -131,6 +173,13 @@ def _project_card(slug: str, summary: dict) -> QFrame:
     title = QLabel(slug)
     title.setStyleSheet(f"color: {_TEXT}; font-size: 16px; font-weight: 600;")
     hdr.addWidget(title)
+    if repo:
+        badge = QLabel(f"📦 {_repo_branch(repo)}")
+        badge.setToolTip(repo)
+        badge.setStyleSheet(
+            f"color: {_GOLD}; font-size: 10px; font-weight: 700; "
+            f"border: 1px solid {_BORDER}; border-radius: 4px; padding: 1px 5px;")
+        hdr.addWidget(badge)
     hdr.addStretch(1)
     age = QLabel(_fmt_age(summary.get("last_ts")))
     age.setStyleSheet(f"color: {_MUTED};")
@@ -265,12 +314,9 @@ class ProjectsPage(QWidget):
         self._pipe_grid.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         root.addWidget(self._pipe_grid_host)
 
-        # All-projects grid heading
-        all_label = QLabel("All projects from the unified mind (every agent, every body)")
-        all_label.setStyleSheet(f"color: {_TEXT}; font-weight: 600; padding-top: 6px;")
-        root.addWidget(all_label)
-
-        # Scrollable grid
+        # Two sections (Bruno 2026-06-12): repo-backed projects are already
+        # structured (git history, branches, a real root) and deserve richer
+        # treatment than drafts, which only exist as mind activity so far.
         scroll = QScrollArea()
         scroll.setObjectName("projScroll")
         scroll.setWidgetResizable(True)
@@ -280,11 +326,26 @@ class ProjectsPage(QWidget):
         scroll.setStyleSheet(
             f"QScrollArea#projScroll {{ background-color: transparent; "
             f"border: 1px solid {_BORDER}; border-radius: 10px; }}")
-        self._grid_host = QWidget()
-        self._grid = QGridLayout(self._grid_host)
-        self._grid.setContentsMargins(10, 10, 10, 10)
+        host = QWidget()
+        hv = QVBoxLayout(host)
+        hv.setContentsMargins(10, 10, 10, 10)
+        hv.setSpacing(8)
+        self._repo_label = QLabel("📦 Repo-backed (git/GitHub — structured)")
+        self._repo_label.setStyleSheet(f"color: {_TEXT}; font-weight: 600;")
+        hv.addWidget(self._repo_label)
+        self._repo_grid = QGridLayout()
+        self._repo_grid.setSpacing(12)
+        self._repo_grid.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        hv.addLayout(self._repo_grid)
+        self._draft_label = QLabel("📝 Drafts & explorations (mind-only, no repo yet)")
+        self._draft_label.setStyleSheet(f"color: {_TEXT}; font-weight: 600; padding-top: 8px;")
+        hv.addWidget(self._draft_label)
+        self._grid = QGridLayout()
         self._grid.setSpacing(12)
-        scroll.setWidget(self._grid_host)
+        self._grid.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        hv.addLayout(self._grid)
+        hv.addStretch(1)
+        scroll.setWidget(host)
         root.addWidget(scroll, stretch=1)
 
     def _clear_layout(self, layout) -> None:
@@ -313,6 +374,7 @@ class ProjectsPage(QWidget):
 
         # ----- mind projects (single batch query) -----
         self._clear_layout(self._grid)
+        self._clear_layout(self._repo_grid)
         # Antigravity 2026-05-31: use the batch /projects/summary endpoint
         # instead of one /activity query per project. Cuts N HTTP calls to 1.
         summary_resp = _api_get("/projects/summary", timeout=3.0)
@@ -336,20 +398,16 @@ class ProjectsPage(QWidget):
                 self._render_empty("The mind is up but no projects are registered yet.")
                 return
             # Minimal cards without per-project activity detail
-            COLS = 4
-            for i, proj in enumerate(projects[:50]):
+            items = []
+            for proj in projects[:50]:
                 slug = proj.get("slug") or "?"
-                summary = {
+                items.append((slug, {
                     "agents": [], "activity_count_7d": 0,
                     "last_ts": proj.get("updated_at") or 0,
                     "last_kind": None, "last_payload_preview": "",
                     "last_agent": "—",
-                }
-                self._grid.addWidget(_project_card(slug, summary),
-                                      i // COLS, i % COLS,
-                                      Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-            self._grid.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-            self._grid.setRowStretch((len(projects[:50]) + COLS - 1) // COLS, 1)
+                }))
+            self._render_split(items)
             return
 
         projects = summary_resp.get("projects") or []
@@ -371,25 +429,41 @@ class ProjectsPage(QWidget):
             )
             return
 
-        # Render in a 4-column grid of fixed-size cards.
-        COLS = 4
-        for i, proj in enumerate(projects):
+        items = []
+        for proj in projects:
             slug = proj.get("slug") or "?"
             # The batch endpoint returns the summary fields directly
-            summary = {
+            items.append((slug, {
                 "agents": proj.get("agents") or [],
                 "activity_count_7d": proj.get("activity_count_7d") or 0,
                 "last_ts": proj.get("last_ts") or proj.get("updated_at") or 0,
                 "last_kind": proj.get("last_kind"),
                 "last_payload_preview": proj.get("last_payload_preview") or "",
                 "last_agent": proj.get("last_agent") or "—",
-            }
+            }))
+        self._render_split(items)
+
+    def _render_split(self, items: list) -> None:
+        """Two tile grids: repo-backed (with branch badge) above drafts."""
+        COLS = 4
+        repo_items = [(s_, sm, _repo_for(s_)) for s_, sm in items]
+        repos = [(s_, sm, rp) for s_, sm, rp in repo_items if rp]
+        drafts = [(s_, sm) for s_, sm, rp in repo_items if not rp]
+        # most recent activity first in both sections
+        repos.sort(key=lambda t: -(t[1].get("last_ts") or 0))
+        drafts.sort(key=lambda t: -(t[1].get("last_ts") or 0))
+        self._repo_label.setText(
+            f"📦 Repo-backed ({len(repos)}) — git working copies, structured")
+        self._draft_label.setText(
+            f"📝 Drafts & explorations ({len(drafts)}) — mind-only, no repo yet")
+        for i, (slug, summary, rp) in enumerate(repos):
+            self._repo_grid.addWidget(_project_card(slug, summary, repo=rp),
+                                      i // COLS, i % COLS,
+                                      Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        for i, (slug, summary) in enumerate(drafts):
             self._grid.addWidget(_project_card(slug, summary),
-                                  i // COLS, i % COLS,
-                                  Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        # Push everything to the top-left, no stretching.
-        self._grid.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        self._grid.setRowStretch((len(projects) + COLS - 1) // COLS, 1)
+                                 i // COLS, i % COLS,
+                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
     def _render_empty(self, msg: str) -> None:
         empty = QLabel(msg)
