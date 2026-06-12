@@ -58,6 +58,7 @@ SNAPSHOT_ADAPTERS = (
     ("pocketcasts",      "lib.adapters.pocketcasts"),
     ("paperpile",        "lib.adapters.paperpile"),
     ("instapaper",       "lib.adapters.instapaper"),
+    ("youtube_history",  "lib.adapters.youtube_history"),
 )
 
 
