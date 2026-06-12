@@ -68,16 +68,26 @@ def mirror_obsidian_full() -> dict:
     return obsidian_mirror.mirror_all()
 
 
+def _item_key(item: dict) -> str:
+    return str(item.get("id") or item.get("key") or item.get("url")
+               or item.get("title") or "?")
+
+
 def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
-    """Advance the Notion mirror by one bounded, newest-first batch across
-    sources whose cursor hasn't caught up. Persistent cursor; never re-pushes.
+    """Advance the Notion mirror by one bounded batch of UNPUSHED items.
+
+    Keyed by stable item id, NOT a positional offset (2026-06-12 fix): new
+    Zotero refs land at the top of the newest-first snapshot, so an index
+    cursor silently skipped them. We persist the SET of already-pushed keys
+    per source; any item whose key isn't in that set is pending, so brand-new
+    references flow automatically the next time the runner fires.
     """
     from lib import notion_mirror
     if not notion_mirror.EGON_PAGE_ID:
         return {"status": "no_root",
                 "error": "notion.egon_page_id not set in egon-config.json"}
     state = _load()
-    cursors = state.setdefault("notion_cursor", {})
+    pushed_map = state.setdefault("notion_pushed", {})
     spent = 0
     report = {}
     for source in _SOURCES:
@@ -88,21 +98,24 @@ def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
         if not items:
             report[source] = "no items"
             continue
-        done = int(cursors.get(source, 0))
-        if done >= len(items):
-            report[source] = f"caught up ({done})"
+        pushed = set(pushed_map.get(source, []))
+        pending = [it for it in items if _item_key(it) not in pushed]
+        if not pending:
+            report[source] = f"caught up ({len(pushed)})"
             continue
-        take = min(batch - spent, len(items) - done)
-        window = {"items": items[done:done + take]}
+        take = min(batch - spent, len(pending))
+        window = {"items": pending[:take]}
         try:
-            # The window is small, so mirror_to_notion's per-call existing-keys
-            # read stays bounded; dedup still protects against double-insert.
-            res = notion_mirror.mirror_to_notion(source, window, max_items=take, assume_new=True)
+            res = notion_mirror.mirror_to_notion(source, window,
+                                                 max_items=take, assume_new=True)
             advanced = res.get("inserted", 0) + res.get("updated", 0)
-            cursors[source] = done + take
+            pushed.update(_item_key(it) for it in pending[:take])
+            pushed_map[source] = sorted(pushed)
             spent += take
-            report[source] = (f"+{advanced} ({cursors[source]}/{len(items)})"
-                              + (f" {res.get('errors')} err" if res.get("errors") else ""))
+            report[source] = (
+                f"+{advanced} ({len(pushed)}/{len(items)}, "
+                f"{len(pending) - take} pending)"
+                + (f" {res.get('errors')} err" if res.get("errors") else ""))
         except Exception as e:
             report[source] = f"error: {str(e)[:80]}"
             break
