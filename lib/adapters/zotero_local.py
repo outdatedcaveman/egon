@@ -35,7 +35,25 @@ def live_status() -> dict:
     p = _db()
     if not p:
         return {"status": "unconfigured", "error": f"zotero.sqlite not found in {CANDIDATES}"}
-    return {"status": "ok", "path": str(p), "size_mb": round(p.stat().st_size / 1_000_000, 1)}
+    # Report the TRUE reference count (home/dashboard read total_items; without
+    # it the source silently looked empty). Fast COUNT(*), not a full fetch.
+    # Bruno 2026-06-12: was undercounting at the old LIMIT 5000.
+    total = None
+    try:
+        c = sqlite3.connect(f"file:{p}?mode=ro&immutable=1", uri=True, timeout=10.0)
+        total = c.execute("""
+            SELECT COUNT(*) FROM items
+            WHERE itemTypeID NOT IN (
+                SELECT itemTypeID FROM itemTypes
+                WHERE typeName IN ('attachment','note','annotation'))""").fetchone()[0]
+        c.close()
+    except Exception:
+        pass
+    out = {"status": "ok", "path": str(p),
+           "size_mb": round(p.stat().st_size / 1_000_000, 1)}
+    if total is not None:
+        out["total_items"] = total
+    return out
 
 
 def snapshot() -> dict:
@@ -43,8 +61,12 @@ def snapshot() -> dict:
     if not p:
         return {"status": "unconfigured", "error": "zotero.sqlite not found"}
     try:
-        c = sqlite3.connect(f"file:{p}?mode=ro&immutable=1", uri=True, timeout=3.0)
+        c = sqlite3.connect(f"file:{p}?mode=ro&immutable=1", uri=True, timeout=10.0)
         cur = c.cursor()
+        # No artificial cap: Bruno's library is ~252k real items and the old
+        # LIMIT 5000 was the entire "Zotero has 5k" undercount (2026-06-12).
+        # Also exclude notes/annotations, not just attachments, so the count
+        # is true reference items.
         cur.execute("""
             SELECT it.itemID, it.dateAdded, idv_t.value AS title, idv_d.value AS doi
             FROM items it
@@ -52,9 +74,10 @@ def snapshot() -> dict:
             LEFT JOIN itemDataValues idv_t ON idv_t.valueID = id_t.valueID
             LEFT JOIN itemData id_d ON id_d.itemID = it.itemID AND id_d.fieldID = (SELECT fieldID FROM fields WHERE fieldName='DOI')
             LEFT JOIN itemDataValues idv_d ON idv_d.valueID = id_d.valueID
-            WHERE it.itemTypeID != (SELECT itemTypeID FROM itemTypes WHERE typeName='attachment')
+            WHERE it.itemTypeID NOT IN (
+                SELECT itemTypeID FROM itemTypes
+                WHERE typeName IN ('attachment','note','annotation'))
             ORDER BY it.dateAdded DESC
-            LIMIT 5000
         """)
         rows = []
         for itemID, dateAdded, title, doi in cur.fetchall():
@@ -71,7 +94,7 @@ def snapshot() -> dict:
     }
 
 
-def items(limit: int = 5000) -> list[dict]:
+def items(limit: int = 300000) -> list[dict]:
     """Direct read from the Zotero SQLite — full set of fields.
 
     Bypasses snapshot_store so the UI always sees the live DB, with every
@@ -126,8 +149,9 @@ def items(limit: int = 5000) -> list[dict]:
             LEFT JOIN itemDataValues v_book_title ON v_book_title.valueID = id_book.valueID
             LEFT JOIN itemData id_abs   ON id_abs.itemID   = it.itemID AND id_abs.fieldID   = {fid('abstractNote')}
             LEFT JOIN itemDataValues v_abstract ON v_abstract.valueID = id_abs.valueID
-            WHERE it.itemTypeID != (SELECT itemTypeID FROM itemTypes WHERE typeName='attachment')
-              AND it.itemTypeID != (SELECT itemTypeID FROM itemTypes WHERE typeName='note')
+            WHERE it.itemTypeID NOT IN (
+                SELECT itemTypeID FROM itemTypes
+                WHERE typeName IN ('attachment','note','annotation'))
             ORDER BY it.dateAdded DESC
             LIMIT ?
         """

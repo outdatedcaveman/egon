@@ -490,6 +490,19 @@ def _frontmatter_desc(text: str) -> str:
     return " | ".join(out)
 
 
+# Skill roots per agent. Skills don't live in one folder — they're scattered
+# across plugin caches, vendor imports and IDE plugin dirs. 2026-06-12: the
+# old scanner only checked the TOP level of two dirs and found 2 Codex skills;
+# the real counts are Claude ~136+110(plugins), Codex ~196 (plugins/cache +
+# vendor_imports), Antigravity ~49. We rglob each root for SKILL.md and dedup
+# by skill name (parent-dir) so each capability is ingested once.
+_SKILL_ROOTS = {
+    "claude-code": [".claude/skills", ".claude/plugins"],
+    "codex": [".codex/skills", ".codex/plugins/cache", ".codex/vendor_imports/skills"],
+    "antigravity": [".gemini/config/plugins", ".gemini/antigravity-ide/plugins"],
+}
+
+
 def _iter_assets():
     """Yield (key, agent, asset_kind, path, max_chars)."""
     H = USER_HOME
@@ -504,14 +517,23 @@ def _iter_assets():
     for key, agent, kind, path, cap in fixed:
         if path.exists():
             yield key, agent, kind, path, cap
-    for agent, root in (("claude-code", H / ".claude" / "skills"),
-                        ("codex", H / ".codex" / "skills")):
-        if not root.is_dir():
-            continue
-        for d in sorted(root.iterdir()):
-            md = d / "SKILL.md"
-            if d.is_dir() and md.exists():
-                yield f"{agent}:skill:{d.name}", agent, "skill", md, 1600
+
+    for agent, roots in _SKILL_ROOTS.items():
+        seen_names: set[str] = set()
+        for rel in roots:
+            root = H / rel
+            if not root.is_dir():
+                continue
+            for md in root.rglob("SKILL.md"):
+                # skip transient/legacy/backup copies — only canonical skills
+                low = str(md).lower()
+                if any(x in low for x in (".tmp", "legacy", "backup")):
+                    continue
+                name = md.parent.name
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
+                yield f"{agent}:skill:{name}", agent, "skill", md, 1600
 
 
 def _scan_agent_assets(state: dict) -> int:
