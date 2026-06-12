@@ -52,6 +52,11 @@ def _connect_search_page():
     return ConnectSearchPage()
 
 
+def _databases_page():
+    from egon_app.pages.databases import DatabasesPage
+    return DatabasesPage()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -244,6 +249,7 @@ class MainWindow(QMainWindow):
             "projects":   ProjectsPage,
             "connect":    _connect_search_page,
             "artifacts":  _artifacts_page,
+            "databases":  _databases_page,
         }
         self._idx_slug: dict[int, str] = {}
         self._built_slugs: set[str] = set()

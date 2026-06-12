@@ -414,6 +414,19 @@ def _ingest_codex_rollout(uuid: str, path: Path) -> int | None:
             payload = {"raw_keys": list(e.keys())[:10]}
             if isinstance(e.get("content"), str):
                 payload["content_preview"] = e["content"][:400]
+            elif isinstance(e.get("payload"), dict):
+                # Codex rollouts nest the substance under "payload"
+                inner = e["payload"]
+                txt = inner.get("content") or inner.get("text") or ""
+                if isinstance(txt, str) and txt.strip():
+                    payload["content_preview"] = txt[:400]
+            if "content_preview" not in payload:
+                # Contentless husk. One Codex session once flooded the mind
+                # with 105k of these ({"raw_keys": [...]} only) — over half
+                # of all activity rows, zero information. Skip; the session
+                # row itself still records that the session happened.
+                # 2026-06-12 cleanup; husks archived to mind_archive.db.
+                continue
             if not _append_activity(sid, kind=kind, payload=payload, ts=ts):
                 return None
             n += 1
