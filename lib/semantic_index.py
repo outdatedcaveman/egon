@@ -228,6 +228,7 @@ def build(force: bool = False) -> dict:
         mat = np.vstack([v for v in vectors if v is not None]).astype(np.float32)
         np.save(VEC_PATH, mat)
         META_PATH.write_text(json.dumps(meta), encoding="utf-8")
+        _write_turbo(mat)
         _invalidate()
         return {"status": "ok", "items": len(meta),
                 "new": len(to_embed), "reused": len(meta) - len(to_embed)}
@@ -239,6 +240,28 @@ def _slim(item: dict) -> dict:
     return {k: item[k] for k in ("uid", "source", "title", "url", "snippet")}
 
 
+# ── turbovec engine (2026-06-12, Bruno's pick) ───────────────────────────────
+# TurboQuant-quantized index: ~8x smaller than the float32 matrix and
+# searched in ~15ms without loading 500MB into RAM. ids are ROW POSITIONS in
+# meta.json (both files are written atomically together by build()). The
+# numpy matrix stays on disk as the fallback engine and the incremental-
+# reuse store; if turbovec is unavailable the old brute-force path runs.
+TURBO_PATH = INDEX_DIR / "turbo.idx"
+
+
+def _write_turbo(mat: "np.ndarray") -> None:
+    try:
+        import turbovec
+        idx = turbovec.IdMapIndex(mat.shape[1])
+        ids = np.ascontiguousarray(np.arange(len(mat)), dtype=np.uint64)
+        idx.add_with_ids(np.ascontiguousarray(mat, dtype=np.float32), ids)
+        idx.prepare()
+        idx.write(str(TURBO_PATH))
+    except Exception:
+        # fallback engine (numpy matrix) still works; never fail the build
+        pass
+
+
 def ensure_built_async() -> None:
     """Kick a background build/refresh if not already running."""
     threading.Thread(target=lambda: build(force=False),
@@ -247,38 +270,104 @@ def ensure_built_async() -> None:
 
 # ── query ────────────────────────────────────────────────────────────────────
 def _invalidate():
-    global _vecs, _meta, _meta_mtime
-    _vecs, _meta, _meta_mtime = None, None, 0.0
+    global _vecs, _meta, _meta_mtime, _turbo
+    _vecs, _meta, _meta_mtime, _turbo = None, None, 0.0, None
+
+
+_turbo = None
+
+
+def _load_meta():
+    """meta.json only (shared by both engines)."""
+    global _meta, _meta_mtime
+    if not META_PATH.exists():
+        return None
+    mtime = META_PATH.stat().st_mtime
+    if _meta is not None and mtime == _meta_mtime:
+        return _meta
+    try:
+        _meta = json.loads(META_PATH.read_text(encoding="utf-8"))
+        _meta_mtime = mtime
+        global _vecs, _turbo
+        _vecs = None      # engines reload lazily against the new meta
+        _turbo = None
+        return _meta
+    except Exception:
+        return None
+
+
+def _load_turbo(n_meta: int):
+    """turbovec engine if present and consistent with meta; else None."""
+    global _turbo
+    if _turbo is not None:
+        return _turbo
+    if not TURBO_PATH.exists():
+        return None
+    try:
+        import turbovec
+        t = turbovec.IdMapIndex.load(str(TURBO_PATH))
+        t.prepare()
+        # consistency: the newest row id must exist (rows = meta positions)
+        if n_meta and not t.contains(n_meta - 1):
+            return None
+        _turbo = t
+        return t
+    except Exception:
+        return None
 
 
 def _load_index():
-    global _vecs, _meta, _meta_mtime
-    if not VEC_PATH.exists() or not META_PATH.exists():
+    """Fallback engine: the raw float32 matrix (RAM-heavy)."""
+    global _vecs
+    meta = _load_meta()
+    if meta is None or not VEC_PATH.exists():
         return None, None
-    mtime = META_PATH.stat().st_mtime
-    if _vecs is not None and mtime == _meta_mtime:
-        return _vecs, _meta
+    if _vecs is not None:
+        return _vecs, meta
     try:
         _vecs = np.load(VEC_PATH)
-        _meta = json.loads(META_PATH.read_text(encoding="utf-8"))
-        _meta_mtime = mtime
-        return _vecs, _meta
+        return _vecs, meta
     except Exception:
         return None, None
 
 
 def is_ready() -> bool:
-    v, m = _load_index()
-    return v is not None and m is not None and len(m) > 0
+    meta = _load_meta()
+    if not meta:
+        return False
+    return TURBO_PATH.exists() or VEC_PATH.exists()
 
 
 def search(query: str, top_k: int = 40, min_score: float = 0.18) -> list[dict]:
-    """Cosine-rank the cached index against the query embedding."""
-    v, meta = _load_index()
-    if v is None or not query.strip():
+    """Rank the index against the query embedding. turbovec engine first
+    (~15ms, no big matrix in RAM); numpy brute-force as fallback."""
+    if not query.strip():
+        return []
+    meta = _load_meta()
+    if not meta:
         return []
     qv = _embed([query[:_MAX_TEXT]])
     if qv is None:
+        return []
+
+    t = _load_turbo(len(meta))
+    if t is not None:
+        try:
+            q = np.ascontiguousarray(qv[:1], dtype=np.float32)
+            scores, ids = t.search(q, min(top_k, len(meta)))
+            out = []
+            for s, i in zip(scores[0], ids[0]):
+                s = float(s)
+                if s < min_score or int(i) >= len(meta):
+                    continue
+                out.append({**meta[int(i)], "score": round(s, 3)})
+            if out:
+                return out
+        except Exception:
+            pass    # fall through to numpy
+
+    v, meta = _load_index()
+    if v is None:
         return []
     sims = v @ qv[0]                      # vectors are L2-normalized → cosine
     n = min(top_k, len(meta))
