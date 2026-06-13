@@ -11,12 +11,69 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QFrame,
-    QPushButton, QScrollArea, QComboBox, QLineEdit, QListWidget,
-    QListWidgetItem, QAbstractItemView,
+    QPushButton, QScrollArea, QComboBox, QLineEdit,
 )
 
 _TEXT = "#F0E9D5"; _MUTED = "#9CA3AF"; _GOLD = "#D4A24C"; _ACCENT = "#7BC5C7"
 _CARD = "#0E2630"; _BORDER = "#1F4858"; _OK = "#7FB069"; _VIO = "#9D7BD8"
+
+
+class _InterestRow(QFrame):
+    """One interest: ★ pin button · editable name field · source · ✕ remove."""
+    def __init__(self, row: dict, on_pin, on_rename, on_remove):
+        super().__init__()
+        self._name = row["name"]
+        self._on_rename = on_rename
+        self.setObjectName("intRow")
+        self.setStyleSheet(
+            f"#intRow {{ background:transparent; border-bottom:1px solid "
+            f"#16323d; }}")
+        h = QHBoxLayout(self); h.setContentsMargins(6, 3, 6, 3); h.setSpacing(8)
+
+        pinned = row.get("pinned")
+        star = QPushButton("★" if pinned else "☆")
+        star.setFixedWidth(30)
+        star.setCursor(Qt.PointingHandCursor)
+        star.setToolTip("Pin / unpin")
+        star.setStyleSheet(
+            f"QPushButton {{ border:none; background:transparent; font-size:16px; "
+            f"color:{_GOLD if pinned else _MUTED}; }}"
+            f"QPushButton:hover {{ color:{_GOLD}; }}")
+        star.clicked.connect(lambda: on_pin(self._name))
+        h.addWidget(star)
+
+        self._field = QLineEdit(row["name"])
+        self._field.setFrame(False)
+        self._field.setStyleSheet(
+            f"QLineEdit {{ background:transparent; color:{_TEXT}; border:none; "
+            f"font-size:13px; }} QLineEdit:focus {{ background:#16404F; "
+            f"border:1px solid {_BORDER}; border-radius:3px; }}")
+        self._field.editingFinished.connect(self._commit)
+        h.addWidget(self._field, 1)
+
+        src = row.get("source", "")
+        src_color = {"Discover": _VIO, "YouTube": _ACCENT,
+                     "you": _GOLD}.get(src, _MUTED)
+        badge = QLabel(src)
+        badge.setStyleSheet(
+            f"color:{src_color}; font-size:10px; background:{_BORDER}; "
+            f"padding:2px 7px; border-radius:9px;")
+        h.addWidget(badge)
+
+        x = QPushButton("✕")
+        x.setFixedWidth(28)
+        x.setCursor(Qt.PointingHandCursor)
+        x.setToolTip("Remove")
+        x.setStyleSheet(
+            f"QPushButton {{ border:none; background:transparent; color:{_MUTED}; "
+            f"font-size:14px; }} QPushButton:hover {{ color:#D67A6A; }}")
+        x.clicked.connect(lambda: on_remove(self._name))
+        h.addWidget(x)
+
+    def _commit(self):
+        new = self._field.text().strip()
+        if new and new != self._name:
+            self._on_rename(self._name, new)
 
 
 def _stat(value: str, label: str, accent: str = _GOLD) -> QFrame:
@@ -89,7 +146,7 @@ class PersonaPage(QWidget):
         self._v.addLayout(self._health_grid)
 
         # interests — editable + sortable
-        ih = QLabel("🧭 Interests  (double-click to rename · ★ pin · ✕ remove)")
+        ih = QLabel("🧭 Interests  ·  edit the text inline · ☆ pin · ✕ remove")
         ih.setStyleSheet(f"color:{_TEXT}; font-size:15px; font-weight:700; "
                          f"margin-top:6px;")
         self._v.addWidget(ih)
@@ -118,24 +175,27 @@ class PersonaPage(QWidget):
         bar.addWidget(self._count)
         self._v.addLayout(bar)
 
-        self._list = QListWidget()
-        self._list.setMinimumHeight(320)
-        self._list.setEditTriggers(QAbstractItemView.DoubleClicked
-                                   | QAbstractItemView.EditKeyPressed)
-        self._list.setStyleSheet(
-            f"QListWidget {{ background:#102F3C; color:{_TEXT}; border:1px solid "
-            f"{_BORDER}; border-radius:6px; }} QListWidget::item {{ padding:5px "
-            f"8px; border-bottom:1px solid #16323d; }} "
-            f"QListWidget::item:selected {{ background:#1F5366; }}")
-        self._list.itemChanged.connect(self._on_item_changed)
-        self._list.itemClicked.connect(self._on_item_clicked)
-        self._v.addWidget(self._list)
+        # scrollable container of editable rows (each with real ★ / ✕ buttons)
+        listwrap = QFrame()
+        listwrap.setStyleSheet(
+            f"QFrame {{ background:#102F3C; border:1px solid {_BORDER}; "
+            f"border-radius:6px; }}")
+        lw = QVBoxLayout(listwrap); lw.setContentsMargins(2, 2, 2, 2)
+        inner_scroll = QScrollArea(); inner_scroll.setWidgetResizable(True)
+        inner_scroll.setFrameShape(QFrame.NoFrame)
+        inner_scroll.setMinimumHeight(340)
+        self._rows_host = QWidget()
+        self._rows = QVBoxLayout(self._rows_host)
+        self._rows.setContentsMargins(0, 0, 0, 0); self._rows.setSpacing(0)
+        self._rows.addStretch(1)
+        inner_scroll.setWidget(self._rows_host)
+        lw.addWidget(inner_scroll)
+        self._v.addWidget(listwrap)
         self._v.addStretch(1)
 
         self._ready.connect(self._render_health)
         self._prose_ready.connect(self._render_prose)
         self._interests_ready.connect(self._render_interests)
-        self._editing = False
         self._kick()
 
     # ── load ────────────────────────────────────────────────────────────────
@@ -194,29 +254,23 @@ class PersonaPage(QWidget):
             self._health_grid.setColumnStretch(i % 4, 1)
 
     def _render_interests(self, rows: list) -> None:
-        self._editing = True
-        self._list.clear()
+        # clear existing rows (keep the trailing stretch)
+        while self._rows.count() > 1:
+            it = self._rows.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
         for r in rows:
-            star = "★ " if r.get("pinned") else ""
-            it = QListWidgetItem(f"{star}{r['name']}")
-            it.setData(Qt.UserRole, r["name"])
-            it.setData(Qt.UserRole + 1, r.get("source", ""))
-            it.setFlags(it.flags() | Qt.ItemIsEditable)
-            tag = {"Discover": _VIO, "YouTube": _ACCENT,
-                   "you": _GOLD}.get(r.get("source"), _MUTED)
-            it.setForeground(Qt.GlobalColor.white)
-            it.setToolTip(f"source: {r.get('source','')} — click to pin/unpin, "
-                          f"double-click to rename, Del to remove")
-            self._list.addItem(it)
+            self._rows.insertWidget(
+                self._rows.count() - 1,
+                _InterestRow(r, self._pin, self._rename, self._remove))
         self._count.setText(f"{len(rows)} interests")
-        self._editing = False
 
     def _render_prose(self, res: dict) -> None:
         self._gen.setEnabled(True); self._gen.setText("✨ Generate summary")
         self._prose.setText("🪞  " + (res.get("summary") or ""))
         self._prose.show()
 
-    # ── edit handlers ─────────────────────────────────────────────────────────
+    # ── edit handlers (real buttons / fields) ────────────────────────────────
     def _add_interest(self) -> None:
         name = self._add.text().strip()
         if not name:
@@ -226,35 +280,20 @@ class PersonaPage(QWidget):
         self._add.clear()
         self._reload_interests()
 
-    def _on_item_changed(self, item: QListWidgetItem) -> None:
-        if self._editing:
-            return
-        old = item.data(Qt.UserRole)
-        new = item.text().lstrip("★ ").strip()
-        if new and new != old:
-            from lib import persona
-            persona.rename_interest(old, new)
-            self._reload_interests()
+    def _pin(self, name: str) -> None:
+        from lib import persona
+        persona.toggle_pin(name)
+        self._reload_interests()
 
-    def _on_item_clicked(self, item: QListWidgetItem) -> None:
-        # single click toggles pin only on the star zone — keep it simple:
-        # ctrl-click pins, plain click selects (rename = double-click, Del=remove)
-        from PySide6.QtWidgets import QApplication
-        mods = QApplication.keyboardModifiers()
-        if mods & Qt.ControlModifier:
-            from lib import persona
-            persona.toggle_pin(item.data(Qt.UserRole))
-            self._reload_interests()
+    def _rename(self, old: str, new: str) -> None:
+        from lib import persona
+        persona.rename_interest(old, new)
+        self._reload_interests()
 
-    def keyPressEvent(self, e):
-        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self._list.hasFocus():
-            it = self._list.currentItem()
-            if it:
-                from lib import persona
-                persona.remove_interest(it.data(Qt.UserRole))
-                self._reload_interests()
-                return
-        super().keyPressEvent(e)
+    def _remove(self, name: str) -> None:
+        from lib import persona
+        persona.remove_interest(name)
+        self._reload_interests()
 
     # ── prose ─────────────────────────────────────────────────────────────────
     def _generate(self) -> None:

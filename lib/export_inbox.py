@@ -39,6 +39,45 @@ EXPORTS = ROOT / "state" / "exports"
 MARK = INBOX / "_imported.json"
 PANOP = ROOT / "state" / "panop"
 
+# ── ONCE-FOR-ALL auto-watch (Bruno 2026-06-13: "I don't want to keep
+# exporting and uploading for ANY service"). Google Takeout supports
+# SCHEDULED exports that auto-deliver to Google Drive every 2 months; the
+# Drive desktop mount syncs them locally. So beyond state/inbox, we also
+# auto-scan the Takeout folder in Drive and the Downloads folder. Set ONE
+# scheduled Takeout-to-Drive and new exports flow in forever, hands-off.
+_HOME = Path.home()
+_WATCH_DIRS = [
+    INBOX,
+    _HOME / "Google Drive" / "Takeout",
+    _HOME / "Google Drive" / "My Drive" / "Takeout",
+    _HOME / "My Drive" / "Takeout",
+    _HOME / "Downloads",
+]
+
+
+def _looks_like_export(name: str) -> bool:
+    n = name.lower()
+    return (n.startswith("takeout") or n.startswith("takeout-")
+            or "instapaper" in n or "tvtime" in n
+            or ("amazon" in n and "request" in n) or "_data_export" in n)
+
+
+def _all_export_zips() -> list[Path]:
+    """Every export zip across the watched dirs. Inbox: ALL zips (user put
+    them there deliberately). Drive/Downloads: only ones that look like a
+    vendor export, so we don't extract unrelated archives."""
+    found: dict[str, Path] = {}
+    for d in _WATCH_DIRS:
+        if not d.is_dir():
+            continue
+        try:
+            for z in d.glob("*.zip"):
+                if d == INBOX or _looks_like_export(z.name):
+                    found.setdefault(z.name, z)
+        except Exception:
+            continue
+    return [found[k] for k in sorted(found)]
+
 
 # ── vendor detection ─────────────────────────────────────────────────────────
 def _detect_vendor(names: list[str]) -> str:
@@ -352,7 +391,7 @@ def process() -> dict:
         seen = {}
 
     out: dict = {}
-    for z in sorted(INBOX.rglob("*.zip")):
+    for z in _all_export_zips():
         sig = f"{z.name}:{int(z.stat().st_mtime)}"
         if seen.get(sig):
             continue
