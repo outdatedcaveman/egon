@@ -50,7 +50,11 @@ _DEFAULT_ROOTS = [
 _DEFAULT_EXTS = {".pdf", ".md", ".txt", ".docx", ".doc", ".epub", ".rtf",
                  ".tex", ".odt", ".pptx", ".csv", ".org"}
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv",
-              "AppData", ".obsidian", ".trash", "$RECYCLE.BIN"}
+              "AppData", ".obsidian", ".trash", "$RECYCLE.BIN",
+              # Fit raw export dirs — daily metrics become clean entities via
+              # the google_fit snapshot; the raw per-day/sample files (10k+)
+              # would flood Artifacts. 2026-06-13.
+              "All Data", "Daily activity metrics"}
 
 
 def _config() -> dict:
