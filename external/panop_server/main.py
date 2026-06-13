@@ -110,6 +110,9 @@ def get_env():
             "zotero_user_id": "",                 # Zotero numeric user ID
             "zotero_collection_key": "",          # optional: target collection key
             "close_tabs_after_save": False,       # opt-in: close tab on phone after successful save
+            "require_manual_vetting_before_close": True,
+            "enable_autonomous_sweep": False,
+            "resolve_terminal_redirects": True,
             "chrome_profile": "Default"           # Chrome profile folder name
         }
         with open(ENV_FILE, "w") as f: json.dump(env, f)
@@ -119,15 +122,19 @@ def get_env():
             env = json.load(f)
         # Back-fill new keys if missing (upgrade path)
         changed = False
-        for k, v in [("bookmark_folder","Panop"),("zotero_api_key",""),("zotero_user_id",""),("zotero_collection_key",""),("close_tabs_after_save", False), ("chrome_profile", "Default")]:
+        for k, v in [("bookmark_folder","Panop"),("zotero_api_key",""),("zotero_user_id",""),("zotero_collection_key",""),("close_tabs_after_save", False), ("require_manual_vetting_before_close", True), ("enable_autonomous_sweep", False), ("resolve_terminal_redirects", True), ("chrome_profile", "Default")]:
             if k not in env: env[k] = v; changed = True
         if changed: save_env(env)
         return env
     except:
-        return {"root_dir":"panop_output","interval_hours":6,"catch_uncategorized":False,"strict_domain_scan":True,"port":8000,"bookmark_folder":"Panop","zotero_api_key":"","zotero_user_id":"","zotero_collection_key":""}
+        return {"root_dir":"panop_output","interval_hours":6,"catch_uncategorized":False,"strict_domain_scan":True,"port":8000,"bookmark_folder":"Panop","zotero_api_key":"","zotero_user_id":"","zotero_collection_key":"","close_tabs_after_save":False,"require_manual_vetting_before_close":True,"enable_autonomous_sweep":False,"resolve_terminal_redirects":True}
 
 def save_env(env):
     with open(ENV_FILE, "w") as f: json.dump(env, f, indent=4)
+
+def _manual_vetting_required(env=None):
+    env = env or get_env()
+    return bool(env.get("require_manual_vetting_before_close", True))
 
 def OUTPUT_DIR(): return get_env().get("root_dir", "panop_output")
 def RIS_DIR(): return os.path.join(OUTPUT_DIR(), "ris")
@@ -181,6 +188,76 @@ TRACKING_PARAMS = {
     'fbclid','gclid','mc_cid','mc_eid','igshid','_ga','ref','ref_src','ref_url',
     'yclid','msclkid','spm','share','shared','from','source'
 }
+_REDIRECT_URL_CACHE = {}
+_REDIRECT_HOSTS = {
+    "doi.org", "dx.doi.org", "t.co", "bit.ly", "tinyurl.com", "lnkd.in",
+    "l.facebook.com", "lm.facebook.com", "substack.com", "news.google.com",
+    "scholar.google.com", "www.google.com", "google.com", "www.google.com.br",
+    "google.com.br",
+}
+
+def _expand_wrapped_tab_url(url):
+    """Unwrap common mobile/browser redirect URLs before classifying tabs."""
+    if not url:
+        return url
+    try:
+        from urllib.parse import parse_qs, unquote, urlparse
+        p = urlparse(url)
+        host = (p.netloc or "").lower()
+        qs = parse_qs(p.query, keep_blank_values=False)
+        if host.endswith("google.com") or host.endswith("google.com.br"):
+            for key in ("url", "u", "q"):
+                for raw in qs.get(key, []):
+                    candidate = unquote(raw).strip()
+                    if candidate.startswith(("http://", "https://")):
+                        return candidate
+        if host in {"t.co", "l.facebook.com", "lm.facebook.com"}:
+            for key in ("u", "url"):
+                for raw in qs.get(key, []):
+                    candidate = unquote(raw).strip()
+                    if candidate.startswith(("http://", "https://")):
+                        return candidate
+    except Exception:
+        return url
+    return url
+
+def _looks_like_redirect_url(url):
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+        host = (p.netloc or "").lower()
+        path = (p.path or "").lower()
+        if host in _REDIRECT_HOSTS:
+            return True
+        if host.endswith(".google.com") or host.endswith(".google.com.br"):
+            return True
+        return any(marker in path for marker in ("/redirect", "/url", "/out", "/link", "/away"))
+    except Exception:
+        return False
+
+def _resolve_terminal_tab_url(url, env=None):
+    """Return the true terminal URL for redirect-like tabs, bounded and cached."""
+    expanded = _expand_wrapped_tab_url(url)
+    env = env or get_env()
+    if not env.get("resolve_terminal_redirects", True):
+        return expanded
+    if not expanded or not _looks_like_redirect_url(expanded):
+        return expanded
+    if expanded in _REDIRECT_URL_CACHE:
+        return _REDIRECT_URL_CACHE[expanded]
+    try:
+        resp = requests.head(expanded, allow_redirects=True, timeout=2.5)
+        final_url = getattr(resp, "url", None) or expanded
+        if final_url == expanded and getattr(resp, "status_code", 0) in (403, 405):
+            resp = _http_get(expanded, timeout=3.5)
+            final_url = getattr(resp, "url", None) or expanded
+        if final_url and final_url.startswith(("http://", "https://")):
+            _REDIRECT_URL_CACHE[expanded] = final_url
+            return final_url
+    except Exception:
+        pass
+    _REDIRECT_URL_CACHE[expanded] = expanded
+    return expanded
 
 def canonicalize_url(url):
     """Collapse common duplicate-URL variants:
@@ -192,6 +269,7 @@ def canonicalize_url(url):
     """
     try:
         from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+        url = _expand_wrapped_tab_url(url)
         p = urlparse(url)
         netloc = (p.netloc or '').lower()
         if netloc.startswith('m.'): netloc = 'www.' + netloc[2:]
@@ -318,8 +396,21 @@ def save_history(h):
 def load_profiles(): return load_json(LEARNING_FILE(), {})
 def save_profiles(p): save_json(LEARNING_FILE(), p)
 
+STOP_WORDS = {
+    "about", "above", "after", "again", "against", "along", "already", "also", "although", "among",
+    "around", "because", "been", "before", "being", "below", "between", "both", "could", "didnt",
+    "does", "doing", "dont", "down", "during", "each", "either", "even", "every", "first", "from",
+    "further", "great", "have", "here", "hers", "herself", "himself", "html", "http", "https",
+    "into", "itself", "just", "like", "many", "more", "most", "much", "must", "myself", "neither",
+    "never", "obtained", "once", "only", "other", "others", "ours", "ourselves", "over", "same",
+    "should", "since", "some", "still", "such", "than", "that", "their", "them", "themselves",
+    "then", "there", "these", "they", "this", "those", "through", "today", "under", "until",
+    "upon", "very", "wasnt", "were", "what", "when", "where", "which", "while", "whoever",
+    "whom", "whose", "why", "with", "within", "without", "would", "yours", "yourself", "yourselves"
+}
+
 def get_words(text):
-    return [w for w in "".join([c if c.isalnum() else " " for c in text.lower()]).split() if len(w) > 3]
+    return [w for w in "".join([c if c.isalnum() else " " for c in text.lower()]).split() if len(w) > 3 and w not in STOP_WORDS]
 
 def update_ai_profile(category_id, text):
     profiles = load_profiles()
@@ -331,7 +422,25 @@ def update_ai_profile(category_id, text):
 def get_ai_prediction(text):
     profiles = load_profiles()
     if not profiles: return None
+    
+    lower_text = text.lower()
+    ban_words = [
+        "wikipedia", "amazon", "github", "medium.com", "bbc.com", 
+        "reddit.com", "twitter.com", "linkedin.com", "youtube.com", 
+        "netflix.com", "stackoverflow.com", "superuser.com", "hacker news"
+    ]
+    for ban in ban_words:
+        if ban in lower_text:
+            return None
+            
     words = get_words(text)
+    if not words: return None
+    
+    academic_indicators = {"arxiv", "arxivlabs", "doi", "journal", "citation", "citations", "pmid", "abstract", "author", "authors", "volume", "issue", "published", "press", "university"}
+    inds = sum(1 for w in words if w in academic_indicators)
+    if inds < 3:
+        return None
+        
     scores = {}
     for cat_id, profile in profiles.items():
         score = sum(profile.get(w, 0) for w in words)
@@ -457,6 +566,7 @@ def is_chrome_running():
     return False
 
 def PENDING_BOOKMARKS_FILE(): return os.path.join(OUTPUT_DIR(), "panop_pending_bookmarks.json")
+def CLOSE_AUDIT_FILE(): return os.path.join(OUTPUT_DIR(), "panop_close_audit.jsonl")
 
 bookmarks_lock = threading.RLock()
 
@@ -624,22 +734,20 @@ def reconcile_all():
 
 def add_chrome_bookmark(url, title, category_name):
     """Public entry point used by the sweep / drain.
-    Always returns True if the bookmark is at least queued — the Chrome
-    extension polls /api/v1/bookmarks/pending every 30s and writes them live,
-    then ACKs back to flip b_synced. Returning True lets the close-tab
-    condition fire immediately, which is what the user expects: 'I saved it,
-    close the tab.' The extension will reconcile state moments later.
+    Returns True only when the bookmark is known to exist. If Chrome is
+    running, queue it for the extension and keep b_synced=false until ACK or
+    reconciliation proves Chrome actually has the bookmark.
     """
     with bookmarks_lock:
         if is_chrome_running():
             _queue_bookmark(url, title, category_name)
-            return True   # optimistic — extension will pick it up
+            return False
     ok = _write_bookmark_now(url, title, category_name)
     if not ok:
         # Direct write failed; fall back to queueing for the extension.
         with bookmarks_lock:
             _queue_bookmark(url, title, category_name)
-        return True
+        return False
     return True
 
 
@@ -1079,36 +1187,56 @@ def run_adb_sweep():
         candidates = []  # (tab, matched_cat_no_body_check, needs_fetch)
         for tab in tabs:
             url = tab.get("url", "")
-            if not url or url.startswith("chrome://") or url in history:
+            true_url = _resolve_terminal_tab_url(url, env)
+            storage_probe = canonicalize_url(true_url) or true_url
+            if not url or url.startswith("chrome://") or url in history or storage_probe in history:
                 continue
             sweep_status["tabs_new"] += 1
-            url_lower = url.lower()
+            url_lower = true_url.lower()
             is_pdf = url_lower.endswith(".pdf")
+
+            # Check never_academic list to skip unnecessary fetches
+            try:
+                import lib.classifier as classifier
+                res = classifier.classify(true_url, None)
+                if res.layer == "domain_tier" and res.action == "abstain":
+                    reason = (res.evidence or {}).get("reason", "")
+                    if isinstance(reason, str) and reason.startswith("never_academic:"):
+                        continue
+            except Exception:
+                pass
 
             domain_matched_cat = None
             needs_fetch = False
 
-            for cat in categories:
-                domains = cat.get("domain_keywords", [])
-                body_req = cat.get("body_required", [])
-                body_forb = cat.get("body_forbidden", [])
-                tab_group = cat.get("tab_group", "")
+            # Check if smart classifier matches directly without page content
+            try:
+                import lib.classifier as classifier
+                res = classifier.classify(true_url, None)
+                if res.action == "match" and res.category:
+                    matched = next((c for c in categories if c.get("id") == res.category), None)
+                    if matched:
+                        domain_matched_cat = matched
+                        needs_fetch = True
+            except Exception:
+                pass
 
-                if tab_group and tab_group.lower() not in str(tab).lower():
-                    continue
+            if not domain_matched_cat:
+                for cat in categories:
+                    domains = cat.get("domain_keywords", [])
+                    body_req = cat.get("body_required", [])
+                    body_forb = cat.get("body_forbidden", [])
+                    tab_group = cat.get("tab_group", "")
 
-                domain_match = any(d.lower() in url_lower for d in domains if d) if domains else True
+                    if tab_group and tab_group.lower() not in str(tab).lower():
+                        continue
 
-                if not domain_match and strict and domains:
-                    continue  # strict mode: skip if no domain match
+                    domain_match = any(d.lower() in url_lower for d in domains if d) if domains else True
 
-                if domain_match or not domains:
-                    # If no body keywords needed, match immediately
-                    if not body_req and not body_forb and not is_pdf:
-                        domain_matched_cat = cat
-                        needs_fetch = False  # still fetch for title/abstract
-                        break
-                    elif not is_pdf:
+                    if not domain_match and strict and domains:
+                        continue  # strict mode: skip if no domain match
+
+                    if domain_match or not domains:
                         domain_matched_cat = cat
                         needs_fetch = True
                         break
@@ -1123,53 +1251,31 @@ def run_adb_sweep():
 
         # ── PHASE 2: Parallel page fetches for candidates ────────────────────
         def process_tab(tab, cat, needs_fetch):
-            """Worker: fetch page if needed, run body keyword check, return result or None.
-            Key rule: if fetch FAILS (timeout/network error) but the URL domain-matched,
-            we still include the tab — trust the domain. Only exclude when page loads
-            successfully and keywords are provably absent.
-            """
+            """Worker: fetch page if needed, run smart classification, return result or None."""
             url = tab.get("url", "")
-            url_lower = url.lower()
+            terminal_url = _resolve_terminal_tab_url(url, env)
+            url_lower = terminal_url.lower()
             is_pdf = url_lower.endswith(".pdf")
-            body_req = cat.get("body_required", [])
-            body_req_mode = cat.get("body_required_mode", "ALL")
-            body_forb = cat.get("body_forbidden", [])
-            domains = cat.get("domain_keywords", [])
-            domain_matched = any(d.lower() in url_lower for d in domains if d) if domains else True
 
             metadata = None
             if needs_fetch and not is_pdf:
-                metadata = fetch_page_content(url)  # returns None on failure
+                metadata = fetch_page_content(terminal_url)  # returns None on failure
 
-            fetch_failed = metadata is None
-            text = (metadata or {}).get("text", "")
-
-            if fetch_failed:
-                # Fetch timed out / network error.
-                # If domain clearly matched → trust it and include.
-                # If no domain list (open category) → skip (too risky without body check).
-                if domain_matched and domains:
-                    req_match = True
-                    forb_match = False
+            matched_category = _classify_tab_candidate(terminal_url, metadata, categories, env)
+            if not matched_category:
+                if catch_uncat:
+                    matched_category = next((c for c in categories if c.get("id") == "uncategorized"), None)
+                    if not matched_category:
+                        matched_category = {"name": "Uncategorized", "id": "uncategorized", "dest_folder": os.path.join(OUTPUT_DIR(), "Uncategorized")}
                 else:
                     return None
-            else:
-                # Page loaded — apply body keyword rules strictly
-                if body_req_mode == "ANY":
-                    req_match = any(kw.lower() in text for kw in body_req if kw) if body_req else True
-                else:
-                    req_match = all(kw.lower() in text for kw in body_req if kw) if body_req else True
-                forb_match = any(kw.lower() in text for kw in body_forb if kw) if body_forb else False
-
-            if not req_match or forb_match:
-                return None
 
             # Title: prefer page metadata, fall back to PDF-aware resolution, then DevTools title
             if is_pdf:
-                title = get_pdf_title(url, tab.get("title", ""))
+                title = get_pdf_title(terminal_url, tab.get("title", ""))
             else:
                 title = (metadata or {}).get("title") or tab.get("title", "") or "Untitled"
-            return (url, cat, title, metadata or {}, tab.get("id"))
+            return (terminal_url, matched_category, title, metadata or {}, tab.get("id"))
 
         # Run up to 8 tabs in parallel — enough throughput without hammering RAM/CPU
         WORKERS = 8
@@ -1276,12 +1382,8 @@ def run_adb_sweep():
 
                     # AUTO-CLEANUP: Close tab on phone ONLY if enabled AND fully synced
                     # AND it has a real category match (hard safety gate — see _safe_to_close).
-                    if env.get("close_tabs_after_save") and tab_id and _safe_to_close(h[storage_url]):
-                        try:
-                            # DevTools close endpoint: POST http://localhost:9222/json/close/[id]
-                            requests.post(f"http://127.0.0.1:9222/json/close/{tab_id}", timeout=5)
-                        except Exception:
-                            pass
+                    if env.get("close_tabs_after_save") and not _manual_vetting_required(env) and tab_id and _safe_to_close(h[storage_url]):
+                        _close_devtools_tab(tab_id, storage_url, h[storage_url], "sweep_after_save")
 
                 except Exception:
                     continue
@@ -1298,7 +1400,7 @@ def run_adb_sweep():
         # The extension drains the queue within ~30s and ACKs back, flipping
         # b_synced=true; a 75 s later pass finds them properly synced and closes
         # them via the DevTools endpoint.
-        if env.get("close_tabs_after_save"):
+        if env.get("close_tabs_after_save") and not _manual_vetting_required(env):
             def _delayed_close():
                 time.sleep(75)
                 try: _do_close_synced_tabs_now()
@@ -1321,10 +1423,15 @@ def adb_loop():
     or when the user manually clicks FETCH NOW.
     """
     while True:
-        hours = get_env().get("interval_hours", 6)
+        env = get_env()
+        if not env.get("enable_autonomous_sweep", False):
+            time.sleep(60)
+            continue
+        hours = env.get("interval_hours", 6)
         if hours < 0.1: hours = 0.1
         time.sleep(hours * 3600)  # wait first, then sweep
-        run_adb_sweep()
+        if get_env().get("enable_autonomous_sweep", False):
+            run_adb_sweep()
 
 @app.on_event("startup")
 def start_background_jobs():
@@ -1407,9 +1514,12 @@ def read_env(): return get_env()
 
 @app.post("/api/v1/env")
 def update_ev(data: dict):
-    save_env(data)
+    env = get_env()
+    if isinstance(data, dict):
+        env.update(data)
+    save_env(env)
     init_dirs()
-    return {"status": "ok"}
+    return {"status": "ok", "env": env}
 
 @app.get("/api/v1/status")
 def get_status():
@@ -1504,6 +1614,235 @@ def del_hi(item: DeleteItem):
     save_history(h)
     return {"status": "ok"}
 
+def OVERRIDES_FILE():
+    _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(_root, "state", "panop", "panop_classifier_overrides.json")
+
+def CORRECTION_LOG_FILE():
+    _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(_root, "state", "panop", "panop_classifier_corrections.jsonl")
+
+def LEARNED_RULES_FILE():
+    _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(_root, "state", "panop", "panop_classifier_learned_rules.json")
+
+def load_overrides():
+    path = OVERRIDES_FILE()
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        save_json(path, {})
+        return {}
+    return load_json(path, {})
+
+def save_overrides(o):
+    path = OVERRIDES_FILE()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    save_json(path, o)
+
+_classifier_corrections_lock = threading.Lock()
+_LEARNED_DOMAIN_MIN_CORRECTIONS = 3
+
+def _host_for_url(url):
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(canonicalize_url(url) or url).netloc or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        return host
+    except Exception:
+        return ""
+
+def _category_by_id(categories, cat_id):
+    cat_id = str(cat_id or "").strip()
+    if cat_id.lower() == "uncategorized":
+        return {"id": "uncategorized", "name": "Uncategorized", "dest_folder": "Uncategorized"}
+    return next((c for c in categories if c.get("id") == cat_id), None)
+
+def _unique_override_entries(overrides):
+    seen = set()
+    for key, item in (overrides or {}).items():
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url") or key
+        canon = item.get("canonical_url") or canonicalize_url(url) or url
+        if canon in seen:
+            continue
+        seen.add(canon)
+        yield item
+
+def _append_correction_events(events):
+    if not events:
+        return
+    path = CORRECTION_LOG_FILE()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        for event in events:
+            f.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+
+def _rebuild_learned_rules(overrides=None):
+    overrides = overrides if overrides is not None else load_overrides()
+    host_counts = {}
+    host_examples = {}
+    for item in _unique_override_entries(overrides):
+        url = item.get("canonical_url") or item.get("url") or ""
+        host = item.get("host") or _host_for_url(url)
+        cat_id = str(item.get("category_id") or "uncategorized").strip() or "uncategorized"
+        if not host:
+            continue
+        host_counts.setdefault(host, Counter())[cat_id] += 1
+        host_examples.setdefault(host, {}).setdefault(cat_id, [])
+        if len(host_examples[host][cat_id]) < 5:
+            host_examples[host][cat_id].append({
+                "url": url,
+                "title": item.get("title", ""),
+                "reason": item.get("reason", ""),
+                "updated_at": item.get("updated_at", ""),
+            })
+
+    domains = {}
+    for host, counts in host_counts.items():
+        total = sum(counts.values())
+        if total < _LEARNED_DOMAIN_MIN_CORRECTIONS or len(counts) != 1:
+            continue
+        cat_id, count = counts.most_common(1)[0]
+        confidence = min(0.98, 0.70 + (0.05 * min(count, 5)))
+        domains[host] = {
+            "host": host,
+            "category_id": cat_id,
+            "count": count,
+            "total_corrections": total,
+            "confidence": round(confidence, 3),
+            "source": "consistent_user_corrections",
+            "enabled": True,
+            "examples": host_examples.get(host, {}).get(cat_id, []),
+            "updated_at": datetime.now().isoformat(),
+            "reason": f"Learned from {count} consistent user correction(s) on {host}.",
+        }
+
+    learned = {
+        "version": 1,
+        "min_domain_corrections": _LEARNED_DOMAIN_MIN_CORRECTIONS,
+        "updated_at": datetime.now().isoformat(),
+        "domains": domains,
+    }
+    path = LEARNED_RULES_FILE()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    save_json(path, learned)
+    return learned
+
+def load_learned_rules():
+    return load_json(LEARNED_RULES_FILE(), {
+        "version": 1,
+        "min_domain_corrections": _LEARNED_DOMAIN_MIN_CORRECTIONS,
+        "domains": {},
+    })
+
+def _classifier_override_decision(url):
+    storage_url = canonicalize_url(url) or url
+    overrides = load_overrides()
+    matched_override = overrides.get(url) or overrides.get(storage_url)
+    if matched_override:
+        cat_id = str(matched_override.get("category_id") or "uncategorized").strip() or "uncategorized"
+        action = "block" if cat_id.lower() == "uncategorized" else "match"
+        return {
+            "action": action,
+            "category_id": cat_id,
+            "source": "exact_user_correction",
+            "confidence": 1.0,
+            "reason": matched_override.get("reason") or "User correction for this exact URL.",
+            "details": matched_override,
+        }
+
+    host = _host_for_url(storage_url)
+    rule = (load_learned_rules().get("domains") or {}).get(host)
+    if rule and rule.get("enabled", True):
+        cat_id = str(rule.get("category_id") or "uncategorized").strip() or "uncategorized"
+        action = "block" if cat_id.lower() == "uncategorized" else "match"
+        return {
+            "action": action,
+            "category_id": cat_id,
+            "source": "learned_domain_rule",
+            "confidence": float(rule.get("confidence") or 0.0),
+            "reason": rule.get("reason") or f"Learned domain rule for {host}.",
+            "details": rule,
+        }
+    return None
+
+@app.post("/api/v1/classifier/overrides")
+def add_classifier_overrides(payload: dict):
+    items = payload.get("items") or []
+    events = []
+    with _classifier_corrections_lock:
+        o = load_overrides()
+        now = datetime.now().isoformat()
+        changed = 0
+        for item in items:
+            url = str(item.get("url") or "").strip()
+            if not url:
+                continue
+            storage_url = canonicalize_url(url) or url
+            cat_id = str(item.get("category_id") or "uncategorized").strip() or "uncategorized"
+            entry = {
+                "url": url,
+                "canonical_url": storage_url,
+                "host": _host_for_url(storage_url),
+                "title": item.get("title", ""),
+                "category_id": cat_id,
+                "previous_category_id": item.get("previous_category_id", ""),
+                "previous_category_name": item.get("previous_category_name", ""),
+                "previous_status": item.get("previous_status", ""),
+                "previous_reason": item.get("previous_reason", ""),
+                "decision_quality": item.get("decision_quality", ""),
+                "reason": item.get("reason", ""),
+                "updated_at": now,
+                "source": "inbox_user_correction",
+            }
+            o[url] = entry
+            o[storage_url] = entry
+            events.append({
+                "event": "classifier_correction",
+                "url": url,
+                "canonical_url": storage_url,
+                "host": entry["host"],
+                "title": entry["title"],
+                "category_id": cat_id,
+                "previous_category_id": entry["previous_category_id"],
+                "previous_category_name": entry["previous_category_name"],
+                "previous_status": entry["previous_status"],
+                "previous_reason": entry["previous_reason"],
+                "decision_quality": entry["decision_quality"],
+                "reason": entry["reason"],
+                "ts": now,
+            })
+            changed += 1
+        save_overrides(o)
+        learned = _rebuild_learned_rules(o)
+        _append_correction_events(events)
+    return {
+        "status": "ok",
+        "count": changed,
+        "exact_overrides": len(list(_unique_override_entries(o))),
+        "learned_domains": len((learned.get("domains") or {})),
+    }
+
+@app.get("/api/v1/classifier/overrides")
+def get_classifier_overrides():
+    return load_overrides()
+
+@app.get("/api/v1/classifier/corrections/stats")
+def get_classifier_correction_stats():
+    overrides = load_overrides()
+    learned = load_learned_rules()
+    unique = list(_unique_override_entries(overrides))
+    by_category = Counter(str(item.get("category_id") or "uncategorized") for item in unique)
+    return {
+        "status": "ok",
+        "exact_overrides": len(unique),
+        "learned_domains": len((learned.get("domains") or {})),
+        "by_category": dict(sorted(by_category.items())),
+        "learned": learned,
+    }
+
 class AddLinkItem(BaseModel):
     url: str
     title: str = ""
@@ -1524,7 +1863,24 @@ def add_hi(item: AddLinkItem, background_tasks: BackgroundTasks):
     categories = config.get("categories", [])
     matched_cat = None
     if item.category_id:
-        matched_cat = next((c for c in categories if c["id"] == item.category_id), None)
+        if item.category_id == "uncategorized":
+            matched_cat = {"id": "uncategorized", "name": "Uncategorized", "dest_folder": "Uncategorized"}
+        else:
+            matched_cat = next((c for c in categories if c["id"] == item.category_id), None)
+    
+    if not matched_cat:
+        # Check user overrides fallback
+        try:
+            overrides = load_overrides()
+            matched_override = overrides.get(url) or overrides.get(storage_url)
+            if matched_override:
+                cat_id = matched_override.get("category_id")
+                if cat_id == "uncategorized":
+                    matched_cat = {"id": "uncategorized", "name": "Uncategorized", "dest_folder": "Uncategorized"}
+                else:
+                    matched_cat = next((c for c in categories if c["id"] == cat_id), None)
+        except Exception:
+            pass
     
     if not matched_cat:
         # Auto-detect category
@@ -1800,16 +2156,16 @@ def _do_close_synced_tabs_now():
     except Exception as e:
         return {"status": "error", "message": f"ADB/DevTools not reachable: {e}"}
     h = load_history()
-    synced_urls = set()
+    synced_urls = {}
     # Hard safety gate: only enrol items that pass _safe_to_close. This means
     # uncategorized items are NEVER eligible to be closed by this routine,
     # even if both syncs succeeded somehow.
     for u, item in h.items():
         if _safe_to_close(item):
-            synced_urls.add(u)
-            synced_urls.add(canonicalize_url(u))
+            synced_urls[u] = (u, item)
+            synced_urls[canonicalize_url(u)] = (u, item)
             for k in ("canonical_url", "original_url"):
-                if item.get(k): synced_urls.add(item[k])
+                if item.get(k): synced_urls[item[k]] = (u, item)
     closed, skipped, failed = 0, 0, 0
     for t in tabs:
         url = t.get("url", "")
@@ -1817,10 +2173,12 @@ def _do_close_synced_tabs_now():
         if not tid or not url or url.startswith("chrome://"):
             skipped += 1
             continue
-        if url in synced_urls or canonicalize_url(url) in synced_urls:
+        match = synced_urls.get(url) or synced_urls.get(canonicalize_url(url))
+        if match:
+            history_url, item = match
             try:
-                requests.post(f"http://127.0.0.1:9222/json/close/{tid}", timeout=5)
-                closed += 1
+                if _close_devtools_tab(tid, history_url, item, "close_synced_tabs"):
+                    closed += 1
             except Exception:
                 failed += 1
         else:
@@ -1924,26 +2282,59 @@ def inspect_tabs(wake: bool = False):
         url_lower = url.lower()
         matched = None
         needs_body = False
-        for cat in categories:
-            domains = cat.get("domain_keywords", [])
-            tab_group = cat.get("tab_group", "")
-            if tab_group and tab_group.lower() not in str(t).lower():
-                continue
-            domain_match = any(d.lower() in url_lower for d in domains if d) if domains else True
-            if not domain_match and strict and domains:
-                continue
-            if domain_match or not domains:
-                matched = cat.get("name", "?")
-                needs_body = bool(cat.get("body_required") or cat.get("body_forbidden"))
-                break
+        matched_layer = None
+
+        override_decision = _classifier_override_decision(url)
+        if override_decision and override_decision.get("action") == "block":
+            buckets["no_match"] += 1
+            rows.append({
+                "id": tid, "url": url, "title": title, "status": "no_match",
+                "category": "Uncategorized",
+                "reason": f"User correction says do not sweep: {override_decision.get('reason', '')}".strip(),
+                "decision_source": override_decision.get("source"),
+                "decision_confidence": override_decision.get("confidence"),
+            })
+            continue
+        
+        # 1. Try smart classifier first (without page meta)
+        smart_cat = _classify_tab_candidate(url, None, categories, get_env())
+        if smart_cat:
+            matched = smart_cat.get("name", "?")
+            needs_body = False
+            matched_layer = smart_cat.get("_classification_source") or "smart_classifier"
+        else:
+            # 2. Fall back to old keyword/domain logic
+            matched_layer = "inline_rules"
+            for cat in categories:
+                domains = cat.get("domain_keywords", [])
+                tab_group = cat.get("tab_group", "")
+                if tab_group and tab_group.lower() not in str(t).lower():
+                    continue
+                domain_match = any(d.lower() in url_lower for d in domains if d) if domains else True
+                if not domain_match and strict and domains:
+                    continue
+                if domain_match or not domains:
+                    matched = cat.get("name", "?")
+                    needs_body = bool(cat.get("body_required") or cat.get("body_forbidden"))
+                    break
         if matched:
             if needs_body:
                 buckets["body_required"] = buckets.get("body_required", 0) + 1
                 rows.append({"id": tid, "url": url, "title": title, "status": "needs_body_check",
                              "reason": f"Domain matches '{matched}' but category has body-keyword rules. Next sweep will fetch and check."})
             else:
+                if matched_layer == "exact_user_correction":
+                    reason_str = f"User correction: would be saved to '{matched}'."
+                elif matched_layer == "learned_domain_rule":
+                    reason_str = f"Learned from your corrections: would be saved to '{matched}'."
+                elif matched_layer == "smart_classifier":
+                    reason_str = f"Would be saved to '{matched}' (matched by smart classifier)."
+                else:
+                    reason_str = f"Would be saved to '{matched}' on next sweep."
                 rows.append({"id": tid, "url": url, "title": title, "status": f"match:{matched}",
-                             "reason": f"Would be saved to '{matched}' on next sweep."})
+                             "reason": reason_str,
+                             "decision_source": matched_layer,
+                             "decision_confidence": smart_cat.get("_classification_confidence") if isinstance(smart_cat, dict) else None})
         else:
             buckets["no_match"] += 1
             rows.append({"id": tid, "url": url, "title": title, "status": "no_match",
@@ -1956,6 +2347,8 @@ def close_synced_tabs():
     and closes every tab whose URL (or its canonical form) is already in
     history with z_synced=true AND b_synced=true. Safe: untouched if either
     flag is missing."""
+    if _manual_vetting_required():
+        return {"status": "blocked", "closed": 0, "message": "Manual vetting is required before Egon may close already-synced tabs."}
     return _do_close_synced_tabs_now()
 
 # ── Sequential wake-save-close drain for thousands of suspended tabs ─────────
@@ -1979,33 +2372,101 @@ def _safe_to_close(item):
         (2) AND the item has been backed up to BOTH Zotero and Chrome Bookmarks
     No env flag, no future code path, can override this. A tab that does not
     pass this gate is left OPEN on the phone, no matter what."""
+    if _manual_vetting_required(): return False
     if not item: return False
     cat_id = (item.get("cat_id") or "").strip().lower()
     if not cat_id or cat_id == "uncategorized": return False
     return bool(item.get("z_synced")) and bool(item.get("b_synced"))
 
-def _drain_classify_and_save(url, title, categories, env, tid):
-    """Returns (saved_bool, closed_bool). Shared by both phases."""
-    h = load_history()
-    storage_url = canonicalize_url(url) or url
-    if storage_url in h or url in h:
-        item = h.get(storage_url) or h.get(url) or {}
-        if env.get("close_tabs_after_save") and _safe_to_close(item):
-            try:
-                requests.post(f"http://127.0.0.1:9222/json/close/{tid}", timeout=5)
-                return False, True
-            except Exception: pass
-        return False, False
-    url_lower = url.lower()
-    matched = None
+def _append_close_audit(entry):
+    try:
+        path = CLOSE_AUDIT_FILE()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+def _close_devtools_tab(tid, url, item, source):
+    """Close one Android Chrome DevTools target with a durable audit trail."""
+    env = get_env()
+    safe = _safe_to_close(item)
+    entry = {
+        "ts": datetime.now().isoformat(),
+        "source": source,
+        "tab_id": tid,
+        "url": url,
+        "category": (item or {}).get("category"),
+        "cat_id": (item or {}).get("cat_id"),
+        "z_synced": bool((item or {}).get("z_synced")),
+        "b_synced": bool((item or {}).get("b_synced")),
+        "safe_to_close": bool(safe),
+        "manual_vetting_required": bool(_manual_vetting_required(env)),
+        "close_tabs_after_save": bool(env.get("close_tabs_after_save")),
+        "enable_autonomous_sweep": bool(env.get("enable_autonomous_sweep")),
+        "closed": False,
+    }
+    if not safe:
+        entry["blocked_reason"] = "safe_to_close_false"
+        _append_close_audit(entry)
+        return False
+    try:
+        resp = requests.post(f"http://127.0.0.1:9222/json/close/{tid}", timeout=5)
+        entry["response_status"] = resp.status_code
+        entry["closed"] = 200 <= resp.status_code < 300
+        return bool(entry["closed"])
+    except Exception as e:
+        entry["error"] = str(e)[:300]
+        return False
+    finally:
+        _append_close_audit(entry)
+
+def _classify_tab_candidate(url, page_meta, categories, env):
+    """Classifies a tab candidate using Egon's smart layered classifier,
+    falling back to inline domain/keyword matching if needed.
+    """
+    classify_url = _resolve_terminal_tab_url(url, env)
+    try:
+        decision = _classifier_override_decision(classify_url) or _classifier_override_decision(url)
+        if decision:
+            if decision.get("action") == "block":
+                return None
+            matched = _category_by_id(categories, decision.get("category_id"))
+            if matched:
+                out = dict(matched)
+                out["_classification_source"] = decision.get("source")
+                out["_classification_confidence"] = decision.get("confidence")
+                out["_classification_reason"] = decision.get("reason")
+                return out
+    except Exception:
+        pass
+
+    try:
+        import sys, os
+        _parent = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if _parent not in sys.path:
+            sys.path.insert(0, _parent)
+        import lib.classifier as classifier
+        res = classifier.classify(classify_url, page_meta or {})
+        if res.action == "match" and res.category:
+            matched = next((c for c in categories if c.get("id") == res.category), None)
+            if matched:
+                out = dict(matched)
+                out["_classification_source"] = "smart_classifier"
+                out["_classification_layer"] = res.layer
+                out["_classification_confidence"] = res.confidence
+                out["_classification_reason"] = (res.evidence or {}).get("reason", "")
+                return out
+    except Exception:
+        pass
+
+    url_lower = classify_url.lower()
     for cat in categories:
         domains = cat.get("domain_keywords", [])
         if domains and not any(d.lower() in url_lower for d in domains if d):
             continue
         if cat.get("body_required") or cat.get("body_forbidden"):
-            try: meta_p = fetch_page_content(url) or {}
-            except Exception: meta_p = {}
-            page = (meta_p.get("text") or meta_p.get("title") or "") + " " + (meta_p.get("abstract") or "")
+            page = ((page_meta or {}).get("text") or (page_meta or {}).get("title") or "") + " " + ((page_meta or {}).get("abstract") or "")
             pl = page.lower()
             req = [w.lower() for w in cat.get("body_required", []) if w]
             forb = [w.lower() for w in cat.get("body_forbidden", []) if w]
@@ -2014,19 +2475,42 @@ def _drain_classify_and_save(url, title, categories, env, tid):
                 ok = all(w in pl for w in req) if mode == "ALL" else any(w in pl for w in req)
                 if not ok: continue
             if forb and any(w in pl for w in forb): continue
-        matched = cat
-        break
+        out = dict(cat)
+        out["_classification_source"] = "inline_rules"
+        out["_classification_confidence"] = 0.65
+        out["_classification_reason"] = "Matched configured inline rule."
+        return out
+    return None
+
+def _drain_classify_and_save(url, title, categories, env, tid):
+    """Returns (saved_bool, closed_bool). Shared by both phases."""
+    h = load_history()
+    terminal_url = _resolve_terminal_tab_url(url, env)
+    storage_url = canonicalize_url(terminal_url) or terminal_url or url
+    if storage_url in h or url in h:
+        item = h.get(storage_url) or h.get(url) or {}
+        if env.get("close_tabs_after_save") and not _manual_vetting_required(env) and _safe_to_close(item):
+            try:
+                if _close_devtools_tab(tid, storage_url, item, "drain_existing_synced"):
+                    return False, True
+            except Exception: pass
+        return False, False
+    try: meta_p = fetch_page_content(terminal_url) or {}
+    except Exception: meta_p = {}
+    
+    matched = _classify_tab_candidate(terminal_url, meta_p, categories, env)
+    
     if not matched:
         if env.get("catch_uncategorized"):
             matched = {"id": "uncategorized", "name": "Uncategorized", "dest_folder": "Uncategorized"}
         else:
             return False, False
     try:
-        z_ok = send_to_zotero(storage_url, title or url, "", matched["name"], doi="")
-        b_ok = add_chrome_bookmark(storage_url, title or url, matched["name"])
+        z_ok = send_to_zotero(storage_url, title or terminal_url, "", matched["name"], doi="")
+        b_ok = add_chrome_bookmark(storage_url, title or terminal_url, matched["name"])
         h2 = load_history()
         h2[storage_url] = {
-            "title": title or url, "category": matched["name"],
+            "title": title or terminal_url, "category": matched["name"],
             "cat_id": matched["id"], "date": datetime.now().isoformat(),
             "abstract": "", "canonical_url": storage_url,
             "original_url": url if url != storage_url else None,
@@ -2036,10 +2520,9 @@ def _drain_classify_and_save(url, title, categories, env, tid):
         save_history(h2)
         closed = False
         # Hard safety gate: never close uncategorized tabs, ever.
-        if env.get("close_tabs_after_save") and _safe_to_close(h2[storage_url]):
+        if env.get("close_tabs_after_save") and not _manual_vetting_required(env) and _safe_to_close(h2[storage_url]):
             try:
-                requests.post(f"http://127.0.0.1:9222/json/close/{tid}", timeout=5)
-                closed = True
+                closed = _close_devtools_tab(tid, storage_url, h2[storage_url], "drain_after_save")
             except Exception: pass
         return True, closed
     except Exception as e:
@@ -2819,25 +3302,50 @@ _YOUTUBE_HISTORY_STATE = os.path.join(OUTPUT_DIR(), "youtube_history_state.json"
 _TVTIME_LIB_STATE     = os.path.join(OUTPUT_DIR(), "tvtime_library_state.json")
 
 
+def _harvest_key(it: dict) -> str:
+    return str(it.get("url") or it.get("id") or it.get("asin")
+               or it.get("title") or "")
+
+
 def _store_harvest(path: str, body: dict) -> dict:
+    """MERGE-by-key, never replace. 2026-06-12 (Bruno: "I want all my data"):
+    a partial harvest used to overwrite the whole library — kindle dropped
+    31 items -> 6 when a quick page visit caught only the first shelf, and
+    YouTube watch history could never accumulate past one page of scrolling.
+    Now incoming items upsert into the existing set (fresh fields win per
+    item) and items the page didn't show this time are KEPT. Additive, like
+    everything else in Egon; a deliberate reset = delete the state file."""
     body["received_at"] = datetime.now().isoformat(timespec="seconds")
     incoming = body.get("items") or []
-    if not incoming and os.path.exists(path):
+    merged: dict[str, dict] = {}
+    if os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as f:
                 prev = json.load(f)
-            if prev.get("items"):
-                body["items"] = prev["items"]
-                body["count"] = prev.get("count", len(prev["items"]))
-                body["kept_previous"] = True
-                body["empty_harvest_at"] = body["received_at"]
+            for it in (prev.get("items") or []):
+                k = _harvest_key(it)
+                if k:
+                    merged[k] = it
         except Exception:
             pass
+    prev_n = len(merged)
+    new_n = 0
+    for it in incoming:
+        k = _harvest_key(it)
+        if not k:
+            continue
+        if k not in merged:
+            new_n += 1
+        merged[k] = {**merged.get(k, {}), **it}
+    body["items"] = list(merged.values())
+    body["count"] = len(body["items"])
+    body["merged"] = {"previous": prev_n, "incoming": len(incoming),
+                      "new": new_n}
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(body, f, ensure_ascii=False, indent=2)
-    return {"status": "ok", "count": body.get("count", 0),
-            "kept_previous": body.get("kept_previous", False)}
+    return {"status": "ok", "count": body["count"],
+            "merged": body["merged"]}
 
 
 def _read_harvest(path: str) -> dict:

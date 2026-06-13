@@ -412,6 +412,16 @@ def check_snapshots(u: Unit) -> None:
                 ("youtube_history", "lib.adapters.youtube_history"),
             )
         try:
+            # Takeout drops first (state/inbox/takeout/) so a fresh full
+            # YouTube history lands in the harvest state before snapshotting.
+            from lib import youtube_takeout
+            tres = youtube_takeout.import_takeout()
+            if tres.get("status") == "ok":
+                log("info", "takeout_imported", **{k: tres[k] for k in
+                    ("file", "entries", "new") if k in tres})
+        except Exception as e:
+            log("warn", "takeout_failed", error=str(e)[:120])
+        try:
             import importlib
             from lib.snapshot_store import write_snapshot
             done = failed = 0
