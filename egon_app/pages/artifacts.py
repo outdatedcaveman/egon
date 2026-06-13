@@ -26,10 +26,10 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QDialog, QListWidget,
-    QListWidgetItem, QApplication, QMessageBox,
+    QListWidgetItem, QApplication, QMessageBox, QPushButton,
 )
 
 from egon_app.widgets.item_list import ItemListWidget
@@ -240,19 +240,39 @@ def _act_index_phone(rows: list[dict]) -> None:  # rows unused; toolbar action
 
 
 class ArtifactsPage(QWidget):
+    _import_done = Signal(dict)   # export-import worker → UI thread (queued)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         v = QVBoxLayout(self)
         v.setContentsMargins(24, 18, 24, 18)
         v.setSpacing(10)
 
+        headrow = QHBoxLayout()
         head = QLabel("🗂  Artifacts — every file, every device")
         head.setStyleSheet("color: #F0E9D5; font-size: 20px; font-weight: 700;")
-        v.addWidget(head)
+        headrow.addWidget(head)
+        headrow.addStretch(1)
+        self._import_status = QLabel("")
+        self._import_status.setStyleSheet("color: #9CA3AF; font-size: 11px;")
+        headrow.addWidget(self._import_status)
+        imp = QPushButton("📥 Import data export…")
+        imp.setToolTip(
+            "Drop in a Google Takeout, TV Time, or Amazon data-export zip. "
+            "Egon detects the vendor, extracts it, and merges everything in "
+            "(YouTube history, Fit, Discover, Gemini, Kindle, episodes…).")
+        imp.setStyleSheet(
+            "QPushButton { background: #D4A24C; color: #102F3C; padding: 7px 14px; "
+            "border-radius: 4px; font-weight: 700; border: none; }"
+            "QPushButton:hover { background: #E0B45E; }")
+        imp.clicked.connect(self._import_export)
+        headrow.addWidget(imp)
+        v.addLayout(headrow)
         sub = QLabel(
             "PC · Drive · Phone in one table. 🔗 Connect finds what any file "
             "relates to across ALL your archives; 📌 Pin queues Drive "
-            "placeholders for text extraction. Newest first; filter to dig.")
+            "placeholders for text extraction. 📥 Import pulls in vendor data "
+            "exports (Takeout etc.). Newest first; filter to dig.")
         sub.setStyleSheet("color: #9CA3AF; font-size: 12px;")
         sub.setWordWrap(True)
         v.addWidget(sub)
@@ -281,3 +301,59 @@ class ArtifactsPage(QWidget):
             empty_message="no files indexed yet — the 6h core cycle builds the index",
         )
         v.addWidget(self._browser, 1)
+
+    # ── data-export import (Takeout / TV Time / Amazon DSAR) ─────────────────
+    def _import_export(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Choose data-export zip(s) — Takeout, TV Time, Amazon…",
+            str(Path.home() / "Downloads"), "Export archives (*.zip)")
+        if not paths:
+            return
+        self._import_status.setText("importing… (large exports take a minute)")
+        try:
+            self._import_done.disconnect()
+        except Exception:
+            pass
+        self._import_done.connect(self._on_import_done)
+        import threading, shutil
+
+        def _bg():
+            inbox = ROOT / "state" / "inbox"
+            inbox.mkdir(parents=True, exist_ok=True)
+            for p in paths:
+                try:
+                    dest = inbox / Path(p).name
+                    if not dest.exists():
+                        shutil.copy2(p, dest)
+                except Exception:
+                    pass
+            try:
+                from lib import export_inbox
+                res = export_inbox.process()
+            except Exception as e:
+                res = {"status": "error", "error": str(e)[:200]}
+            self._import_done.emit(res)
+
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _on_import_done(self, res: dict) -> None:
+        imported = res.get("imported") or {}
+        if res.get("status") == "error":
+            self._import_status.setText(f"import failed: {res.get('error','')}")
+            return
+        if not imported:
+            self._import_status.setText("nothing new to import (already absorbed)")
+            return
+        lines = []
+        for zipname, rep in imported.items():
+            vendor = rep.get("vendor", "?")
+            counts = ", ".join(f"{k}: {v}" for k, v in rep.items()
+                               if isinstance(v, int))
+            lines.append(f"{zipname} [{vendor}] — {counts or 'extracted + indexed'}")
+        self._import_status.setText("✓ imported — refresh in ~30s")
+        QMessageBox.information(
+            None, "Data export imported",
+            "Absorbed into the mind, both mirrors, and the Connect index:\n\n"
+            + "\n".join(lines)
+            + "\n\nIt flows to Notion/Obsidian on the next mirror cycle.")
