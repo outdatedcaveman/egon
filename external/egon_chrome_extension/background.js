@@ -91,8 +91,21 @@ try {
           if (n === "x-api-key" || n === "authorization" ||
               n === "tvst-access-token" || n === "x-app-version") h[n] = x.value;
         }
+        // Capture the REAL user id from the request URL the app itself uses
+        // (decode the sidecar o_b64 → /user/<id>). The old code decoded uid
+        // from the JWT and got the WRONG id (107783497 vs real 41865458) →
+        // every msapi call 401'd. The app's own URL is authoritative.
+        // Bruno 2026-06-13 (verified live via Chrome MCP).
+        let capUid = (_tvtimeAuth && _tvtimeAuth.uid) || "";
+        try {
+          let probe = url;
+          const m1 = url.match(/o_b64=([^&]+)/);
+          if (m1) { try { probe = atob(m1[1].replace(/-/g, "+").replace(/_/g, "/")); } catch (e) {} }
+          const m2 = probe.match(/\/user\/(\d{4,})/);
+          if (m2) capUid = m2[1];
+        } catch (e) {}
         if (h["x-api-key"]) {
-          _tvtimeAuth = { headers: h, ts: Date.now() };
+          _tvtimeAuth = { headers: h, uid: capUid, ts: Date.now() };
           chrome.storage.local.set({ tvtime_auth: _tvtimeAuth });
         }
       } catch (e) {}
@@ -605,9 +618,16 @@ const HARVESTERS = [
       const jwt = localStorage.getItem("flutter.jwtToken") || "";
       const capHeaders = (auth && auth.headers) || window.__egonTvTimeAuth || {};
       const apiKey = capHeaders["x-api-key"] || "";
-      const authz = jwt ? ("Bearer " + jwt) : (capHeaders["authorization"] || "");
-      let uid = "";
-      try { uid = String(JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).id || ""); } catch (e) {}
+      // Prefer the CAPTURED Authorization (the exact value the app sends and
+      // that the server accepts) over reconstructing "Bearer "+jwt — they can
+      // differ. Bruno 2026-06-13.
+      const authz = capHeaders["authorization"] || (jwt ? ("Bearer " + jwt) : "");
+      // Prefer the uid captured from the app's own request URL; fall back to
+      // the JWT decode only if no captured uid exists.
+      let uid = (auth && auth.uid) || (window.__egonTvTimeAuth && window.__egonTvTimeAuth.uid) || "";
+      if (!uid) {
+        try { uid = String(JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).id || ""); } catch (e) {}
+      }
 
       const debug = {
         has_canvas: !!document.querySelector("canvas, flt-glass-pane, flutter-view"),
