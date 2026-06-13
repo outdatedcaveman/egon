@@ -416,6 +416,7 @@ def check_snapshots(u: Unit) -> None:
                 ("instapaper", "lib.adapters.instapaper"),
                 ("youtube_history", "lib.adapters.youtube_history"),
                 ("youtube_oauth", "lib.adapters.youtube_oauth"),
+                ("trakt", "lib.adapters.trakt"),
             )
         try:
             # Export inbox first (state/inbox/): ANY vendor zip — Takeout
