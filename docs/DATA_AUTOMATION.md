@@ -44,11 +44,36 @@ the **extension harvest now merge-accumulates** (never overwrites), so the
 ongoing Documents/PDOC updates flow hands-off. The DSAR is only needed once
 as a complete backfill; drop its zip in Downloads and it's absorbed.
 
-### Trakt (replaces TV Time)
+### TV Time (full library, once-for-all)
+**Breakthrough 2026-06-13** (Chrome MCP live debug): the modern
+`msapi.tvtime.com` endpoints accept the **Authorization header alone** — the
+`x-api-key` the old harvester waited for is routed through the page's service
+worker and is uncapturable, so the harvest had silently fallen back to the
+legacy `api2.tozelabs.com` path which caps at **20 shows**. Dropping that
+requirement unlocks the **whole library**:
+- `…/tracking/cgw/follows/user/<uid>?entity_type=series` → **525 followed
+  series** (names live in `meta`), and
+- `…/tracking/watches/user/<uid>?entity_type=episode` → **every watched
+  episode** (7,237 for Bruno, 2020-06→2026-06).
+
+Crucially, TV Time's `series_id` / `episode_id` **are TheTVDB ids**, so they
+push to Trakt exactly (no title-search guessing). The extension (v1.8.3)
+harvests both, writing shows to `/api/v1/tvtime/library` and the raw episode
+history to `/api/v1/tvtime/episodes` every 60 min, hands-off. The critical
+`uid` is captured from the app's own request URL (the JWT-decoded id is a
+*different* number and 401s).
+
+### Trakt (durable TV/film home)
 One OAuth authorize (device code at trakt.tv/activate) → refresh token →
-permanent. Trakt auto-scrobbles from streaming services, so going forward
-new watches flow with zero action. Seed once from the TV Time harvest via
-`trakt.push_tvtime_history()`.
+permanent. Trakt auto-scrobbles from streaming, so new watches flow with zero
+action. Seeded from the TV Time harvest:
+- `trakt.push_tvtime_episodes()` — **episode-level** /sync/history by TVDB
+  episode id, preserving each `watched_at`. This is authoritative (exact
+  episodes, no whole-show over-claiming): 7,237 episodes → 7,606 in Trakt.
+- `trakt.push_tvtime_history()` — watchlists the 217 followed-but-unwatched
+  series (the "want to watch" side). Watched series are left to the episode
+  push.
+Both run after the daily snapshot in `egon_core`; idempotent (Trakt dedups).
 
 ## The principle in code
 - `lib/export_inbox._WATCH_DIRS` — the folders auto-scanned each cycle.

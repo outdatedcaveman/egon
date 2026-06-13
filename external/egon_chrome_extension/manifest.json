@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Egon — open tabs + content harvester",
   "short_name": "Egon",
-  "version": "1.8.2",
+  "version": "1.8.3",
   "description": "Reports tabs + harvests data from sites where you're already signed in (Amazon Kindle library, etc.) to your local Egon instance. Read-only. Never leaves your machine.",
   "permissions": ["tabs", "alarms", "storage", "scripting", "webRequest"],
   "host_permissions": [

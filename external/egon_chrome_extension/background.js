@@ -104,8 +104,14 @@ try {
           const m2 = probe.match(/\/user\/(\d{4,})/);
           if (m2) capUid = m2[1];
         } catch (e) {}
-        if (h["x-api-key"]) {
-          _tvtimeAuth = { headers: h, uid: capUid, ts: Date.now() };
+        // Persist as soon as we have what the msapi harvest actually needs:
+        // the Authorization header and/or the real uid. The old code required
+        // x-api-key here, but that header is routed through the page's service
+        // worker and never reaches webRequest — so tvtime_auth (and its uid)
+        // was never stored and the harvest had no uid to call /user/<id>.
+        // Authorization alone authenticates msapi. Bruno 2026-06-13.
+        if (h["authorization"] || h["x-api-key"] || capUid) {
+          _tvtimeAuth = { headers: h, uid: capUid || (_tvtimeAuth && _tvtimeAuth.uid) || "", ts: Date.now() };
           chrome.storage.local.set({ tvtime_auth: _tvtimeAuth });
         }
       } catch (e) {}
@@ -614,71 +620,111 @@ const HARVESTERS = [
         for (const k in obj) { try { walk(obj[k], depth + 1); } catch (e) {} }
       };
 
-      // ── auth: live JWT from localStorage + captured x-api-key ──
-      const jwt = localStorage.getItem("flutter.jwtToken") || "";
+      // ── auth: captured Authorization (preferred) or Bearer+JWT ──
+      // BREAKTHROUGH 2026-06-13 (Chrome MCP live debug): the modern
+      // msapi.tvtime.com endpoints accept the Authorization header ALONE — the
+      // x-api-key the old code waited for is routed through the service worker
+      // and is uncapturable, so the `if (apiKey && …)` gate NEVER fired and the
+      // harvest fell back to the legacy tozelabs path which caps at 20 shows.
+      // Dropping the x-api-key requirement unlocks the FULL library: 525
+      // followed series (names in `meta`) + every watched episode (7,237 for
+      // Bruno), whose series_id/episode_id ARE TheTVDB ids. Verified end-to-end.
+      const jwt = (localStorage.getItem("flutter.jwtToken") || "").replace(/^"|"$/g, "");
       const capHeaders = (auth && auth.headers) || window.__egonTvTimeAuth || {};
-      const apiKey = capHeaders["x-api-key"] || "";
-      // Prefer the CAPTURED Authorization (the exact value the app sends and
-      // that the server accepts) over reconstructing "Bearer "+jwt — they can
-      // differ. Bruno 2026-06-13.
       const authz = capHeaders["authorization"] || (jwt ? ("Bearer " + jwt) : "");
-      // Prefer the uid captured from the app's own request URL; fall back to
-      // the JWT decode only if no captured uid exists.
-      let uid = (auth && auth.uid) || (window.__egonTvTimeAuth && window.__egonTvTimeAuth.uid) || "";
-      if (!uid) {
-        try { uid = String(JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).id || ""); } catch (e) {}
-      }
+      // uid MUST come from the app's own request URL (captured) — the JWT's
+      // decoded id is a DIFFERENT number and 401s. No jwt-decode fallback.
+      const uid = (auth && auth.uid) ||
+                  (window.__egonTvTimeAuth && window.__egonTvTimeAuth.uid) || "";
 
       const debug = {
-        has_canvas: !!document.querySelector("canvas, flt-glass-pane, flutter-view"),
         logged_in: localStorage.getItem("flutter.isLoggedIn") || null,
-        auth_captured: !!apiKey, auth_age_s: auth ? Math.round((Date.now() - (auth.ts || 0)) / 1000) : null,
-        uid_found: !!uid, endpoints: [],
+        has_authz: !!authz, uid: uid || null,
+        auth_age_s: auth ? Math.round((Date.now() - (auth.ts || 0)) / 1000) : null,
+        endpoints: [],
       };
 
-      if (apiKey && jwt && uid) {
-        const b64 = (s) => btoa(s).replace(/=+$/, "");
-        const H = { "Accept": "application/json", "x-api-key": apiKey, "Authorization": authz };
-        const EP = [
-          { label: "followed_series", base: `https://msapi.tvtime.com/prod/v1/tracking/cgw/follows/user/${uid}`, qs: "&entity_type=series&filter=only_followed_series" },
-          { label: "followed_movies", base: `https://msapi.tvtime.com/prod/v1/tracking/cgw/follows/user/${uid}`, qs: "&entity_type=movie&sort=watched_date,desc" },
-          { label: "watched_movies",  base: `https://msapi.tvtime.com/prod/v1/tracking/watches/user/${uid}`, qs: "&entity_type=movie" },
-          // WATCHED EPISODES — the actual viewing history (Bruno 2026-06-13).
-          // This is what a show tracker is FOR; the harvester previously only
-          // captured followed shows + watched movies, never the episodes.
-          // Endpoint guesses, paginated; harmless if a label 404s.
-          { label: "watched_episodes", base: `https://msapi.tvtime.com/prod/v1/tracking/watches/user/${uid}`, qs: "&entity_type=episode&sort=watched_date,desc", paged: true },
-          { label: "episode_history",  base: `https://msapi.tvtime.com/prod/v1/tracking/cgw/history/user/${uid}`, qs: "&entity_type=episode", paged: true },
-          { label: "fav_series", base: `https://msapi.tvtime.com/prod/v2/lists/user/${uid}/lists/favorite-series`, qs: "&expand=all" },
-          { label: "fav_movies", base: `https://msapi.tvtime.com/prod/v2/lists/user/${uid}/lists/favorite-movies`, qs: "&expand=all" },
-        ];
-        for (const ep of EP) {
-          const before = out.length;
-          let status = "err";
-          try {
-            const pages = ep.paged ? 40 : 1;     // walk paginated histories
-            for (let pg = 0; pg < pages; pg++) {
-              const pgQs = ep.paged ? `${ep.qs}&page=${pg}&limit=100&offset=${pg*100}` : ep.qs;
-              const r = await fetch(`/sidecar?o_b64=${b64(ep.base)}${pgQs}`,
-                                    { credentials: "include", headers: H });
-              status = r.status;
-              if (!r.ok) break;
-              const j = await r.json();
-              const data = j.data !== undefined ? j.data : j;
-              const grew = out.length;
-              walk(data, 0);
-              // stop a paged endpoint once a page adds nothing new
-              if (ep.paged && out.length === grew) break;
-              if (ep.paged) await new Promise(r => setTimeout(r, 150));
-            }
-          } catch (e) { status = "err"; }
-          debug.endpoints.push({ label: ep.label, status, added: out.length - before });
-          await new Promise(r => setTimeout(r, 200));
+      const b64u = (s) => btoa(unescape(encodeURIComponent(s))).replace(/=+$/, "");
+      const H = { "Accept": "application/json", "Authorization": authz };
+      const get = async (target, qs) => {
+        const r = await fetch(`/sidecar?o_b64=${b64u(target)}${qs || ""}`,
+                              { credentials: "include", headers: H });
+        const status = r.status;
+        let j = {}; try { j = r.ok ? await r.json() : {}; } catch (e) {}
+        return { j, status };
+      };
+      const posterUrl = (p) => p ? (/^https?:/.test(p) ? p
+        : "https://artworks.thetvdb.com" + p) : "";
+
+      const episodes = [];   // raw watch history -> episode-level Trakt sync
+
+      if (uid && authz) {
+        const epCount = {}, epLast = {};
+        // 1) full watched-episode history (entity_type=episode, one shot)
+        const we = await get(
+          `https://msapi.tvtime.com/prod/v1/tracking/watches/user/${uid}`,
+          "&entity_type=episode");
+        const eobjs = (we.j.data && we.j.data.objects) || [];
+        for (const o of eobjs) {
+          if (!o.episode_id) continue;
+          episodes.push({ id: "ep-" + o.episode_id, episode_id: o.episode_id,
+            series_id: o.series_id, watched_at: o.watched_at });
+          const s = o.series_id;
+          epCount[s] = (epCount[s] || 0) + 1;
+          if (!epLast[s] || o.watched_at > epLast[s]) epLast[s] = o.watched_at;
         }
+        debug.endpoints.push({ label: "watched_episodes",
+          status: we.status, count: eobjs.length });
+
+        // 2) all followed series (names + tvdb id live in `meta`)
+        const fs = await get(
+          `https://msapi.tvtime.com/prod/v1/tracking/cgw/follows/user/${uid}`,
+          "&entity_type=series");
+        const fobjs = (fs.j.data && fs.j.data.objects) || [];
+        const seenSeries = {};
+        for (const o of fobjs) {
+          const m = o.meta || {};
+          if (!m.id || !m.name) continue;
+          seenSeries[m.id] = 1;
+          out.push({ id: "tvtime-" + m.id, title: String(m.name).slice(0, 200),
+            tvdb_id: m.id, source: "tvtime", kind: "show", entity_type: "series",
+            followed: true, image: posterUrl(m.poster || m.image),
+            year: String(m.first_aired || "").slice(0, 4),
+            url: `https://www.thetvdb.com/?tab=series&id=${m.id}`,
+            watched_episodes: epCount[m.id] || 0, last_watched: epLast[m.id] || null });
+        }
+        debug.endpoints.push({ label: "follows_series",
+          status: fs.status, count: fobjs.length });
+
+        // 3) watched-but-unfollowed series (have episodes, no follow row)
+        for (const s in epCount) {
+          if (seenSeries[s]) continue;
+          out.push({ id: "tvtime-" + s, title: "Series " + s, tvdb_id: parseInt(s),
+            source: "tvtime", kind: "show", entity_type: "series", followed: false,
+            watched_episodes: epCount[s], last_watched: epLast[s] || null });
+        }
+
+        // 4) watched movies (best-effort; meta shape mirrors series)
+        const wm = await get(
+          `https://msapi.tvtime.com/prod/v1/tracking/watches/user/${uid}`,
+          "&entity_type=movie");
+        const mobjs = (wm.j.data && wm.j.data.objects) || [];
+        for (const o of mobjs) {
+          const m = o.meta || {}; const id = m.id || o.movie_id;
+          if (!id) continue;
+          out.push({ id: "tvtime-movie-" + id,
+            title: String(m.name || ("Movie " + id)).slice(0, 200), tvdb_id: id,
+            source: "tvtime", kind: "movie", entity_type: "movie",
+            image: posterUrl(m.poster || m.image), watched_at: o.watched_at });
+        }
+        debug.endpoints.push({ label: "watched_movies",
+          status: wm.status, count: mobjs.length });
       }
+
       return {
         ts: Date.now(), url: location.href, count: out.length, items: out,
-        strategy: "sidecar_replay", _debug: debug,
+        episodes, watched_episodes_total: episodes.length,
+        strategy: "msapi_authorization", _debug: debug,
       };
     },
   },
@@ -1705,8 +1751,10 @@ async function harvestIfMatch(tab) {
       let haveAuth = false;
       try {
         const s = await chrome.storage.local.get("tvtime_auth");
-        haveAuth = !!(s && s.tvtime_auth && s.tvtime_auth.headers &&
-                      s.tvtime_auth.headers["x-api-key"]);
+        const ta = s && s.tvtime_auth;
+        // We have enough once the Authorization header AND the real uid are
+        // captured — x-api-key is no longer required (msapi takes Authorization).
+        haveAuth = !!(ta && ta.uid && ta.headers && ta.headers["authorization"]);
       } catch (e) {}
       if (!haveAuth) {
         try { await chrome.tabs.reload(tab.id, { bypassCache: true }); } catch (e) {}
@@ -1747,6 +1795,23 @@ async function harvestIfMatch(tab) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
     });
+    // Some harvesters carry a SECOND payload — TV Time returns the full
+    // watched-episode history alongside the show library. Ship it to the
+    // sibling `…/episodes` sink so the episode-level Trakt sync has data.
+    // Runs in the background (service-worker) context, which — unlike the
+    // page — is NOT subject to the site's own service worker, so the POST
+    // to 127.0.0.1 actually completes. Bruno 2026-06-13.
+    if (data.episodes && data.episodes.length) {
+      const epEndpoint = h.endpoint.replace(/\/library$/, "/episodes");
+      try {
+        await fetch(epEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items: data.episodes, source: "tvtime_episodes",
+            count: data.episodes.length, ts: data.ts }),
+        });
+      } catch (e) {}
+    }
     await chrome.storage.local.set({
       [`harvest_${h.endpoint}`]: {
         ts: Date.now(),
