@@ -134,32 +134,109 @@ def _google_parsers(ex_dir: Path, report: dict) -> None:
         _write_snapshot("google_activity", act_items)
         report["google_activity"] = len(act_items)
 
-    # Fit — daily activity metrics CSV (one row per day)
+    # Fit — real Takeout layout is "Daily activity metrics/<YYYY-MM-DD>.csv",
+    # each file a day of 15-minute interval rows. ONE entity per DAY (Bruno's
+    # grain), aggregating the intervals into clean daily totals. 2,590 days
+    # back to 2018 = a longitudinal health record.
+    _SUM = ("Move Minutes count", "Calories (kcal)", "Distance (m)",
+            "Heart Points", "Heart Minutes", "Step count")
     fit_items: list[dict] = []
-    for p in ex_dir.rglob("Daily activity metrics*.csv"):
-        try:
-            rows = list(csv.DictReader(io.StringIO(
-                p.read_text(encoding="utf-8", errors="replace"))))
-        except Exception:
-            continue
-        for r in rows:
-            day = r.get("Date") or ""
-            if not day:
+    fit_dir = next((d for d in ex_dir.rglob("Daily activity metrics")
+                    if d.is_dir()), None)
+    if fit_dir:
+        for p in sorted(fit_dir.glob("*.csv")):
+            day = p.stem
+            if not re.match(r"\d{4}-\d{2}-\d{2}$", day):
+                continue   # skip the rollup "Daily activity metrics.csv"
+            try:
+                rows = list(csv.DictReader(io.StringIO(
+                    p.read_text(encoding="utf-8", errors="replace"))))
+            except Exception:
                 continue
-            stats = {k: v for k, v in r.items()
-                     if v and k != "Date"}
+            def _f(v):
+                try:
+                    return float(v)
+                except Exception:
+                    return 0.0
+            agg = {k: 0.0 for k in _SUM}
+            hr_vals, max_hr = [], 0.0
+            for r in rows:
+                for k in _SUM:
+                    agg[k] += _f(r.get(k))
+                a = _f(r.get("Average heart rate (bpm)"))
+                if a:
+                    hr_vals.append(a)
+                max_hr = max(max_hr, _f(r.get("Max heart rate (bpm)")))
+            stats = {
+                "steps": int(agg["Step count"]),
+                "calories_kcal": round(agg["Calories (kcal)"], 1),
+                "distance_m": round(agg["Distance (m)"], 1),
+                "move_minutes": int(agg["Move Minutes count"]),
+                "heart_points": round(agg["Heart Points"], 1),
+                "avg_hr": round(sum(hr_vals) / len(hr_vals), 1) if hr_vals else 0,
+                "max_hr": round(max_hr, 1),
+            }
+            if not any(stats.values()):
+                continue
             fit_items.append({
                 "id": f"fit:{day}",
                 "title": f"Fit — {day}",
-                "subtitle": " · ".join(f"{k}: {v}" for k, v in
-                                       list(stats.items())[:5])[:200],
+                "subtitle": (f"{stats['steps']:,} steps · "
+                             f"{stats['calories_kcal']:.0f} kcal · "
+                             f"{stats['distance_m']/1000:.1f} km")[:200],
                 "kind": "fit_daily",
                 "when": day,
-                "content": json.dumps(stats)[:1500],
+                "content": json.dumps(stats),
             })
     if fit_items:
         _write_snapshot("google_fit", fit_items)
         report["google_fit"] = len(fit_items)
+
+    # Discover — Liked Content / Follows / Not Interested (TAB-separated CSVs)
+    disc_items: list[dict] = []
+    disc_dir = next((d for d in ex_dir.rglob("Discover") if d.is_dir()), None)
+    if disc_dir:
+        for p in disc_dir.glob("*.csv"):
+            cat = p.stem
+            try:
+                rdr = csv.DictReader(io.StringIO(
+                    p.read_text(encoding="utf-8", errors="replace")),
+                    delimiter="\t")
+                for i, r in enumerate(rdr):
+                    vals = [v for v in r.values() if v]
+                    if not vals:
+                        continue
+                    disc_items.append({
+                        "id": f"disc:{cat}:{i}",
+                        "title": str(vals[0])[:300],
+                        "url": vals[0] if str(vals[0]).startswith("http") else "",
+                        "subtitle": (cat + " · " + " · ".join(vals[1:3]))[:200],
+                        "kind": "discover_" + re.sub(r"\W+", "_", cat.lower()),
+                    })
+            except Exception:
+                continue
+    if disc_items:
+        _write_snapshot("google_discover", disc_items)
+        report["google_discover"] = len(disc_items)
+
+    # Gemini — gems (custom personas) + scheduled actions are HTML config in
+    # this part; the actual chat history lives under My Activity/Gemini Apps
+    # (handled by the My Activity parser above when that part is present).
+    gem_items: list[dict] = []
+    for p in ex_dir.rglob("gemini_*_data.html"):
+        text = re.sub(r"<[^>]+>", " ",
+                      p.read_text(encoding="utf-8", errors="replace"))
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) > 20:
+            gem_items.append({
+                "id": f"gemini_cfg:{p.stem}",
+                "title": f"Gemini — {p.stem.replace('gemini_', '').replace('_data', '')}",
+                "kind": "gemini_config",
+                "content": text[:4000],
+            })
+    if gem_items:
+        _write_snapshot("gemini_config", gem_items)
+        report["gemini_config"] = len(gem_items)
 
 
 # ── tvtime parser ────────────────────────────────────────────────────────────
