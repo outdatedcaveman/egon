@@ -381,44 +381,57 @@ def _codex_summary_to_project(name: str) -> str | None:
     return slug if slug in known_project_slugs() else None
 
 
-def _ingest_codex_rollout(uuid: str, path: Path) -> int | None:
-    # Scan the first ~20 events for a `cwd` / `working_directory` field so we
-    # can attribute this Codex session to a project. Without this every Codex
-    # session lands under project=None and projects like 'flood', 'mouseion',
-    # 'routster' never get connected to their Codex work.
-    project = None
-    try:
-        with path.open(encoding="utf-8") as f:
-            for i, line in enumerate(f):
-                if i >= 30:
-                    break
-                try:
-                    e = json.loads(line)
-                except Exception:
-                    continue
-                cwd = e.get("cwd") or e.get("working_directory") or e.get("workdir")
-                if not cwd:
-                    payload = e.get("payload") or {}
-                    if isinstance(payload, dict):
-                        cwd = payload.get("cwd")
-                # Only treat it as a cwd if it actually looks like a filesystem
-                # path (has a separator or drive letter). Otherwise we're
-                # picking up a prompt/title field — that's how the bogus
-                # 'from-recent-prs-and-reviews-suggest' project appeared.
-                # Bruno 2026-05-29.
-                if cwd and ("/" in str(cwd) or "\\" in str(cwd) or ":" in str(cwd)):
-                    from lib.mind_project_resolver import canonical_slug
-                    project = canonical_slug(cwd)
-                    if project:
-                        break
-    except Exception:
-        return None
+# Generic launch directories Bruno opens Codex from that are NOT the subject
+# of the work. `flood` == ~/Documents/New project, Codex's default terminal
+# dir; he routinely runs Codex from there while editing egon/panop/etc. So a
+# cwd of "New project" must NEVER override what the session actually touched.
+_CODEX_SCRATCH_SLUGS = {None, "flood", "double"}
+# Match a Bruno project root inside a path: "...\Claude Code\egon\..." etc.
+_PROJECT_PATH_RE = re.compile(r"[Cc]laude[ _]?[Cc]ode[\\/]+([A-Za-z0-9_.\-]+)")
 
-    sid = _start_session(_AGENT_CODEX[0], external_id=uuid, project=project)
-    if sid is None:
-        return None
-    last_ts = None
-    n = 0
+
+def _attribute_codex_project(events: list[dict]) -> str | None:
+    """Attribute a Codex session to a project by what it EDITED, not the
+    directory it was launched from. Codex has no project concept and Bruno
+    launches it from a generic 'New project' folder (→ 'flood'), so the cwd
+    is a lie — a session can spend its whole life editing egon files while
+    cwd says flood. We tally references to `Claude Code\\<project>` paths
+    across the rollout and prefer the dominant one over a scratch cwd.
+    Bruno 2026-06-13: 'I want a system where all the AIs know everything the
+    others do' — attribution by subject is what makes that hold."""
+    from lib.mind_project_resolver import canonical_slug
+    cwd_project = None
+    tally: dict[str, int] = {}
+    for i, e in enumerate(events):
+        if cwd_project is None and i < 30:
+            cwd = e.get("cwd") or e.get("working_directory") or e.get("workdir")
+            if not cwd and isinstance(e.get("payload"), dict):
+                cwd = e["payload"].get("cwd")
+            if cwd and any(c in str(cwd) for c in "/\\:"):
+                cwd_project = canonical_slug(cwd)
+        try:
+            blob = e if isinstance(e, str) else json.dumps(e, ensure_ascii=False)
+        except Exception:
+            continue
+        for seg in _PROJECT_PATH_RE.findall(blob):
+            slug = canonical_slug("x/" + seg)   # force last-segment + noise filter
+            if slug:
+                tally[slug] = tally.get(slug, 0) + 1
+    dominant = None
+    if tally:
+        dominant, dcount = max(tally.items(), key=lambda kv: kv[1])
+        total = sum(tally.values())
+        if not (dcount >= 3 and dcount >= 0.6 * total):
+            dominant = None
+    # Prefer edited-content project when the launch dir is a scratch folder
+    # (or already agrees). Keep a real cwd project otherwise — cross-project
+    # mentions shouldn't yank a legitimately-attributed session away.
+    if dominant and (cwd_project in _CODEX_SCRATCH_SLUGS or dominant == cwd_project):
+        return dominant
+    return cwd_project or dominant
+
+
+def _ingest_codex_rollout(uuid: str, path: Path) -> int | None:
     try:
         events = []
         with path.open(encoding="utf-8") as f:
@@ -427,6 +440,17 @@ def _ingest_codex_rollout(uuid: str, path: Path) -> int | None:
                     events.append(json.loads(line))
                 except Exception:
                     continue
+    except Exception:
+        return None
+
+    project = _attribute_codex_project(events)
+
+    sid = _start_session(_AGENT_CODEX[0], external_id=uuid, project=project)
+    if sid is None:
+        return None
+    last_ts = None
+    n = 0
+    try:
         if len(events) > MAX_EVENTS_PER_SESSION:
             head = events[:MAX_EVENTS_PER_SESSION // 2]
             tail = events[-(MAX_EVENTS_PER_SESSION // 2):]
