@@ -24,6 +24,7 @@ NAV = [
     ("connect",    "✨", "Connect & Search", False),
     ("inbox",      "📥", "Inbox",          False),
     ("artifacts",  "🗂", "Artifacts",      False),
+    ("persona",    "👤", "Persona",        False),
     ("navigation", "🧭", "Navigation",     False),
     ("media",      "🎬", "Media",          False),
     ("references", "📚", "References",     False),
@@ -55,6 +56,11 @@ def _connect_search_page():
 def _databases_page():
     from egon_app.pages.databases import DatabasesPage
     return DatabasesPage()
+
+
+def _persona_page():
+    from egon_app.pages.persona import PersonaPage
+    return PersonaPage()
 
 
 class MainWindow(QMainWindow):
@@ -250,6 +256,7 @@ class MainWindow(QMainWindow):
             "connect":    _connect_search_page,
             "artifacts":  _artifacts_page,
             "databases":  _databases_page,
+            "persona":    _persona_page,
         }
         self._idx_slug: dict[int, str] = {}
         self._built_slugs: set[str] = set()

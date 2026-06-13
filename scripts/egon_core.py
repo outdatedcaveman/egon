@@ -370,20 +370,25 @@ _snap_running = False
 _snap_last = 0.0
 
 
+_SNAP_MARK = ROOT / "state" / "snapshots_last_run.json"
+
+
 def check_snapshots(u: Unit) -> None:
     global _snap_running, _snap_last
-    store = ROOT / "state" / "snapshots"
-    newest = 0.0
+    # Gate on OUR last full-refresh time (persisted), NOT the newest snapshot
+    # file. 2026-06-13 bug: one fresh source (bookmarks) made the newest-file
+    # age <48h, so the whole refresh was skipped — leaving zotero stale at the
+    # old 5k snapshot for weeks. Now every source is re-snapshotted daily.
+    last = 0.0
     try:
-        for d in store.iterdir():
-            for f in d.glob("*.json"):
-                newest = max(newest, f.stat().st_mtime)
+        last = float(json.loads(_SNAP_MARK.read_text(encoding="utf-8"))["ts"])
     except Exception:
         pass
-    age_h = (time.time() - newest) / 3600 if newest else None
+    age_h = (time.time() - last) / 3600 if last else None
     u.ok = age_h is not None and age_h < 48
-    u.detail = (f"age={age_h:.0f}h" if age_h is not None else "never") +                (" (refreshing)" if _snap_running else "")
-    due = age_h is None or age_h * 3600 > SNAPSHOTS_EVERY_S
+    u.detail = (f"all-sources age={age_h:.0f}h" if age_h is not None
+                else "never") + (" (refreshing)" if _snap_running else "")
+    due = last == 0.0 or time.time() - last > SNAPSHOTS_EVERY_S
     if _snap_running or not due or time.time() - _snap_last < 3600:
         return
     _snap_last = time.time()
@@ -448,6 +453,11 @@ def check_snapshots(u: Unit) -> None:
                     failed += 1
                     log("warn", "snapshot_failed", source=source,
                         error=str(e)[:100])
+            try:
+                _SNAP_MARK.write_text(json.dumps({"ts": time.time()}),
+                                      encoding="utf-8")
+            except Exception:
+                pass
             log("info", "snapshots_refreshed", ok=done, failed=failed)
         except Exception as e:
             log("warn", "snapshots_run_failed", error=str(e)[:160])
