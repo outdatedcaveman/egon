@@ -60,6 +60,7 @@ SNAPSHOT_ADAPTERS = (
     ("instapaper",       "lib.adapters.instapaper"),
     ("youtube_history",  "lib.adapters.youtube_history"),
     ("youtube_oauth",    "lib.adapters.youtube_oauth"),
+    ("trakt",            "lib.adapters.trakt"),
 )
 
 
