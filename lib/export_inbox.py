@@ -326,9 +326,9 @@ def _tvtime_parser(ex_dir: Path, report: dict) -> None:
         for e in rows if isinstance(rows, list) else []:
             if not isinstance(e, dict):
                 continue
+            sh = e.get("show")
             show = (e.get("show_name") or e.get("series_name")
-                    or (e.get("show") or {}).get("name") if
-                    isinstance(e.get("show"), dict) else e.get("show")) or ""
+                    or (sh.get("name") if isinstance(sh, dict) else sh) or "")
             ep = e.get("episode_name") or e.get("name") or ""
             num = e.get("episode_number") or e.get("number") or ""
             season = e.get("season_number") or e.get("season") or ""
