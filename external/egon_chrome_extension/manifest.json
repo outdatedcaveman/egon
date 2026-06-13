@@ -1,0 +1,58 @@
+{
+  "manifest_version": 3,
+  "name": "Egon — open tabs + content harvester",
+  "short_name": "Egon",
+  "version": "1.8.1",
+  "description": "Reports tabs + harvests data from sites where you're already signed in (Amazon Kindle library, etc.) to your local Egon instance. Read-only. Never leaves your machine.",
+  "permissions": ["tabs", "alarms", "storage", "scripting", "webRequest"],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "https://*.amazon.com/*",
+    "https://*.amazon.com.br/*",
+    "https://*.amazon.co.uk/*",
+    "https://*.amazon.de/*",
+    "https://*.amazon.fr/*",
+    "https://*.amazon.co.jp/*",
+    "https://read.amazon.com/*",
+    "https://ler.amazon.com.br/*",
+    "https://paperpile.com/*",
+    "https://app.paperpile.com/*",
+    "https://www.instapaper.com/*",
+    "https://instapaper.com/*",
+    "https://www.youtube.com/*",
+    "https://*.tvtime.com/*",
+    "https://app.tvtime.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.amazon.com/*", "https://*.amazon.com.br/*",
+        "https://*.amazon.co.uk/*", "https://*.amazon.de/*",
+        "https://*.amazon.fr/*", "https://*.amazon.co.jp/*",
+        "https://paperpile.com/*", "https://app.paperpile.com/*",
+        "https://www.instapaper.com/*", "https://instapaper.com/*",
+        "https://www.youtube.com/*", "https://*.tvtime.com/*"
+      ],
+      "js": ["capture.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["connect.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16":  "icon16.png",
+    "48":  "icon48.png",
+    "128": "icon128.png"
+  },
+  "action": {
+    "default_title": "Egon — tabs + content harvester",
+    "default_popup": "popup.html"
+  }
+}
