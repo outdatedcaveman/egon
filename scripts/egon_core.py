@@ -26,6 +26,7 @@ Run:  .venv\\Scripts\\pythonw.exe scripts\\egon_core.py
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -48,6 +49,8 @@ HEALTH = ROOT / "state" / "core_health.json"
 CHECK_EVERY_S = 30
 INDEX_EVERY_S = 6 * 3600
 RESTART_BACKOFF_S = 120          # per-unit: at most one restart per 2 min
+HEAVY_MODE = os.environ.get("EGON_CORE_HEAVY_MODE", "manual").strip().lower()
+HEAVY_IDLE_AFTER_S = int(os.environ.get("EGON_CORE_HEAVY_IDLE_AFTER_S", "1800"))
 
 MIND_STATS = "http://127.0.0.1:8000/api/v1/mind/stats"
 HEADROOM_HEALTH = "http://127.0.0.1:8787/health"
@@ -74,6 +77,45 @@ def _http_ok(url: str, timeout: float = 3.0) -> tuple[bool, str]:
         return r.status == 200, body
     except Exception as e:
         return False, f"{type(e).__name__}"
+
+
+def _idle_seconds() -> float:
+    """Seconds since last keyboard/mouse input. Windows-only; conservative."""
+    if os.name != "nt":
+        return 0.0
+    try:
+        import ctypes
+
+        class LASTINPUTINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+        lii = LASTINPUTINFO()
+        lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
+            return 0.0
+        tick = ctypes.windll.kernel32.GetTickCount()
+        return max(0.0, (tick - lii.dwTime) / 1000.0)
+    except Exception:
+        return 0.0
+
+
+def _heavy_allowed() -> tuple[bool, str]:
+    """Gate CPU/network-heavy background work.
+
+    The always-on core must be a supervisor first. Heavy corpus work is useful,
+    but it cannot run just because Egon is alive: it was freezing the PC while
+    Bruno was actively using Inbox. Defaults to manual opt-in.
+    """
+    if HEAVY_MODE in ("1", "true", "yes", "always"):
+        return True, "heavy mode always"
+    if HEAVY_MODE in ("off", "0", "false", "no", "manual", ""):
+        return False, "paused: set EGON_CORE_HEAVY_MODE=idle or always"
+    if HEAVY_MODE == "idle":
+        idle = _idle_seconds()
+        if idle >= HEAVY_IDLE_AFTER_S:
+            return True, f"idle {int(idle)}s"
+        return False, f"paused: active user, idle {int(idle)}s/{HEAVY_IDLE_AFTER_S}s"
+    return False, f"paused: unknown heavy mode {HEAVY_MODE!r}"
 
 
 # ── units ────────────────────────────────────────────────────────────────────
@@ -193,6 +235,10 @@ def check_index(u: Unit) -> None:
     age = (time.time() - meta.stat().st_mtime) if meta.exists() else None
     u.ok = age is not None
     u.detail = (f"age={int(age // 60)}m" if age is not None else "not built")
+    allowed, why = _heavy_allowed()
+    if not allowed:
+        u.detail += f" ({why})"
+        return
     if _index_building:
         u.detail += " (refreshing)"
         return
@@ -264,6 +310,10 @@ def check_digest(u: Unit) -> None:
         prev = None
     u.ok = prev == today
     u.detail = f"last={prev or 'never'}"
+    allowed, why = _heavy_allowed()
+    if not allowed:
+        u.detail += f" ({why})"
+        return
     if _digest_running or prev == today or datetime.now().hour < DIGEST_AFTER_HOUR:
         return
     _digest_running = True
@@ -388,6 +438,10 @@ def check_snapshots(u: Unit) -> None:
     u.ok = age_h is not None and age_h < 48
     u.detail = (f"all-sources age={age_h:.0f}h" if age_h is not None
                 else "never") + (" (refreshing)" if _snap_running else "")
+    allowed, why = _heavy_allowed()
+    if not allowed:
+        u.detail += f" ({why})"
+        return
     due = last == 0.0 or time.time() - last > SNAPSHOTS_EVERY_S
     if _snap_running or not due or time.time() - _snap_last < 3600:
         return
@@ -460,6 +514,19 @@ def check_snapshots(u: Unit) -> None:
             except Exception:
                 pass
             log("info", "snapshots_refreshed", ok=done, failed=failed)
+            # TV Time -> Trakt: push the (auto-harvested) TV Time back-catalog
+            # into Trakt, the durable home. Trakt dedups, so this is safe to
+            # run daily; going forward Trakt auto-scrobbles. Once-for-all
+            # (Bruno 2026-06-13). No-op unless Trakt is authed + TV Time data.
+            try:
+                from lib.adapters import trakt
+                if trakt.live_status().get("status") == "ok":
+                    pr = trakt.push_tvtime_history()
+                    if pr.get("status") == "ok":
+                        log("info", "tvtime_to_trakt",
+                            matched=pr.get("matched"), unmatched=pr.get("unmatched"))
+            except Exception as e:
+                log("warn", "tvtime_to_trakt_failed", error=str(e)[:120])
         except Exception as e:
             log("warn", "snapshots_run_failed", error=str(e)[:160])
         finally:
@@ -471,7 +538,9 @@ def check_snapshots(u: Unit) -> None:
 # Notion mirror increment cadence — every 5 min advance one bounded batch.
 # Obsidian is fully mirrored by the index cycle (cheap local writes); Notion
 # fills slowly to respect its API. Bruno 2026-06-12.
-MIRROR_EVERY_S = 300
+MIRROR_EVERY_S = int(os.environ.get("EGON_CORE_MIRROR_EVERY_S", "3600"))
+MIRROR_BATCH = int(os.environ.get("EGON_CORE_MIRROR_BATCH", "25"))
+NOTION_BODY_BATCH = int(os.environ.get("EGON_CORE_NOTION_BODY_BATCH", "5"))
 _mirror_last = 0.0
 _mirror_running = False
 
@@ -489,6 +558,10 @@ def check_mirror(u: Unit) -> None:
     except Exception:
         u.ok = True
         u.detail = "idle"
+    allowed, why = _heavy_allowed()
+    if not allowed:
+        u.detail += f" ({why})"
+        return
     if _mirror_running or time.time() - _mirror_last < MIRROR_EVERY_S:
         return
     _mirror_last = time.time()
@@ -501,7 +574,7 @@ def check_mirror(u: Unit) -> None:
             # by last_edited_time, ~60 pages/run) so the Obsidian mirror
             # carries full text, not stubs. #66, 2026-06-12.
             from lib import notion_body
-            bres = notion_body.refresh()
+            bres = notion_body.refresh(batch=NOTION_BODY_BATCH)
             if bres.get("fetched"):
                 log("info", "notion_bodies", **{k: bres[k] for k in
                     ("fetched", "cached_total") if k in bres})
@@ -509,7 +582,7 @@ def check_mirror(u: Unit) -> None:
             log("warn", "notion_bodies_failed", error=str(e)[:120])
         try:
             from lib import mirror_runner
-            res = mirror_runner.run_notion_increment()
+            res = mirror_runner.run_notion_increment(batch=MIRROR_BATCH)
             log("info", "mirror_increment", pushed=res.get("pushed"),
                 status=res.get("status"))
         except Exception as e:
