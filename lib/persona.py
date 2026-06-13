@@ -140,6 +140,111 @@ def _reading() -> dict:
     }
 
 
+# ── interest curation (editable, persisted) ─────────────────────────────────
+# Auto-detected interests (Discover follows + YouTube subs) are a starting
+# point; Bruno curates them — add his own, remove noise, pin the important
+# ones, rename. The overlay persists; the auto set refreshes underneath it.
+INTERESTS_FILE = ROOT / "state" / "persona_interests.json"
+
+
+def _load_overlay() -> dict:
+    try:
+        d = json.loads(INTERESTS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        d = {}
+    d.setdefault("added", [])       # [{name, note}]
+    d.setdefault("removed", [])     # [name] auto-detected ones hidden
+    d.setdefault("pinned", [])      # [name]
+    d.setdefault("renames", {})     # {old: new}
+    return d
+
+
+def _save_overlay(d: dict) -> None:
+    INTERESTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    INTERESTS_FILE.write_text(json.dumps(d, indent=2, ensure_ascii=False),
+                              encoding="utf-8")
+
+
+def get_interests(sort: str = "az") -> list[dict]:
+    """Curated interest list. sort: az | za | source | pinned."""
+    ov = _load_overlay()
+    i = _interests()
+    auto = ([(f, "Discover") for f in i.get("follows", [])]
+            + [(s, "YouTube") for s in i.get("youtube_subs", [])])
+    removed = set(ov["removed"])
+    renames = ov["renames"]
+    pinned = set(ov["pinned"])
+    rows: dict[str, dict] = {}
+    for name, src in auto:
+        nm = renames.get(name, name)
+        if name in removed or nm in removed:
+            continue
+        if nm not in rows:
+            rows[nm] = {"name": nm, "source": src,
+                        "pinned": nm in pinned, "manual": False}
+    for a in ov["added"]:
+        nm = a.get("name", "").strip()
+        if nm and nm not in rows:
+            rows[nm] = {"name": nm, "source": "you",
+                        "pinned": nm in pinned, "manual": True}
+    out = list(rows.values())
+    if sort == "za":
+        out.sort(key=lambda r: r["name"].lower(), reverse=True)
+    elif sort == "source":
+        out.sort(key=lambda r: (r["source"], r["name"].lower()))
+    elif sort == "pinned":
+        out.sort(key=lambda r: (not r["pinned"], r["name"].lower()))
+    else:  # az
+        out.sort(key=lambda r: r["name"].lower())
+    return out
+
+
+def add_interest(name: str) -> None:
+    name = (name or "").strip()
+    if not name:
+        return
+    ov = _load_overlay()
+    if name in ov["removed"]:
+        ov["removed"].remove(name)
+    if not any(a.get("name") == name for a in ov["added"]):
+        ov["added"].append({"name": name})
+    _save_overlay(ov)
+
+
+def remove_interest(name: str) -> None:
+    ov = _load_overlay()
+    ov["added"] = [a for a in ov["added"] if a.get("name") != name]
+    if name not in ov["removed"]:
+        ov["removed"].append(name)
+    ov["pinned"] = [p for p in ov["pinned"] if p != name]
+    _save_overlay(ov)
+
+
+def rename_interest(old: str, new: str) -> None:
+    old, new = (old or "").strip(), (new or "").strip()
+    if not new or old == new:
+        return
+    ov = _load_overlay()
+    hit = False
+    for a in ov["added"]:
+        if a.get("name") == old:
+            a["name"] = new
+            hit = True
+    if not hit:
+        ov["renames"][old] = new
+    ov["pinned"] = [new if p == old else p for p in ov["pinned"]]
+    _save_overlay(ov)
+
+
+def toggle_pin(name: str) -> None:
+    ov = _load_overlay()
+    if name in ov["pinned"]:
+        ov["pinned"].remove(name)
+    else:
+        ov["pinned"].append(name)
+    _save_overlay(ov)
+
+
 def build_profile() -> dict:
     """The full persona profile — every section, computed from snapshots."""
     health = _health()

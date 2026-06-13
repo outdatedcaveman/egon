@@ -302,33 +302,66 @@ def _harvest_items() -> list[dict]:
     return []
 
 
+def _dedup_key(it: dict) -> str:
+    """Key that collapses RE-ADDS of the same article. The real article URL
+    is best, but Instapaper sometimes stores a generic app-link redirect
+    (e.g. substack app-link/post?isFreemail=true) shared across articles —
+    for those, fall back to the normalized title. Bruno 2026-06-13."""
+    url = (it.get("url") or "").strip().lower()
+    generic = (not url or "app-link" in url or url.endswith("isfreemail=true")
+               or url.count("/") < 3)
+    if not generic:
+        return url.split("?")[0].rstrip("/")
+    title = (it.get("title") or "").strip().lower()
+    return "t:" + title if title else "id:" + str(it.get("id") or "")
+
+
 def snapshot() -> dict:
-    """Harvest items from Panop, standardize dates, sort descending, and return snapshot dict."""
+    """Harvest from Panop, DEDUP re-adds (keep newest), sort by recency.
+
+    Instapaper's web DOM exposes no per-item date, so `time` is empty — but
+    the bookmark `id` is MONOTONIC (higher = saved more recently), a reliable
+    recency key. Real timestamps arrive via the CSV export (Settings →
+    Export), parsed by lib/export_inbox. Bruno 2026-06-13: needs recency sort
+    + dedup of re-added articles."""
     raw_items = _harvest_items()
-    items_out = []
+
+    best: dict[str, dict] = {}
     for it in raw_items:
+        try:
+            iid = int(str(it.get("id") or "0"))
+        except Exception:
+            iid = 0
+        k = _dedup_key(it)
+        prev = best.get(k)
+        if prev is None or iid > prev["_iid"]:
+            best[k] = {**it, "_iid": iid}
+
+    items_out = []
+    for it in best.values():
+        iid = it.pop("_iid", 0)
         time_str = it.get("time")
-        std_date = _standardize_date(time_str)
         items_out.append({
             "id": it.get("id"),
             "title": it.get("title"),
             "url": it.get("url"),
             "read_url": it.get("read_url"),
             "host": it.get("host"),
-            "time": std_date,
+            "time": _standardize_date(time_str),   # filled once a CSV export lands
+            "added_ord": iid,                       # monotonic recency key
             "raw_time": time_str,
             "description": it.get("description"),
             "folder": it.get("folder"),
             "source": it.get("source"),
         })
-    
-    # Sort descending by saved date, then by ID
-    items_out.sort(key=lambda x: (x.get("time") or "", x.get("id") or ""), reverse=True)
-    
+
+    items_out.sort(key=lambda x: (x.get("time") or "", x.get("added_ord") or 0),
+                   reverse=True)
     return {
         "status": "ok",
         "synced_at": datetime.now().isoformat(),
         "count": len(items_out),
+        "deduped_from": len(raw_items),
         "items": items_out,
     }
 
