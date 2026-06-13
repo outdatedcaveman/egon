@@ -40,6 +40,7 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT_PATH = ROOT / "state" / "files_index.jsonl"
 
 _DEFAULT_ROOTS = [
+    str(ROOT / "state" / "exports"),   # extracted vendor data exports
     r"C:\Users\bruno\Google Drive",
     r"C:\Users\bruno\My Drive",
     r"C:\Users\bruno\EgonVault",

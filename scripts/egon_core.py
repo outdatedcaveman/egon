@@ -413,8 +413,19 @@ def check_snapshots(u: Unit) -> None:
                 ("youtube_oauth", "lib.adapters.youtube_oauth"),
             )
         try:
-            # Takeout drops first (state/inbox/takeout/) so a fresh full
-            # YouTube history lands in the harvest state before snapshotting.
+            # Export inbox first (state/inbox/): ANY vendor zip — Takeout
+            # (YouTube/Fit/Gemini/My Activity), TV Time, Amazon DSAR — is
+            # detected, extracted, parsed and merged before snapshotting.
+            from lib import export_inbox
+            eres = export_inbox.process()
+            if eres.get("imported"):
+                log("info", "exports_imported",
+                    zips=len(eres["imported"]),
+                    detail=str(eres["imported"])[:200])
+        except Exception as e:
+            log("warn", "export_inbox_failed", error=str(e)[:120])
+        try:
+            # legacy direct-file path (bare watch-history.json drops)
             from lib import youtube_takeout
             tres = youtube_takeout.import_takeout()
             if tres.get("status") == "ok":
