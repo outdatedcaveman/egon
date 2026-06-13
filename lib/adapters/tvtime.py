@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 
 from lib import scraper
 from lib.snapshot_store import latest_snapshot
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+_LIBRARY_STATE = ROOT / "state" / "panop" / "tvtime_library_state.json"
 
 META = {
     "id": "tvtime",
@@ -100,7 +104,50 @@ def _resolve_poster(entity: dict) -> str:
     return p_str
 
 
+def _snapshot_from_harvest() -> dict | None:
+    """Primary source: the Chrome-extension harvest (msapi + Authorization),
+    which carries the FULL library — 525 followed series + every watched
+    episode rolled up per show. The old Playwright path used the capped
+    `only_followed_series` endpoint (20 shows) and needed a headless browser;
+    this reads the merge-store the extension keeps current. Bruno 2026-06-13."""
+    try:
+        st = json.loads(_LIBRARY_STATE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    raw = st.get("items") or []
+    if not raw:
+        return None
+    items: list[dict] = []
+    for it in raw:
+        eid = str(it.get("id") or it.get("tvdb_id") or "")
+        if not eid:
+            continue
+        etype = it.get("entity_type") or it.get("kind") or "series"
+        etype = "movie" if "movie" in etype else "series"
+        items.append({
+            "id": eid,
+            "title": str(it.get("title") or "(no title)").strip()[:160],
+            "poster": it.get("image") or it.get("poster") or "",
+            "url": it.get("url") or f"https://www.thetvdb.com/?id={it.get('tvdb_id','')}",
+            "year": str(it.get("year") or "")[:4],
+            "status": ("watching" if (it.get("watched_episodes") or 0) > 0
+                       else ("following" if it.get("followed") else "")),
+            "entity_type": etype,
+            "watched_episodes": it.get("watched_episodes") or 0,
+            "last_watched": (it.get("last_watched") or "")[:10],
+            "rating": str(it.get("rating") or ""),
+        })
+    items.sort(key=lambda x: (x.get("watched_episodes") or 0), reverse=True)
+    return {"status": "ok", "synced_at": st.get("received_at") or datetime.now().isoformat(),
+            "count": len(items), "items": items, "source": "extension_harvest"}
+
+
 def snapshot() -> dict:
+    # Prefer the extension harvest (full library). Fall back to the legacy
+    # Playwright scrape only if no harvest state exists yet.
+    harv = _snapshot_from_harvest()
+    if harv:
+        return harv
     if not is_logged_in():
         return {"status": "unconfigured", "error": "not logged in"}
     try:

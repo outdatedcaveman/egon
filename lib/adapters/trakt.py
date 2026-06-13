@@ -188,39 +188,80 @@ def items(limit: int = 5000) -> list[dict]:
 
 
 # ── TV Time → Trakt bridge ───────────────────────────────────────────────────
-def push_tvtime_history() -> dict:
-    """Push the TV Time harvest (watched shows/episodes/movies) into Trakt via
-    /sync/history. Matches by title+year -> Trakt search. Best-effort; Trakt
-    dedups its own history, so re-runs are safe."""
+# Bruno 2026-06-13: the breakthrough — TV Time's modern msapi exposes the FULL
+# library (525 followed series + 7,237 watched episodes) and, crucially, its
+# series_id / episode_id ARE TheTVDB ids. So we skip title-search entirely and
+# push by tvdb id, which Trakt resolves server-side. Episode-level history with
+# real watch dates is the gold standard (exact episodes, no whole-show
+# over-claiming); the show-level path is kept as a fallback for harvests that
+# only carry series ids.
+_EPISODES_STATE = ROOT / "state" / "panop" / "tvtime_episodes_state.json"
+_LIBRARY_STATE = ROOT / "state" / "panop" / "tvtime_library_state.json"
+
+
+def push_tvtime_episodes(batch: int = 1000) -> dict:
+    """Push every watched TV Time episode to Trakt /sync/history by TVDB
+    episode id, preserving the original watched_at timestamp. Trakt dedups its
+    own history, so re-runs are idempotent. This is the accurate path: it marks
+    exactly the episodes Bruno watched, not whole shows."""
     if not _token():
         return {"status": "unconfigured"}
     try:
-        st = json.loads((ROOT / "state" / "panop"
-                         / "tvtime_library_state.json").read_text(encoding="utf-8"))
+        st = json.loads(_EPISODES_STATE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"status": "no_episode_data"}
+    # Accept either shape: the manual seed used {"episodes": [...]}, the
+    # extension harvest writes the merge-store {"items": [...]}. Both carry
+    # episode_id + watched_at per row.
+    eps = [e for e in (st.get("episodes") or st.get("items") or [])
+           if e.get("episode_id")]
+    if not eps:
+        return {"status": "empty"}
+    httpx = _httpx()
+    entries = [{"ids": {"tvdb": int(e["episode_id"])},
+                "watched_at": e.get("watched_at") or "released"} for e in eps]
+    added, notfound = 0, 0
+    for i in range(0, len(entries), batch):
+        chunk = entries[i:i + batch]
+        try:
+            r = httpx.post(f"{API}/sync/history", headers=_headers(),
+                           json={"episodes": chunk}, timeout=120)
+            if r.status_code in (200, 201):
+                j = r.json()
+                added += (j.get("added") or {}).get("episodes", 0)
+                notfound += len((j.get("not_found") or {}).get("episodes", []))
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return {"status": "ok", "episodes": len(entries),
+            "added": added, "not_found": notfound}
+
+
+def push_tvtime_history() -> dict:
+    """Watchlist the followed-but-unwatched series from the TV Time library
+    harvest. Watched series are NOT pushed here — push_tvtime_episodes() is
+    authoritative for those (exact episodes + dates), and a show-level history
+    add would over-claim the whole show. So this only handles the "want to
+    watch" side: followed series with zero watched episodes go to the Trakt
+    watchlist, preserving TV Time's following-vs-watching distinction. Uses
+    tvdb_id directly (exact). Idempotent."""
+    if not _token():
+        return {"status": "unconfigured"}
+    try:
+        st = json.loads(_LIBRARY_STATE.read_text(encoding="utf-8"))
     except Exception:
         return {"status": "no_tvtime_data"}
     httpx = _httpx()
-    shows, movies, added, miss = [], [], 0, 0
+    watchlist, miss = [], 0
     for it in (st.get("items") or []):
-        title = it.get("title") or ""
-        if not title:
-            continue
-        typ = "show" if "series" in str(it.get("entity_type", "")).lower() \
-            or it.get("entity_type") in ("series", "watched_episode") else "movie"
-        try:
-            sr = httpx.get(f"{API}/search/{typ}", headers=_headers(),
-                           params={"query": title, "limit": 1}, timeout=20)
-            hit = (sr.json() or [{}])[0] if sr.status_code == 200 else {}
-            ids = (hit.get(typ) or {}).get("ids")
-            if ids:
-                (shows if typ == "show" else movies).append({"ids": ids})
-                added += 1
-            else:
-                miss += 1
-        except Exception:
+        if (it.get("watched_episodes") or 0) > 0 or not it.get("followed"):
+            continue                      # watched -> episodes handle it
+        tvdb = it.get("tvdb_id")
+        if tvdb:
+            watchlist.append({"ids": {"tvdb": int(tvdb)}})
+        else:
             miss += 1
-        time.sleep(0.2)
-    if shows or movies:
-        httpx.post(f"{API}/sync/history", headers=_headers(),
-                   json={"shows": shows, "movies": movies}, timeout=40)
-    return {"status": "ok", "matched": added, "unmatched": miss}
+    if watchlist:
+        httpx.post(f"{API}/sync/watchlist", headers=_headers(),
+                   json={"shows": watchlist}, timeout=60)
+    return {"status": "ok", "watchlisted": len(watchlist), "unmatched": miss}
