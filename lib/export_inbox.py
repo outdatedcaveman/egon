@@ -47,9 +47,44 @@ def _detect_vendor(names: list[str]) -> str:
         return "google"
     if "tvtime" in joined or "seen_episode" in joined or "tracking-prod" in joined:
         return "tvtime"
+    if "instapaper" in joined or "instapaper-export" in joined:
+        return "instapaper"
     if "digital.content" in joined or "kindle" in joined or "amazon" in joined:
         return "amazon"
     return "unknown"
+
+
+def _instapaper_parser(ex_dir: Path, report: dict) -> None:
+    """Instapaper CSV export (URL, Title, Selection, Folder, Timestamp[unix]).
+    This is the ONLY source of real per-article dates — the web scrape has
+    none. Merges into the harvest state so the adapter's recency sort uses
+    actual timestamps. Bruno 2026-06-13."""
+    from datetime import datetime as _dt
+    items: list[dict] = []
+    for p in ex_dir.rglob("*.csv"):
+        try:
+            rows = list(csv.DictReader(io.StringIO(
+                p.read_text(encoding="utf-8", errors="replace"))))
+        except Exception:
+            continue
+        for r in rows:
+            url = r.get("URL") or r.get("url") or ""
+            title = r.get("Title") or r.get("title") or ""
+            if not (url or title):
+                continue
+            ts = r.get("Timestamp") or r.get("timestamp") or ""
+            iso = ""
+            try:
+                iso = _dt.fromtimestamp(int(ts)).date().isoformat() if ts else ""
+            except Exception:
+                iso = ""
+            items.append({"id": url or title, "url": url, "title": title[:400],
+                          "time": iso, "folder": (r.get("Folder") or "").lower(),
+                          "description": (r.get("Selection") or "")[:300],
+                          "source": "csv_export"})
+    if items:
+        report["instapaper"] = _merge_state(
+            PANOP / "instapaper_library_state.json", items)
 
 
 # ── harvest-state merge (same semantics as the panop server store) ──────────
@@ -302,7 +337,7 @@ def _amazon_parser(ex_dir: Path, report: dict) -> None:
 
 
 _PARSERS = {"google": _google_parsers, "tvtime": _tvtime_parser,
-            "amazon": _amazon_parser}
+            "amazon": _amazon_parser, "instapaper": _instapaper_parser}
 
 
 # ── main entry ───────────────────────────────────────────────────────────────
