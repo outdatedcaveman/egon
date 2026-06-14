@@ -69,23 +69,17 @@ def classify(url: str) -> ClassificationResult:
         return ClassificationResult.abstain(layer="domain_tier",
                                             reason=f"never_academic:{host}")
 
-    # 2. Always-* lists: an authoritative MATCH with high confidence
-    if _host_matches(host, cfg.get("always_science_longform", [])):
-        return ClassificationResult.match("science_longform", confidence=0.98,
-                                          layer="domain_tier", host=host,
-                                          tier="always_science_longform")
-    if _host_matches(host, cfg.get("always_science_news", [])):
-        return ClassificationResult.match("science_news", confidence=0.95,
-                                          layer="domain_tier", host=host,
-                                          tier="always_science_news")
-    if _host_matches(host, cfg.get("always_academic_articles", [])):
-        return ClassificationResult.match("articles", confidence=0.98,
-                                          layer="domain_tier", host=host,
-                                          tier="always_academic_articles")
-    if _host_matches(host, cfg.get("always_books", [])):
-        return ClassificationResult.match("books", confidence=0.95,
-                                          layer="domain_tier", host=host,
-                                          tier="always_books")
+    # 2. Dynamic Always-* lists: any key starting with "always_" maps to always_<category_id>
+    for key, domains in cfg.items():
+        if key.startswith("always_") and isinstance(domains, list):
+            cat_id = key[7:]  # strip "always_"
+            if cat_id == "academic_articles":
+                cat_id = "articles"
+            if _host_matches(host, domains):
+                confidence = 0.98 if cat_id in ("articles", "science_longform") else 0.95
+                return ClassificationResult.match(cat_id, confidence=confidence,
+                                                  layer="domain_tier", host=host,
+                                                  tier=key)
 
     # 3. Context-dependent → abstain, let other layers try
     return ClassificationResult.abstain(layer="domain_tier",

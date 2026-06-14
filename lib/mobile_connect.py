@@ -120,6 +120,9 @@ function render(d){
   esc(c.why.slice(0,4).join(', '))+'</span>':'')+'</div></div>').join('');}
 document.getElementById('go').onclick=()=>call('/m/connect');
 document.getElementById('syn').onclick=()=>call('/m/synthesize');
+// Android app share-target: app opens /m?k=…&shared=<text> → prefill + auto-connect.
+const SH=new URLSearchParams(location.search).get('shared');
+if(SH&&SH.trim().length>2){document.getElementById('t').value=SH;call('/m/connect');}
 </script></body></html>"""
 
 

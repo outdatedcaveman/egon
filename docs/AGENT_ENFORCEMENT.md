@@ -69,6 +69,30 @@ Before editing a file, acquire or respect a file lease when the tool surface
 supports it. If leases are unavailable, check recent activity for overlapping
 work and mention the uncertainty.
 
+## Public Release Gate
+
+No AI body may create a public repository, make a repository public, push to a
+public remote, publish a release, or otherwise expose code publicly until a
+privacy and security release gate has passed and been documented.
+
+The gate must check the full tree, staged diff, reachable Git history,
+generated files, documentation, examples, build artifacts, and release assets
+for:
+
+- PII, local machine paths, usernames, and workspace metadata.
+- Secrets, tokens, credentials, private keys, OAuth/client IDs, and environment
+  files.
+- Internal infrastructure names, local-only URLs, private network details, and
+  agent memory or session artifacts.
+- Dependency hazards, client-side vulnerabilities, unsafe HTML injection,
+  over-broad service-worker behavior, and any other security issue.
+
+If the gate has not passed, the remote must remain private or absent. If public
+exposure happens accidentally, immediately make the repo private or delete it,
+sanitize and rewrite history, prune/remediate local artifacts and remotes,
+write an incident memory, and require Bruno's explicit approval before any
+future public exposure.
+
 ## Token Discipline
 
 Use the mind to reduce token waste:
