@@ -118,7 +118,11 @@ def get_env():
         with open(ENV_FILE, "w") as f: json.dump(env, f)
         return env
     try:
-        with open(ENV_FILE, "r") as f:
+        # utf-8-sig: tolerate a BOM. A BOM made json.load throw, which silently
+        # fell through to the credential-LESS default dict — that is exactly how
+        # the live Zotero api_key/user_id went empty and saves began failing.
+        # Bruno 2026-06-14.
+        with open(ENV_FILE, "r", encoding="utf-8-sig") as f:
             env = json.load(f)
         # Back-fill new keys if missing (upgrade path)
         changed = False
@@ -182,6 +186,77 @@ def normalize_title(t):
     """Normalize title for fuzzy matching."""
     if not t: return ""
     return re.sub(r'\s+', ' ', t.lower().strip())
+
+
+# ── QUALITY GATE ────────────────────────────────────────────────────────────
+# Bruno 2026-06-14: the Panop Zotero tree had ~43% duplicates plus hundreds of
+# Cloudflare/recaptcha/403 interstitials and "Untitled"/domain-as-title rows —
+# the pipeline saved whatever it fetched, with no validity check. NOTHING is
+# saved (Zotero or bookmark) unless it passes this gate, and a junked tab is
+# left OPEN (never close-eligible, since z/b stay false).
+_JUNK_TITLE_SUBSTRINGS = (
+    "just a moment", "checking your browser", "checking your connection",
+    "checking if the site connection is secure", "attention required",
+    "are you a robot", "verify you are human", "please verify you are",
+    "verifying you are human", "recaptcha", "captcha", "ddos protection",
+    "access denied", "access to this page has been denied",
+    "you have been blocked", "you are being rate limited", "rate limited",
+    "bot verification", "human verification", "security check",
+    "enable javascript", "javascript is required", "please enable cookies",
+    "403 forbidden", "404 not found", "error 404", "error 403",
+    "page not found", "page not available", "this page isn", "isn’t available",
+    "site can’t be reached", "this site can", "502 bad gateway",
+    "503 service", "service unavailable", "too many requests",
+    "are you human", "one moment, please", "loading…", "loading...",
+)
+_PLACEHOLDER_TITLES = {
+    "", "untitled", "(no title)", "no title", "document", "new tab",
+    "redirecting", "redirecting…", "redirect", "loading", "home",
+}
+
+def _is_junk_page(title, url="", abstract=""):
+    """Return a short reason string if this page is NOT worth saving (a block
+    page / error / contentless extraction), else None. Title-based so it works
+    everywhere a save is attempted, with no extra fetch."""
+    t = normalize_title(title)
+    if t in _PLACEHOLDER_TITLES:
+        return "placeholder_title"
+    if len(t) <= 2:
+        return "title_too_short"
+    for pat in _JUNK_TITLE_SUBSTRINGS:
+        if pat in t:
+            return f"block_or_error_page:{pat}"
+    # Title that is just a bare domain (e.g. "www.psypost.org") = failed
+    # extraction; never the real article title.
+    tn = t[4:] if t.startswith("www.") else t
+    if re.fullmatch(r"[a-z0-9][a-z0-9.\-]*\.[a-z]{2,}", tn):
+        return "title_is_bare_domain"
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).netloc or "").lower()
+        host = host[4:] if host.startswith("www.") else host
+        if host and tn == host:
+            return "title_is_domain"
+    except Exception:
+        pass
+    return None
+
+def _title_dedup_key(title, url=""):
+    """Stable (normalized-title @ host) key so the SAME article saved under two
+    different URLs (pre-redirect vs resolved, tracking variants) dedups. Empty
+    when the title is junk — junk never dedups, it's just rejected."""
+    t = normalize_title(title)
+    if not t or _is_junk_page(title, url):
+        return ""
+    host = ""
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).netloc or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+    except Exception:
+        pass
+    return f"{t}@{host}"
 
 TRACKING_PARAMS = {
     'utm_source','utm_medium','utm_campaign','utm_term','utm_content',
@@ -901,6 +976,16 @@ def add_chrome_bookmark(url, title, category_name):
     running, queue it for the extension and keep b_synced=false until ACK or
     reconciliation proves Chrome actually has the bookmark.
     """
+    # QUALITY GATE — mirror of the Zotero gate; never bookmark a block/error
+    # page or a contentless extraction. Bruno 2026-06-14.
+    junk = _is_junk_page(title, url)
+    if junk:
+        try:
+            _record_accountability_event("save_blocked_junk", url,
+                                         {"title": title}, target="bookmark", reason=junk)
+        except Exception:
+            pass
+        return False
     with bookmarks_lock:
         if is_chrome_running():
             _queue_bookmark(url, title, category_name)
@@ -921,7 +1006,8 @@ def ZOTERO_URL_CACHE_FILE(): return os.path.join(OUTPUT_DIR(), "panop_zotero_url
 
 _zotero_url_cache_lock = threading.Lock()
 # by_url / by_doi → {"key": str, "version": int} so we can PATCH existing items.
-_zotero_url_cache = {"urls": set(), "dois": set(), "by_url": {}, "by_doi": {}, "ts": 0}
+_zotero_url_cache = {"urls": set(), "dois": set(), "by_url": {}, "by_doi": {},
+                     "titlekeys": set(), "by_titlekey": {}, "ts": 0}
 
 def _load_zotero_url_cache():
     data = load_json(ZOTERO_URL_CACHE_FILE(), {"urls": [], "dois": [], "by_url": {}, "by_doi": {}, "ts": 0})
@@ -929,6 +1015,8 @@ def _load_zotero_url_cache():
     _zotero_url_cache["dois"] = set((d or "").lower() for d in data.get("dois", []) if d)
     _zotero_url_cache["by_url"] = dict(data.get("by_url", {}))
     _zotero_url_cache["by_doi"] = dict(data.get("by_doi", {}))
+    _zotero_url_cache["titlekeys"] = set(data.get("titlekeys", []))
+    _zotero_url_cache["by_titlekey"] = dict(data.get("by_titlekey", {}))
     _zotero_url_cache["ts"] = data.get("ts", 0)
 
 def _save_zotero_url_cache():
@@ -937,6 +1025,8 @@ def _save_zotero_url_cache():
         "dois": sorted(_zotero_url_cache["dois"]),
         "by_url": _zotero_url_cache["by_url"],
         "by_doi": _zotero_url_cache["by_doi"],
+        "titlekeys": sorted(_zotero_url_cache["titlekeys"]),
+        "by_titlekey": _zotero_url_cache["by_titlekey"],
         "ts": int(time.time()),
     })
 
@@ -963,6 +1053,7 @@ def refresh_zotero_url_cache():
                 col_keys += [c["key"] for c in r.json()]
             urls, dois = set(), set()
             by_url, by_doi = {}, {}
+            titlekeys, by_titlekey = set(), {}
             for ck in col_keys:
                 start = 0
                 while True:
@@ -988,12 +1079,18 @@ def refresh_zotero_url_cache():
                             dl = m.group(0).lower()
                             dois.add(dl)
                             by_doi[dl] = {"key": key, "version": ver}
+                        tk = _title_dedup_key(d.get("title"), u or "")
+                        if tk and key:
+                            titlekeys.add(tk)
+                            by_titlekey.setdefault(tk, {"key": key, "version": ver})
                     if len(items) < 100: break
                     start += len(items)
             _zotero_url_cache["urls"] = urls
             _zotero_url_cache["dois"] = dois
             _zotero_url_cache["by_url"] = by_url
             _zotero_url_cache["by_doi"] = by_doi
+            _zotero_url_cache["titlekeys"] = titlekeys
+            _zotero_url_cache["by_titlekey"] = by_titlekey
             _zotero_url_cache["ts"] = int(time.time())
             _save_zotero_url_cache()
             return len(urls)
@@ -1125,6 +1222,15 @@ def send_to_zotero(url, title, abstract, category_name, doi=None):
     user_id = env.get("zotero_user_id", "").strip()
     if not api_key or not user_id:
         return False
+    # QUALITY GATE — never save a block page / error / contentless extraction.
+    junk = _is_junk_page(title, url, abstract)
+    if junk:
+        try:
+            _record_accountability_event("save_blocked_junk", url,
+                                         {"title": title}, target="zotero", reason=junk)
+        except Exception:
+            pass
+        return False
     try:
         # Dedup short-circuit — if we already have this item in Zotero,
         # try to upgrade it with any fields we have that it doesn't.
@@ -1133,11 +1239,18 @@ def send_to_zotero(url, title, abstract, category_name, doi=None):
             doi_set = set(_zotero_url_cache["dois"])
             by_url = dict(_zotero_url_cache["by_url"])
             by_doi = dict(_zotero_url_cache["by_doi"])
+            titlekey_set = set(_zotero_url_cache["titlekeys"])
+            by_titlekey = dict(_zotero_url_cache["by_titlekey"])
         canon = canonicalize_url(url)
+        tkey = _title_dedup_key(title, canon or url)
         hit = None
         if url in url_set:         hit = by_url.get(url)
         elif canon in url_set:     hit = by_url.get(canon)
         elif doi and doi.lower() in doi_set: hit = by_doi.get(doi.lower())
+        # Same article under a different URL (pre-redirect vs resolved, tracking
+        # variants) — catch it by normalized title+host. THIS is what stops the
+        # duplicate explosion the URL-only dedup let through. Bruno 2026-06-14.
+        elif tkey and tkey in titlekey_set: hit = by_titlekey.get(tkey)
         if hit and hit.get("key"):
             try:
                 _patch_zotero_item_if_richer(
@@ -1188,6 +1301,9 @@ def send_to_zotero(url, title, abstract, category_name, doi=None):
                     dl = doi.lower()
                     _zotero_url_cache["dois"].add(dl)
                     if ref: _zotero_url_cache["by_doi"][dl] = ref
+                if tkey:
+                    _zotero_url_cache["titlekeys"].add(tkey)
+                    if ref: _zotero_url_cache["by_titlekey"].setdefault(tkey, ref)
         return ok
     except Exception:
         return False
