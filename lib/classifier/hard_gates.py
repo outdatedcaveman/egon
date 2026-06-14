@@ -40,9 +40,13 @@ CITATION_META_KEYS = (
 )
 
 # URL substrings that strongly suggest an academic paper page.
+# Bruno 2026-06-14: REMOVED "/articles/" and "/article/" — they are NOT academic
+# signals. Every news outlet and blog uses them (bbc.com/sport/football/articles/…,
+# Medium, news sites), so they force-matched general news to 'articles' at 0.92
+# and short-circuited the smarter layers. Kept only patterns that are genuinely
+# paper-specific (DOI/arXiv/preprint servers/PDF).
 URL_ACADEMIC_PATTERNS = (
     "/doi/10.", "doi.org/10.",
-    "/articles/", "/article/",
     "/abs/", "/pdf/", "/fulltext",
     "arxiv.org/abs/", "arxiv.org/pdf/",
     "biorxiv.org/content/", "medrxiv.org/content/",
