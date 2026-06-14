@@ -98,6 +98,29 @@ def main():
         if len(text) < 30: continue
         exemplars[it["cat_id"]].append(text)
 
+    # Bruno 2026-06-14: also learn from the AI-arbiter labels (the master AI is
+    # the ultimate arbiter; the native ML must converge toward it). The phone
+    # sweep produced verdicts for ALL categories INCLUDING reject + longform,
+    # which the old history-only build lacked. Future Bruno manual overrides
+    # land in the same file and get picked up on the next rebuild.
+    VERDICTS = ROOT / "state" / "panop" / "phone_master_verdicts.json"
+    if VERDICTS.exists():
+        try:
+            mv = json.loads(VERDICTS.read_text(encoding="utf-8"))
+            added = 0
+            for _id, m in mv.items():
+                cat = m.get("category"); title = (m.get("title") or "").strip()
+                if not cat or len(title) < 8:
+                    continue
+                # title carries the signal; append host as a weak extra cue
+                from urllib.parse import urlparse
+                host = urlparse(m.get("url") or "").netloc.replace("www.", "")
+                exemplars[cat].append(f"{title} ({host})" if host else title)
+                added += 1
+            print(f"Merged {added} AI-arbiter exemplars from phone verdicts.")
+        except Exception as e:
+            print(f"verdict merge skipped: {e}")
+
     print(f"\nExemplar counts per category:")
     for c, lst in exemplars.items():
         print(f"  {c:25}  {len(lst)}")
