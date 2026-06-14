@@ -15,7 +15,7 @@ if sys.platform == "win32":
         return _orig_popen_init(self, *args, **kwargs)
     _sp.Popen.__init__ = _silent_popen_init
 
-import os, json, threading, time, urllib.request, zipfile, subprocess, math, csv, re, uuid
+import os, json, threading, time, urllib.request, zipfile, subprocess, math, csv, re, uuid, hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 from bs4 import BeautifulSoup
@@ -393,6 +393,168 @@ history_lock = threading.Lock()
 def save_history(h):
     with history_lock:
         save_json(HISTORY_FILE(), h)
+
+accountability_lock = threading.Lock()
+
+def _accountability_id(url, item=None):
+    item = item or {}
+    key = canonicalize_url(url or item.get("canonical_url") or item.get("original_url") or "") or url or ""
+    return hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()[:24]
+
+def _structurally_close_eligible(item):
+    if not item:
+        return False
+    cat_id = (item.get("cat_id") or "").strip().lower()
+    if not cat_id or cat_id == "uncategorized":
+        return False
+    return bool(item.get("z_synced")) and bool(item.get("b_synced"))
+
+def _sync_state(ok):
+    return "confirmed" if ok else "pending_or_failed"
+
+def _url_evidence_candidates(url, item=None):
+    item = item or {}
+    cands = {
+        url,
+        canonicalize_url(url),
+        item.get("canonical_url"),
+        item.get("original_url"),
+    }
+    cands.discard(None)
+    cands.discard("")
+    return {c for c in cands if c}
+
+def _verify_bookmark_evidence(url, item=None):
+    cands = _url_evidence_candidates(url, item)
+    seen = scan_chrome_bookmarks_for_panop()
+    return bool(cands & seen), sorted(cands & seen)
+
+def _scan_local_zotero_evidence():
+    """Read-only local Zotero DB scan. Used only as proof before closing tabs."""
+    profile = os.environ.get("USERPROFILE")
+    if not profile:
+        return {"urls": set(), "dois": set(), "error": "USERPROFILE missing"}
+    db = os.path.join(profile, "Zotero", "zotero.sqlite")
+    if not os.path.exists(db):
+        return {"urls": set(), "dois": set(), "error": "zotero.sqlite not found"}
+    urls, dois = set(), set()
+    try:
+        import sqlite3
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+        cur = con.cursor()
+        cur.execute(
+            "SELECT f.fieldName, v.value "
+            "FROM itemData d "
+            "JOIN fields f ON f.fieldID=d.fieldID "
+            "JOIN itemDataValues v ON v.valueID=d.valueID "
+            "WHERE lower(f.fieldName) IN ('url','doi')"
+        )
+        for field, value in cur.fetchall():
+            if not value:
+                continue
+            if field.lower() == "url":
+                urls.add(value)
+                urls.add(canonicalize_url(value))
+            elif field.lower() == "doi":
+                dois.add(str(value).lower().replace("https://doi.org/", "").strip())
+        con.close()
+        return {"urls": urls, "dois": dois, "error": None}
+    except Exception as e:
+        return {"urls": urls, "dois": dois, "error": str(e)[:200]}
+
+def _verify_zotero_evidence(url, item=None):
+    item = item or {}
+    # Refresh API cache first when credentials exist. If credentials are absent,
+    # the local DB proof below still protects close decisions.
+    try:
+        refresh_zotero_url_cache()
+    except Exception:
+        pass
+    cands = _url_evidence_candidates(url, item)
+    doi = (item.get("doi") or "").lower().replace("https://doi.org/", "").strip()
+    with _zotero_url_cache_lock:
+        zurls = set(_zotero_url_cache.get("urls") or set())
+        zdois = set(_zotero_url_cache.get("dois") or set())
+    api_matches = sorted(cands & zurls)
+    if api_matches or (doi and doi in zdois):
+        return True, {"source": "zotero_api_cache", "matches": api_matches, "doi_match": bool(doi and doi in zdois)}
+    local = _scan_local_zotero_evidence()
+    local_matches = sorted(cands & local.get("urls", set()))
+    local_dois = local.get("dois", set())
+    if local_matches or (doi and doi in local_dois):
+        return True, {"source": "zotero_local_db", "matches": local_matches, "doi_match": bool(doi and doi in local_dois)}
+    return False, {"source": "zotero_api_cache+local_db", "matches": [], "doi_match": False, "local_error": local.get("error")}
+
+def _verify_close_backups(url, item=None):
+    bookmark_ok, bookmark_matches = _verify_bookmark_evidence(url, item)
+    zotero_ok, zotero_detail = _verify_zotero_evidence(url, item)
+    return {
+        "bookmark_ok": bookmark_ok,
+        "bookmark_matches": bookmark_matches,
+        "zotero_ok": zotero_ok,
+        "zotero": zotero_detail,
+        "ok": bool(bookmark_ok and zotero_ok),
+    }
+
+def _stamp_accountability(item, url, event, source, classification=None, sync=None, close=None):
+    """Embed current provenance/accountability on a history row."""
+    now = datetime.now().isoformat()
+    acc = dict(item.get("_accountability") or {})
+    acc.setdefault("id", _accountability_id(url, item))
+    acc.setdefault("created_at", item.get("date") or now)
+    acc["updated_at"] = now
+    acc["last_event"] = event
+    acc["source"] = source
+    acc["canonical_url"] = item.get("canonical_url") or canonicalize_url(url) or url
+    acc["original_url"] = item.get("original_url")
+    acc["history_url"] = url
+    acc["classification"] = classification or acc.get("classification") or {
+        "cat_id": item.get("cat_id"),
+        "category": item.get("category"),
+        "source": "history_backfill",
+        "confidence": None,
+        "reason": "Existing history row; original classifier evidence was not recorded.",
+    }
+    acc["sync"] = sync or {
+        "zotero": {"status": _sync_state(item.get("z_synced")), "flag": bool(item.get("z_synced"))},
+        "bookmark": {"status": _sync_state(item.get("b_synced")), "flag": bool(item.get("b_synced"))},
+    }
+    acc["safety"] = {
+        "uncategorized_never_close": True,
+        "structurally_close_eligible": _structurally_close_eligible(item),
+        "manual_vetting_required": bool(_manual_vetting_required()),
+        "can_close_now": bool(_safe_to_close(item)),
+    }
+    if close is not None:
+        acc["close"] = close
+    item["_accountability"] = acc
+    return item
+
+def _record_accountability_event(event, url, item=None, **details):
+    item = item or {}
+    entry = {
+        "ts": datetime.now().isoformat(),
+        "event": event,
+        "accountability_id": (item.get("_accountability") or {}).get("id") or _accountability_id(url, item),
+        "url": url,
+        "canonical_url": item.get("canonical_url") or canonicalize_url(url) or url,
+        "title": item.get("title"),
+        "cat_id": item.get("cat_id"),
+        "category": item.get("category"),
+        "z_synced": bool(item.get("z_synced")),
+        "b_synced": bool(item.get("b_synced")),
+        "details": details,
+    }
+    try:
+        path = ACCOUNTABILITY_FILE()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with accountability_lock:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    return entry
+
 def load_profiles(): return load_json(LEARNING_FILE(), {})
 def save_profiles(p): save_json(LEARNING_FILE(), p)
 
@@ -567,6 +729,7 @@ def is_chrome_running():
 
 def PENDING_BOOKMARKS_FILE(): return os.path.join(OUTPUT_DIR(), "panop_pending_bookmarks.json")
 def CLOSE_AUDIT_FILE(): return os.path.join(OUTPUT_DIR(), "panop_close_audit.jsonl")
+def ACCOUNTABILITY_FILE(): return os.path.join(OUTPUT_DIR(), "panop_accountability.jsonl")
 
 bookmarks_lock = threading.RLock()
 
@@ -1377,6 +1540,17 @@ def run_adb_sweep():
                         "z_synced": z_ok,
                         "b_synced": b_ok
                     }
+                    _stamp_accountability(
+                        h[storage_url], storage_url, "history_upsert", "adb_sweep",
+                        classification={
+                            "cat_id": matched_category.get("id"),
+                            "category": matched_category.get("name"),
+                            "source": matched_category.get("_classification_source") or "configured_rules",
+                            "confidence": matched_category.get("_classification_confidence"),
+                            "reason": matched_category.get("_classification_reason"),
+                        },
+                    )
+                    _record_accountability_event("history_upsert", storage_url, h[storage_url], source="adb_sweep")
                     save_history(h)
                     sweep_status["tabs_matched"] += 1
 
@@ -1572,6 +1746,8 @@ def _auto_sync_entry(url):
             # Queues if Chrome is running; extension drains it within ~30s.
             if add_chrome_bookmark(url, item.get("title"), item.get("category")):
                 item["b_synced"] = True
+        _stamp_accountability(item, url, "sync_update", "auto_sync")
+        _record_accountability_event("sync_update", url, item, source="auto_sync")
         save_history(h)
     except Exception:
         pass
@@ -2095,6 +2271,8 @@ def sync_single(url: str, type: str):
         if ok: item["b_synced"] = True
     
     if ok:
+        _stamp_accountability(item, url, "sync_update", f"manual_sync_{type}")
+        _record_accountability_event("sync_update", url, item, source=f"manual_sync_{type}")
         save_history(h)
         return {"status": "ok"}
     return {"status": "error"}
@@ -2391,6 +2569,7 @@ def _close_devtools_tab(tid, url, item, source):
     """Close one Android Chrome DevTools target with a durable audit trail."""
     env = get_env()
     safe = _safe_to_close(item)
+    backup_proof = _verify_close_backups(url, item) if safe else {"ok": False, "skipped": "safe_to_close_false"}
     entry = {
         "ts": datetime.now().isoformat(),
         "source": source,
@@ -2401,6 +2580,7 @@ def _close_devtools_tab(tid, url, item, source):
         "z_synced": bool((item or {}).get("z_synced")),
         "b_synced": bool((item or {}).get("b_synced")),
         "safe_to_close": bool(safe),
+        "backup_proof": backup_proof,
         "manual_vetting_required": bool(_manual_vetting_required(env)),
         "close_tabs_after_save": bool(env.get("close_tabs_after_save")),
         "enable_autonomous_sweep": bool(env.get("enable_autonomous_sweep")),
@@ -2409,6 +2589,12 @@ def _close_devtools_tab(tid, url, item, source):
     if not safe:
         entry["blocked_reason"] = "safe_to_close_false"
         _append_close_audit(entry)
+        _record_accountability_event("close_blocked", url, item, source=source, close=entry)
+        return False
+    if not backup_proof.get("ok"):
+        entry["blocked_reason"] = "missing_verified_bookmark_or_zotero"
+        _append_close_audit(entry)
+        _record_accountability_event("close_blocked", url, item, source=source, close=entry)
         return False
     try:
         resp = requests.post(f"http://127.0.0.1:9222/json/close/{tid}", timeout=5)
@@ -2420,6 +2606,7 @@ def _close_devtools_tab(tid, url, item, source):
         return False
     finally:
         _append_close_audit(entry)
+        _record_accountability_event("close_attempt", url, item, source=source, close=entry)
 
 def _classify_tab_candidate(url, page_meta, categories, env):
     """Classifies a tab candidate using Egon's smart layered classifier,
@@ -2517,6 +2704,17 @@ def _drain_classify_and_save(url, title, categories, env, tid):
             "doi": "", "ai_learned": False, "file": "",
             "z_synced": z_ok, "b_synced": b_ok
         }
+        _stamp_accountability(
+            h2[storage_url], storage_url, "history_upsert", "drain",
+            classification={
+                "cat_id": matched.get("id"),
+                "category": matched.get("name"),
+                "source": matched.get("_classification_source") or "configured_rules",
+                "confidence": matched.get("_classification_confidence"),
+                "reason": matched.get("_classification_reason"),
+            },
+        )
+        _record_accountability_event("history_upsert", storage_url, h2[storage_url], source="drain")
         save_history(h2)
         closed = False
         # Hard safety gate: never close uncategorized tabs, ever.
@@ -3224,6 +3422,8 @@ def bookmarks_ack(payload: Dict[str, Any]):
     for (u, _c) in ack_keys:
         if u in h and not h[u].get("b_synced"):
             h[u]["b_synced"] = True
+            _stamp_accountability(h[u], u, "bookmark_ack", "chrome_extension_ack")
+            _record_accountability_event("bookmark_ack", u, h[u], source="chrome_extension_ack")
             changed = True
     if changed:
         save_history(h)
@@ -3300,6 +3500,7 @@ _PAPERPILE_LIB_STATE  = os.path.join(OUTPUT_DIR(), "paperpile_library_state.json
 _INSTAPAPER_LIB_STATE = os.path.join(OUTPUT_DIR(), "instapaper_library_state.json")
 _YOUTUBE_HISTORY_STATE = os.path.join(OUTPUT_DIR(), "youtube_history_state.json")
 _TVTIME_LIB_STATE     = os.path.join(OUTPUT_DIR(), "tvtime_library_state.json")
+_TVTIME_EPISODES_STATE = os.path.join(OUTPUT_DIR(), "tvtime_episodes_state.json")
 
 
 def _harvest_key(it: dict) -> str:
@@ -3382,6 +3583,7 @@ _register_harvest_pair(_PAPERPILE_LIB_STATE,   "/api/v1/paperpile/library")
 _register_harvest_pair(_INSTAPAPER_LIB_STATE,  "/api/v1/instapaper/library")
 _register_harvest_pair(_YOUTUBE_HISTORY_STATE, "/api/v1/youtube/history")
 _register_harvest_pair(_TVTIME_LIB_STATE,      "/api/v1/tvtime/library")
+_register_harvest_pair(_TVTIME_EPISODES_STATE, "/api/v1/tvtime/episodes")
 
 
 # ── Unified-mind endpoints — see external/panop_server/mind_endpoints.py.

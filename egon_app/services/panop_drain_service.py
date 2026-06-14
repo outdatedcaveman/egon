@@ -47,9 +47,24 @@ from PySide6.QtCore import QObject, QTimer
 _ROOT = Path(__file__).resolve().parent.parent.parent
 _LAST_RUN_FILE = _ROOT / "state" / "panop_drain_last.json"
 
-DEFAULT_INTERVAL_HOURS = 6
-LAUNCH_CATCHUP_DELAY_S = 45      # let Panop bind :8000 + ADB settle first
-MIN_INTERVAL_S = 30 * 60         # safety floor so a misconfig can't hammer the phone
+def _panop_scheduler_enabled() -> bool:
+    for env_path in (_ROOT / "panop_env.json", _ROOT / "external" / "panop_server" / "panop_env.json"):
+        try:
+            if env_path.exists():
+                env = json.loads(env_path.read_text(encoding="utf-8"))
+                if env.get("enable_autonomous_sweep", False):
+                    return True
+        except Exception:
+            continue
+    return False
+
+def _seconds_to_next_6am() -> int:
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    target = now.replace(hour=6, minute=0, second=0, microsecond=0)
+    if now >= target:
+        target += timedelta(days=1)
+    return int((target - now).total_seconds())
 
 
 class PanopDrainService(QObject):
@@ -62,10 +77,11 @@ class PanopDrainService(QObject):
     # ── public API ─────────────────────────────────────────────────────────
     def start(self) -> None:
         self._stopped = False
-        # Catch-up shortly after launch if a run is due.
-        due_in = self._seconds_until_due()
-        first = LAUNCH_CATCHUP_DELAY_S if due_in <= 0 else min(due_in, self._interval_s())
-        self._arm(first)
+        if not _panop_scheduler_enabled():
+            self._stopped = True
+            return
+        secs = _seconds_to_next_6am()
+        self._arm(secs)
 
     def stop(self) -> None:
         self._stopped = True
@@ -80,22 +96,6 @@ class PanopDrainService(QObject):
         return self._running
 
     # ── scheduling ─────────────────────────────────────────────────────────
-    def _interval_s(self) -> int:
-        """Panop's own interval_hours, clamped to a safe floor."""
-        hours = DEFAULT_INTERVAL_HOURS
-        try:
-            from external.panop_server import main as _pm
-            hours = float(_pm.get_env().get("interval_hours", DEFAULT_INTERVAL_HOURS))
-        except Exception:
-            pass
-        return max(MIN_INTERVAL_S, int(hours * 3600))
-
-    def _last_run_ts(self) -> float:
-        try:
-            return float(json.loads(_LAST_RUN_FILE.read_text(encoding="utf-8")).get("ts", 0))
-        except Exception:
-            return 0.0
-
     def _save_last_run(self) -> None:
         try:
             _LAST_RUN_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -105,12 +105,6 @@ class PanopDrainService(QObject):
                 encoding="utf-8")
         except Exception:
             pass
-
-    def _seconds_until_due(self) -> int:
-        last = self._last_run_ts()
-        if last <= 0:
-            return 0  # never run → due now (catch-up)
-        return int(self._interval_s() - (time.time() - last))
 
     def _arm(self, secs: int) -> None:
         if self._stopped:
@@ -122,10 +116,13 @@ class PanopDrainService(QObject):
         self._timer.start(secs * 1000)
 
     def _arm_next(self) -> None:
-        self._arm(self._interval_s())
+        self._arm(_seconds_to_next_6am())
 
     # ── firing ─────────────────────────────────────────────────────────────
     def _fire(self) -> None:
+        if not _panop_scheduler_enabled():
+            self._stopped = True
+            return
         if self._stopped or self._running:
             # Already draining (or shutting down) — reschedule and bail.
             if not self._stopped:

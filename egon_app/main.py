@@ -189,8 +189,20 @@ def main() -> int:
             if _focused:
                 return 0
             else:
-                # Connection failed or did not respond — the holding process is a zombie/wedged/dead.
-                # Try to claim the recovery mutex so we can launch a fresh UI anyway.
+                # Connection failed or did not respond. Treat the mutex owner
+                # as authoritative and exit instead of spawning a recovery UI:
+                # duplicate Egon instances can run unattended Panop services
+                # and are more dangerous than a failed focus request.
+                try:
+                    import time
+                    for _ in range(60):
+                        if _mind_ready(timeout_s=0.5):
+                            return 0
+                        time.sleep(0.5)
+                except Exception:
+                    pass
+                if os.environ.get("EGON_ALLOW_RECOVERY_INSTANCE") != "1":
+                    return 0
                 _claimed_rec = claim_or_exit("Egon-2026-05-recovery")
                 _trace(f"recovery mutex claim_or_exit -> {_claimed_rec}")
                 if _claimed_rec:
@@ -267,8 +279,10 @@ def main() -> int:
             sock2.disconnectFromServer()
             if _focused:
                 return 0
-        # Couldn't connect either — proceed without the guard rather than
-        # blocking the user from launching at all.
+        # Couldn't connect either. Fail closed unless explicitly debugging:
+        # proceeding without the guard can create duplicate native apps.
+        if os.environ.get("EGON_ALLOW_RECOVERY_INSTANCE") != "1":
+            return 0
 
     # Defence-in-depth: keep the old QSharedMemory key too. If both fail
     # we still let the launch through; better an extra instance than no Egon.

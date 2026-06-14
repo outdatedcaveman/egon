@@ -121,48 +121,141 @@ def _clip(text: Any, limit: int = 360) -> str:
 def _ranked_memory(project: str, tokens: set[str], limit: int) -> list[dict[str, Any]]:
     rows: list[sqlite3.Row]
     with _connect() as conn:
-        clauses = []
+        clauses = ["superseded_by_memory_id IS NULL"]
         params: list[Any] = []
+        match_clauses = []
         if project:
-            clauses.append("LOWER(COALESCE(tags, '')) LIKE ?")
+            match_clauses.append("LOWER(COALESCE(tags, '')) LIKE ?")
             params.append(f"%{project}%")
         if tokens:
             token_clauses = []
             for token in list(tokens)[:8]:
                 token_clauses.append("(LOWER(content) LIKE ? OR LOWER(COALESCE(tags, '')) LIKE ?)")
                 params.extend([f"%{token}%", f"%{token}%"])
-            clauses.append("(" + " OR ".join(token_clauses) + ")")
+            match_clauses.append("(" + " OR ".join(token_clauses) + ")")
+        
         sql = "SELECT * FROM memory"
-        if clauses:
-            sql += " WHERE " + " OR ".join(clauses)
+        if match_clauses:
+            clauses.append("(" + " OR ".join(match_clauses) + ")")
+        sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY updated_at DESC LIMIT 120"
         rows = conn.execute(sql, params).fetchall()
 
-    scored = []
-    now = int(time.time())
-    for r in rows:
-        haystack = f"{r['kind']} {r['content']} {r['tags'] or ''}".lower()
-        score = 0
-        if project and project in (r["tags"] or "").lower():
-            score += 8
-        score += sum(2 for t in tokens if t in haystack)
-        score += {"decision": 5, "preference": 4, "pattern": 4, "skill": 3, "fact": 2}.get(r["kind"], 1)
-        age_days = max(0, (now - int(r["updated_at"] or 0)) // 86400)
-        score += max(0, 6 - age_days)
-        scored.append((score, int(r["updated_at"] or 0), r))
+        # Score primary records
+        now = int(time.time())
+        primary_map = {}
+        related_ids_to_fetch = set()
+        parent_scores = {}
+        
+        for r in rows:
+            rid = int(r["id"])
+            haystack = f"{r['kind']} {r['content']} {r['tags'] or ''}".lower()
+            score = 0
+            if project and project in (r["tags"] or "").lower():
+                score += 8
+            score += sum(2 for t in tokens if t in haystack)
+            score += {"decision": 5, "preference": 4, "pattern": 4, "skill": 3, "fact": 2}.get(r["kind"], 1)
+            age_days = max(0, (now - int(r["updated_at"] or 0)) // 86400)
+            score += max(0, 6 - age_days)
+            
+            primary_map[rid] = (score, int(r["updated_at"] or 0), r)
 
-    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    out = []
-    for score, _, r in scored[:limit]:
-        out.append({
-            "id": int(r["id"]),
-            "kind": r["kind"],
-            "score": score,
-            "updated_at": r["updated_at"],
-            "tags": [t.strip() for t in (r["tags"] or "").split(",") if t.strip()],
-            "content": _clip(r["content"], 420),
-        })
-    return out
+        # Identify incoming relations (where an external memory points to one of our primary matches)
+        incoming_rows = []
+        if primary_map:
+            clauses_incoming = []
+            params_incoming = []
+            for pid in primary_map.keys():
+                clauses_incoming.append("related_memory_ids = ?")
+                clauses_incoming.append("related_memory_ids LIKE ?")
+                clauses_incoming.append("related_memory_ids LIKE ?")
+                clauses_incoming.append("related_memory_ids LIKE ?")
+                params_incoming.extend([str(pid), f"{pid},%", f"%,{pid}", f"%,{pid},%"])
+            
+            # Group by OR and query
+            if len(params_incoming) > 0 and len(params_incoming) <= 980:
+                sql_incoming = f"SELECT * FROM memory WHERE superseded_by_memory_id IS NULL AND ({' OR '.join(clauses_incoming)})"
+                incoming_rows = conn.execute(sql_incoming, params_incoming).fetchall()
+
+        # Cache already fetched incoming rows
+        incoming_cache = {int(r["id"]): r for r in incoming_rows}
+
+        # Populating related set from incoming relations
+        for rid, r in incoming_cache.items():
+            if rid in primary_map:
+                continue
+            # Inherit max parent score
+            rel_str = r["related_memory_ids"] or ""
+            parent_score = 0
+            for x in rel_str.split(","):
+                x = x.strip()
+                if x.isdigit():
+                    parent_id = int(x)
+                    if parent_id in primary_map:
+                        parent_score = max(parent_score, primary_map[parent_id][0])
+            related_ids_to_fetch.add(rid)
+            parent_scores[rid] = max(parent_scores.get(rid, 0), parent_score)
+            
+        # Populating related set from outgoing relations (direct fields on matches)
+        for rid, (_, _, r) in primary_map.items():
+            rel_str = r["related_memory_ids"] or ""
+            for x in rel_str.split(","):
+                x = x.strip()
+                if x.isdigit():
+                    rel_id = int(x)
+                    if rel_id != rid and rel_id not in primary_map:
+                        related_ids_to_fetch.add(rel_id)
+                        parent_scores[rel_id] = max(parent_scores.get(rel_id, 0), primary_map[rid][0])
+
+        # Fetch 1-hop related records that we don't have in cache
+        related_rows = []
+        ids_to_query = [rid for rid in related_ids_to_fetch if rid not in incoming_cache]
+        if ids_to_query:
+            placeholders = ",".join("?" for _ in ids_to_query)
+            rel_sql = f"SELECT * FROM memory WHERE id IN ({placeholders}) AND superseded_by_memory_id IS NULL"
+            related_rows = conn.execute(rel_sql, ids_to_query).fetchall()
+            
+        # Combine queried rows and cached incoming rows
+        all_related_rows = list(related_rows) + [r for rid, r in incoming_cache.items() if rid in related_ids_to_fetch]
+            
+        related_map = {}
+        for r in all_related_rows:
+            rid = int(r["id"])
+            haystack = f"{r['kind']} {r['content']} {r['tags'] or ''}".lower()
+            own_score = 0
+            if project and project in (r["tags"] or "").lower():
+                own_score += 8
+            own_score += sum(2 for t in tokens if t in haystack)
+            own_score += {"decision": 5, "preference": 4, "pattern": 4, "skill": 3, "fact": 2}.get(r["kind"], 1)
+            age_days = max(0, (now - int(r["updated_at"] or 0)) // 86400)
+            own_score += max(0, 6 - age_days)
+            
+            # Inherit 50% score from parent
+            inherited = int(parent_scores.get(rid, 0) * 0.5)
+            final_score = max(own_score, inherited)
+            related_map[rid] = (final_score, int(r["updated_at"] or 0), r)
+            
+        # Combine all candidates
+        all_candidates = []
+        for rid, (score, updated_at, r) in primary_map.items():
+            all_candidates.append((score, updated_at, r))
+        for rid, (score, updated_at, r) in related_map.items():
+            all_candidates.append((score, updated_at, r))
+            
+        # Sort and take top `limit`
+        all_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        
+        out = []
+        for score, _, r in all_candidates[:limit]:
+            out.append({
+                "id": int(r["id"]),
+                "kind": r["kind"],
+                "score": score,
+                "updated_at": r["updated_at"],
+                "tags": [t.strip() for t in (r["tags"] or "").split(",") if t.strip()],
+                "content": _clip(r["content"], 420),
+            })
+        return out
 
 
 def _recent_activity(project: str, limit: int) -> list[dict[str, Any]]:

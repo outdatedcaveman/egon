@@ -90,12 +90,6 @@ def _url_signal(url: str) -> tuple[str | None, str | None]:
     for pat in URL_BOOK_PATTERNS:
         if pat in u:
             return "books", pat
-    # Amazon product pages: per Bruno's 2026-05-19 directive, an Amazon
-    # /dp/ or /gp/product/ page is treated as a Book. (Most of Bruno's
-    # Amazon tabs are book pages; the occasional electronics page mis-shelved
-    # into the Books collection is an easy manual fix, vs. losing real books.)
-    if "amazon." in u and ("/dp/" in u or "/gp/product/" in u):
-        return "books", "amazon_product"
     return None, None
 
 

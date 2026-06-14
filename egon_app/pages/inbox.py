@@ -10,7 +10,7 @@ import re
 import html
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject, Slot
 from PySide6.QtGui import QColor, QBrush
@@ -504,6 +504,7 @@ class _PhoneTabsTab(QWidget):
         self._selected_urls: set[str] = set()
         self._sort_column: int | None = None
         self._sort_desc = False
+        self._sort_mode = "smart"
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
@@ -595,6 +596,20 @@ class _PhoneTabsTab(QWidget):
         self._category_combo.setToolTip("Category filter. Use this after choosing the row state in the Show menu.")
         filter_bar.addWidget(self._category_combo, 1)
 
+        self._sort_combo = QComboBox()
+        self._sort_combo.setStyleSheet(_COMBO_QSS)
+        self._sort_combo.addItem("Sort: Smart Priority", "smart")
+        self._sort_combo.addItem("Sort: Unsaved First", "unsaved")
+        self._sort_combo.addItem("Sort: Needs Decision", "decision")
+        self._sort_combo.addItem("Sort: Page Type", "kind")
+        self._sort_combo.addItem("Sort: Site", "site")
+        self._sort_combo.addItem("Sort: Category", "category")
+        self._sort_combo.addItem("Sort: Title", "title")
+        self._sort_combo.addItem("Sort: Clicked Column", "column")
+        self._sort_combo.currentIndexChanged.connect(self._on_sort_mode_changed)
+        self._sort_combo.setToolTip("Sorts the full filtered set before the first 120 rows are rendered.")
+        filter_bar.addWidget(self._sort_combo, 1)
+
         self._btn_toggle_ingest = QPushButton("➕ Ingest Links")
         self._btn_toggle_ingest.setStyleSheet(
             "QPushButton { background: #18181B; color: #E4E4E7; border: 1px solid #27272A; "
@@ -673,8 +688,8 @@ class _PhoneTabsTab(QWidget):
 
         # Phone tabs table
         self._phone_table = _make_table([
-            ("✓", 30), ("Type", 40), ("Title", 280), ("URL", 280),
-            ("Predicted Category", 160), ("Status / Reason", 220), ("Actions", 160)
+            ("✓", 30), ("Type", 105), ("Title", 300), ("URL", 260),
+            ("Predicted Category", 170), ("Status / Reason", 240), ("Actions", 150)
         ])
         self._phone_table.itemChanged.connect(self._on_table_item_changed)
         self._phone_table.itemDoubleClicked.connect(self._on_table_double_clicked)
@@ -771,6 +786,7 @@ class _PhoneTabsTab(QWidget):
             "all": len(self._raw_phone_tabs),
             "ready": 0,
             "needs_attention": 0,
+            "possible_mistakes": 0,
             "saved": 0,
             "unmatched": 0,
             "cat_total": {},
@@ -791,6 +807,8 @@ class _PhoneTabsTab(QWidget):
                 stats["cat_saved"][cat_name] = stats["cat_saved"].get(cat_name, 0) + 1
             if status_str in {"needs_body_check", "body_required"} or (status_str == "no_match" and self._is_article_like_tab(tab, cat_name)):
                 stats["needs_attention"] += 1
+            if self._is_possible_mistake(tab, cat_name):
+                stats["possible_mistakes"] += 1
             if status_str in ("no_match", "chrome_internal", "discarded", "") or cat_name == "Uncategorized":
                 stats["unmatched"] += 1
             stats["cat_total"][cat_name] = stats["cat_total"].get(cat_name, 0) + 1
@@ -806,6 +824,7 @@ class _PhoneTabsTab(QWidget):
         self._scope_combo.clear()
         self._scope_combo.addItem(f"Show: Ready for Sweep ({stats['ready']})", "Ready for Sweep")
         self._scope_combo.addItem(f"Show: Needs Review ({stats['needs_attention']})", "Needs Rule / Classifier Attention")
+        self._scope_combo.addItem(f"Show: Possible Mistakes ({stats['possible_mistakes']})", "Possible Mistakes")
         self._scope_combo.addItem(f"Show: All Loaded ({stats['all']})", "All Loaded Rows")
         self._scope_combo.addItem(f"Show: Already Saved ({stats['saved']})", "Already Saved")
         self._scope_combo.addItem(f"Show: Unmatched ({stats['unmatched']})", "Unmatched / Uncategorized")
@@ -837,22 +856,211 @@ class _PhoneTabsTab(QWidget):
         self._rebuild_filter_controls(self._current_scope_key(), self._current_category_key())
         self._apply_filters()
 
-    def _phone_tab_sort_key(self, row: tuple[dict, str], column: int) -> str:
+    def _expanded_tab_url(self, url: str) -> str:
+        url = (url or "").strip()
+        try:
+            parsed = urlparse(url)
+            query = parse_qs(parsed.query)
+            for key in ("url", "u", "q", "target", "to"):
+                values = query.get(key) or []
+                for value in values:
+                    if value and value.startswith(("http://", "https://")):
+                        return unquote(value)
+        except Exception:
+            pass
+        return url
+
+    def _tab_domain(self, url: str) -> str:
+        resolved = self._expanded_tab_url(url)
+        try:
+            host = (urlparse(resolved).netloc or "").lower()
+        except Exception:
+            host = ""
+        if host.startswith("www."):
+            host = host[4:]
+        return host
+
+    def _generic_title_rank(self, title: str) -> int:
+        low = (title or "").strip().lower()
+        generic = (
+            "", "untitled", "new tab", "just a moment...", "just a moment",
+            "403 forbidden", "access denied", "verification required",
+            "project muse -- verification required!", "one moment, please...",
+        )
+        if low in generic:
+            return 1
+        if low.startswith("google.com/url?") or low.startswith("http"):
+            return 1
+        return 0
+
+    def _tab_text(self, tab: dict, pred_cat_name: str = "") -> str:
+        return (
+            f"{tab.get('title') or ''} {tab.get('url') or ''} {pred_cat_name} "
+            f"{tab.get('reason') or ''} {tab.get('decision_source') or ''}"
+        ).lower()
+
+    def _tab_kind(self, tab: dict, pred_cat_name: str) -> str:
+        status = str(tab.get("status") or "")
+        url = str(tab.get("url") or "")
+        domain = self._tab_domain(url)
+        text = self._tab_text(tab, pred_cat_name)
+        cat = (pred_cat_name or "").lower()
+        if status == "saved":
+            return "Saved"
+        if status in {"discarded", "chrome_internal"}:
+            return "System"
+        if "book" in cat or "goodreads.com" in domain or "/books/" in text or "isbn" in text:
+            return "Book"
+        if any(x in domain for x in ("youtube.com", "youtu.be", "vimeo.com")):
+            return "Video"
+        if any(x in domain for x in ("github.com", "gitlab.com", "huggingface.co", "pypi.org", "npmjs.com")):
+            return "Code"
+        if any(x in domain for x in ("amazon.", "mercadolivre.", "shopee.", "aliexpress.", "magazineluiza.")):
+            return "Shopping"
+        if any(x in domain for x in ("arxiv.org", "biorxiv.org", "medrxiv.org", "pubmed", "pmc.ncbi", "doi.org")):
+            return "Paper"
+        if any(x in text for x in ("/doi/", "doi:", ".pdf", "/article", "/articles/", "journal", "abstract")):
+            return "Article"
+        if any(x in domain for x in ("aeon.co", "theatlantic.com", "newyorker.com", "nautil.us", "inference-review.com", "iai.tv")):
+            return "Longform"
+        if "science" in cat:
+            return "Science"
+        if cat == "uncategorized":
+            return "Uncategorized"
+        return pred_cat_name or "Page"
+
+    def _quality_label(self, tab: dict, pred_cat_name: str) -> str:
+        status = str(tab.get("status") or "")
+        reason = str(tab.get("reason") or "")
+        reason_low = reason.lower()
+        decision_source = str(tab.get("decision_source") or "")
+        cat = (pred_cat_name or "").lower()
+        kind = self._tab_kind(tab, pred_cat_name)
+        title = str(tab.get("title") or "")
+
+        if status in {"discarded", "chrome_internal"}:
+            return "Internal / suspended"
+        if status == "saved":
+            return "Already saved"
+        if decision_source == "exact_user_correction":
+            return "User corrected"
+        if decision_source == "learned_domain_rule":
+            return "Learned rule"
+        if status in {"needs_body_check", "body_required"}:
+            return "Needs body check"
+        if status == "no_match" and self._is_article_like_tab(tab, pred_cat_name):
+            return "Likely reading, not classified"
+        if status == "no_match":
+            return "Unmatched"
+        if status.startswith("match:"):
+            if self._generic_title_rank(title):
+                return "Weak title; verify"
+            if "smart classifier" in reason_low or "learned override" in reason_low:
+                return "Smart guess"
+            if kind == "Book" and "book" not in cat:
+                return "Possible category mismatch"
+            if kind in {"Paper", "Article", "Longform"} and not any(x in cat for x in ("article", "science", "longform", "read", "paper")):
+                return "Possible category mismatch"
+            if kind == "Code" and not any(x in cat for x in ("code", "software", "tool", "github")):
+                return "Possible category mismatch"
+            if kind == "Shopping" and not any(x in cat for x in ("shopping", "buy", "product")):
+                return "Possible category mismatch"
+            return "Ready"
+        return "Needs review"
+
+    def _is_possible_mistake(self, tab: dict, pred_cat_name: str) -> bool:
+        return self._quality_label(tab, pred_cat_name) in {
+            "Needs body check",
+            "Likely reading, not classified",
+            "Weak title; verify",
+            "Smart guess",
+            "Possible category mismatch",
+        }
+
+    def _status_rank(self, tab: dict, pred_cat_name: str) -> int:
+        status = str(tab.get("status") or "")
+        if self._is_possible_mistake(tab, pred_cat_name):
+            return 0
+        if status.startswith("match:"):
+            return 1
+        if status in {"needs_body_check", "body_required"}:
+            return 2
+        if status == "no_match" and self._is_article_like_tab(tab, pred_cat_name):
+            return 3
+        if status == "no_match":
+            return 4
+        if status == "saved":
+            return 5
+        if status in {"discarded", "chrome_internal"}:
+            return 6
+        return 7
+
+    def _kind_rank(self, kind: str) -> int:
+        order = {
+            "Paper": 0,
+            "Article": 1,
+            "Longform": 2,
+            "Science": 3,
+            "Book": 4,
+            "Code": 5,
+            "Video": 6,
+            "Shopping": 7,
+            "Uncategorized": 8,
+            "Saved": 9,
+            "System": 10,
+        }
+        return order.get(kind, 20)
+
+    def _title_key(self, tab: dict) -> tuple:
+        title = str(tab.get("title") or "")
+        url = str(tab.get("url") or "")
+        return (self._generic_title_rank(title), title.lower(), self._tab_domain(url), self._expanded_tab_url(url).lower())
+
+    def _smart_sort_key(self, row: tuple[dict, str]) -> tuple:
+        tab, pred_cat_name = row
+        kind = self._tab_kind(tab, pred_cat_name)
+        return (
+            self._status_rank(tab, pred_cat_name),
+            self._kind_rank(kind),
+            self._tab_domain(str(tab.get("url") or "")),
+            self._title_key(tab),
+        )
+
+    def _mode_sort_key(self, row: tuple[dict, str]) -> tuple:
+        tab, pred_cat_name = row
+        mode = self._sort_mode or "smart"
+        kind = self._tab_kind(tab, pred_cat_name)
+        if mode == "unsaved":
+            return (1 if str(tab.get("status") or "") == "saved" else 0, self._smart_sort_key(row))
+        if mode == "decision":
+            return (self._status_rank(tab, pred_cat_name), self._kind_rank(kind), self._title_key(tab))
+        if mode == "kind":
+            return (self._kind_rank(kind), kind.lower(), self._smart_sort_key(row))
+        if mode == "site":
+            return (self._tab_domain(str(tab.get("url") or "")), self._smart_sort_key(row))
+        if mode == "category":
+            return ((pred_cat_name or "").lower(), self._smart_sort_key(row))
+        if mode == "title":
+            return self._title_key(tab)
+        return self._smart_sort_key(row)
+
+    def _phone_tab_sort_key(self, row: tuple[dict, str], column: int) -> tuple:
         tab, pred_cat_name = row
         status = str(tab.get("status") or "")
         if column == 0:
-            return "0" if str(tab.get("url") or "") in self._selected_urls else "1"
+            return (0 if str(tab.get("url") or "") in self._selected_urls else 1, self._smart_sort_key(row))
         if column == 1:
-            return pred_cat_name.lower()
+            kind = self._tab_kind(tab, pred_cat_name)
+            return (self._kind_rank(kind), kind.lower(), self._smart_sort_key(row))
         if column == 2:
-            return str(tab.get("title") or "").lower()
+            return self._title_key(tab)
         if column == 3:
-            return str(tab.get("url") or "").lower()
+            return (self._tab_domain(str(tab.get("url") or "")), self._expanded_tab_url(str(tab.get("url") or "")).lower())
         if column == 4:
-            return pred_cat_name.lower()
+            return ((pred_cat_name or "").lower(), self._smart_sort_key(row))
         if column == 5:
-            return f"{status} {tab.get('reason') or ''}".lower()
-        return str(tab.get("title") or tab.get("url") or "").lower()
+            return (self._status_rank(tab, pred_cat_name), status.lower(), str(tab.get("reason") or "").lower())
+        return self._smart_sort_key(row)
 
     def _filtered_url_set(self) -> set[str]:
         return {str(tab.get("url") or "") for tab, _cat in self._filtered_phone_tabs if str(tab.get("url") or "")}
@@ -872,8 +1080,26 @@ class _PhoneTabsTab(QWidget):
         else:
             self._sort_column = column
             self._sort_desc = False
+        self._sort_mode = "column"
+        self._sort_combo.blockSignals(True)
+        column_idx = self._sort_combo.findData("column")
+        self._sort_combo.setCurrentIndex(column_idx if column_idx >= 0 else -1)
+        self._sort_combo.blockSignals(False)
         order = Qt.DescendingOrder if self._sort_desc else Qt.AscendingOrder
         self._phone_table.horizontalHeader().setSortIndicator(column, order)
+        self._apply_filters()
+
+    def _on_sort_mode_changed(self, *_args) -> None:
+        data = self._sort_combo.currentData()
+        if not data:
+            return
+        if str(data) == "column":
+            return
+        self._sort_mode = str(data)
+        self._sort_column = None
+        self._sort_desc = False
+        self._phone_table.horizontalHeader().setSortIndicatorShown(False)
+        self._phone_table.horizontalHeader().setSortIndicatorShown(True)
         self._apply_filters()
 
     def _phone_tab_matches_filters(self, tab: dict, pred_cat_name: str, search: str, scope_filter: str, category_filter: str) -> bool:
@@ -881,7 +1107,10 @@ class _PhoneTabsTab(QWidget):
         url = str(tab.get("url") or "")
         status_str = str(tab.get("status") or "")
         reason = str(tab.get("reason") or "")
-        haystack = f"{title} {url} {pred_cat_name} {status_str} {reason}".lower()
+        quality = self._quality_label(tab, pred_cat_name)
+        kind = self._tab_kind(tab, pred_cat_name)
+        source = str(tab.get("decision_source") or "")
+        haystack = f"{title} {url} {pred_cat_name} {status_str} {reason} {quality} {kind} {source}".lower()
         if search and search not in haystack:
             return False
 
@@ -890,6 +1119,9 @@ class _PhoneTabsTab(QWidget):
                 return False
         elif scope_filter == "Needs Rule / Classifier Attention":
             if status_str not in {"needs_body_check", "body_required"} and (status_str != "no_match" or not self._is_article_like_tab(tab, pred_cat_name)):
+                return False
+        elif scope_filter == "Possible Mistakes":
+            if not self._is_possible_mistake(tab, pred_cat_name):
                 return False
         elif scope_filter == "Already Saved":
             if status_str != "saved":
@@ -925,6 +1157,8 @@ class _PhoneTabsTab(QWidget):
 
         if self._sort_column is not None:
             filtered.sort(key=lambda row: self._phone_tab_sort_key(row, self._sort_column), reverse=self._sort_desc)
+        else:
+            filtered.sort(key=self._mode_sort_key)
         self._filtered_phone_tabs = filtered
         self._visible_filtered_count = len(filtered)
         render_rows = filtered[:_PHONE_TAB_RENDER_LIMIT]
@@ -944,9 +1178,12 @@ class _PhoneTabsTab(QWidget):
             chk_item.setCheckState(Qt.Checked if url in self._selected_urls else Qt.Unchecked)
             self._phone_table.setItem(r, 0, chk_item)
 
-            # 1. Type Emoji
-            type_item = QTableWidgetItem(get_emoji(pred_cat_name))
+            # 1. Type / page kind. Keep it as a plain item rather than a
+            # widget so the table remains fast with thousands of tabs.
+            kind = self._tab_kind(tab, pred_cat_name)
+            type_item = QTableWidgetItem(f"{get_emoji(pred_cat_name)} {kind}")
             type_item.setTextAlignment(Qt.AlignCenter)
+            type_item.setToolTip(f"Page type: {kind}\nDomain: {self._tab_domain(url)}")
             self._phone_table.setItem(r, 1, type_item)
 
             # 2. Title
@@ -966,12 +1203,32 @@ class _PhoneTabsTab(QWidget):
                     break
             cat_item = QTableWidgetItem(f"{get_emoji(pred_cat_name)} {pred_cat_name}")
             cat_item.setData(Qt.UserRole, cur_cat_id)
+            cat_item.setToolTip(
+                f"Predicted category: {pred_cat_name}\n"
+                "To correct it, check the row, choose a category above, then use Set Checked Category."
+            )
             self._phone_table.setItem(r, 4, cat_item)
 
             # 5. Status / Reason
-            reason_item = QTableWidgetItem(reason)
+            quality = self._quality_label(tab, pred_cat_name)
+            display_reason = reason
+            if quality not in {"Ready", "Already saved"}:
+                display_reason = f"{quality}: {reason}"
+            reason_item = QTableWidgetItem(display_reason)
+            reason_item.setToolTip(
+                f"Decision quality: {quality}\n"
+                f"Status: {status}\n"
+                f"Kind: {kind}\n"
+                f"Category: {pred_cat_name}\n"
+                f"Domain: {self._tab_domain(url)}\n"
+                f"Source: {tab.get('decision_source') or 'not reported'}\n"
+                f"Confidence: {tab.get('decision_confidence') if tab.get('decision_confidence') is not None else 'not reported'}\n"
+                f"Reason: {reason}"
+            )
             if status == "saved":
                 reason_item.setForeground(QBrush(QColor(_COLOR_GREEN)))
+            elif self._is_possible_mistake(tab, pred_cat_name):
+                reason_item.setForeground(QBrush(QColor(_COLOR_AMBER)))
             elif status.startswith("match:"):
                 reason_item.setForeground(QBrush(QColor(_COLOR_CYAN)))
             elif status in {"needs_body_check", "body_required"}:
@@ -1035,6 +1292,11 @@ class _PhoneTabsTab(QWidget):
         for tab in self._raw_phone_tabs:
             url = str(tab.get("url") or "")
             if url in active_urls:
+                previous_category_name = self._tab_category_name(tab)
+                previous_category_id = str(tab.get("cat_id") or self._category_id_for_name(previous_category_name))
+                previous_status = str(tab.get("status") or "")
+                previous_reason = str(tab.get("reason") or "")
+                previous_quality = self._quality_label(tab, previous_category_name)
                 tab["category"] = name
                 tab["cat_id"] = cat_id
                 if is_uncategorized:
@@ -1048,6 +1310,11 @@ class _PhoneTabsTab(QWidget):
                     "url": url,
                     "title": str(tab.get("title") or ""),
                     "category_id": str(cat_id or "uncategorized"),
+                    "previous_category_id": previous_category_id,
+                    "previous_category_name": previous_category_name,
+                    "previous_status": previous_status,
+                    "previous_reason": previous_reason,
+                    "decision_quality": previous_quality,
                     "reason": tab["reason"],
                 })
                 changed += 1
@@ -1055,11 +1322,23 @@ class _PhoneTabsTab(QWidget):
             self._selected_urls.difference_update(changed_urls)
         if override_items:
             payload = {"items": override_items}
+            self._parent._status_lbl.setText(f"Recording {len(override_items)} classifier correction(s)...")
+            def _correction_callback(res):
+                if not res.get("ok"):
+                    self._parent._status_lbl.setText(f"Correction learning failed: {res.get('error') or 'unknown error'}")
+                    return
+                data = res.get("data") or {}
+                learned_domains = data.get("learned_domains", 0)
+                exact = data.get("exact_overrides", 0)
+                self._parent._status_lbl.setText(
+                    f"Learned {data.get('count', len(override_items))} correction(s). "
+                    f"{exact} exact override(s), {learned_domains} learned domain rule(s)."
+                )
             t = _spawn_http(
                 self,
                 "POST",
                 f"{_PANOP_BASE}/classifier/overrides",
-                lambda _res: None,
+                _correction_callback,
                 json_body=payload,
                 timeout=15.0,
             )
@@ -1070,7 +1349,7 @@ class _PhoneTabsTab(QWidget):
         if is_uncategorized:
             self._parent._status_lbl.setText(f"Marked {changed} checked tab(s) as Uncategorized. They are excluded from Ready for Sweep.")
         else:
-            self._parent._status_lbl.setText(f"Set {changed} checked tab(s) to {name}. Save checked tabs to teach the profile.")
+            self._parent._status_lbl.setText(f"Set {changed} checked tab(s) to {name}. Future fetches will use this correction.")
 
     def _update_selected_label(self) -> None:
         filtered_urls = self._filtered_url_set()
@@ -1986,6 +2265,8 @@ class InboxPage(QWidget):
         self._phone_tabs_loading = False
         self._categories_list: list[dict] = []
         self._panop_config: dict[str, Any] = {}
+        self._env_config: dict[str, Any] = {}
+        self._env_checks: dict[str, QCheckBox] = {}
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 8, 12, 8)
@@ -2157,6 +2438,35 @@ class InboxPage(QWidget):
 
         outer.addWidget(btn_frame)
 
+        # --- safety controls ---
+        safety_frame = QFrame()
+        safety_frame.setStyleSheet(
+            "QFrame { background: #09090B; border: 1px solid #27272A; "
+            "border-radius: 6px; padding: 3px; }"
+            "QCheckBox { color: #E4E4E7; font-size: 11px; padding: 2px 6px; }"
+            "QCheckBox::indicator { width: 14px; height: 14px; }"
+        )
+        safety_frame.setMaximumHeight(34)
+        safety_layout = QHBoxLayout(safety_frame)
+        safety_layout.setContentsMargins(8, 3, 8, 3)
+        safety_layout.setSpacing(10)
+        safety_title = QLabel("Safety")
+        safety_title.setStyleSheet("color: #F4F4F5; font-weight: 700; font-size: 11px;")
+        safety_layout.addWidget(safety_title)
+        for key, label, tip in [
+            ("require_manual_vetting_before_close", "Require vetting before close", "When on, Egon refuses all automatic already-synced tab closing."),
+            ("close_tabs_after_save", "Auto-close after save", "Allow Panop close paths after successful save. Kept blocked while vetting is required."),
+            ("enable_autonomous_sweep", "Scheduled sweeps", "Allow unattended Panop sweeps while Egon is running."),
+            ("resolve_terminal_redirects", "Use true destination URLs", "Unwrap and follow redirect-like links before classifying or saving."),
+        ]:
+            chk = QCheckBox(label)
+            chk.setToolTip(tip)
+            chk.toggled.connect(lambda checked, _key=key: self._set_env_flag(_key, checked))
+            self._env_checks[key] = chk
+            safety_layout.addWidget(chk)
+        safety_layout.addStretch(1)
+        outer.addWidget(safety_frame)
+
         # --- diagnostics panel ---
         self._diag_panel = QFrame()
         self._diag_panel.setStyleSheet(
@@ -2269,6 +2579,7 @@ class InboxPage(QWidget):
         self.refresh_status()
         self.refresh_history()
         self.refresh_config()
+        self.refresh_env()
 
     def _on_timer_timeout(self) -> None:
         self.refresh_status()
@@ -2292,6 +2603,49 @@ class InboxPage(QWidget):
         self._categories_list = cats
         self._phone_tab.populate_categories(self._categories_list)
         self._categories_tab.load_config(config)
+
+    def refresh_env(self) -> None:
+        t = _spawn_http(self, "GET", f"{_PANOP_BASE}/env", self._on_env_result, timeout=6.0)
+        self._threads.append(t)
+        t.finished.connect(lambda: self._threads.remove(t) if t in self._threads else None)
+
+    def _on_env_result(self, result: dict) -> None:
+        if not result or not result.get("ok"):
+            return
+        env = result.get("data") or {}
+        if not isinstance(env, dict):
+            return
+        self._env_config = env
+        defaults = {
+            "require_manual_vetting_before_close": True,
+            "close_tabs_after_save": False,
+            "enable_autonomous_sweep": False,
+            "resolve_terminal_redirects": True,
+        }
+        for key, chk in self._env_checks.items():
+            chk.blockSignals(True)
+            chk.setChecked(bool(env.get(key, defaults.get(key, False))))
+            chk.blockSignals(False)
+
+    def _set_env_flag(self, key: str, checked: bool) -> None:
+        if key == "close_tabs_after_save" and checked and self._env_config.get("require_manual_vetting_before_close", True):
+            self._status_lbl.setText("Auto-close is still blocked while manual vetting is required.")
+        self._env_config[key] = bool(checked)
+        self._status_lbl.setText(f"Updating safety setting: {key} = {bool(checked)}")
+
+        def callback(res):
+            if res and res.get("ok"):
+                body = res.get("data")
+                if isinstance(body, dict) and isinstance(body.get("env"), dict):
+                    self._on_env_result({"ok": True, "data": body["env"]})
+                self._status_lbl.setText("Safety settings updated.")
+            else:
+                self._status_lbl.setText(f"Failed to update safety setting: {(res or {}).get('error', 'no response')}")
+                QTimer.singleShot(500, self.refresh_env)
+
+        t = _spawn_http(self, "POST", f"{_PANOP_BASE}/env", callback, json_body={key: bool(checked)}, timeout=8.0)
+        self._threads.append(t)
+        t.finished.connect(lambda: self._threads.remove(t) if t in self._threads else None)
 
     # -- status pills refresh -----------------------------------------------
     def refresh_status(self) -> None:

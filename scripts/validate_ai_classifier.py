@@ -30,6 +30,7 @@ from pathlib import Path
 import requests
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "external" / "panop_server"))
 
 import main as panop_main  # type: ignore  # noqa: E402

@@ -14,9 +14,52 @@ Usage:
 """
 from __future__ import annotations
 
+import re
 import sys
+from pathlib import Path
 
-_MUTEX_HANDLE = None  # keep alive for process lifetime
+_MUTEX_HANDLES = []  # keep alive for process lifetime
+_LOCK_FILES = []  # keep file handles alive for process lifetime
+
+
+def _lock_path(name: str) -> Path:
+    root = Path(__file__).resolve().parent.parent
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "egon"
+    return root / "state" / "locks" / f"{safe[:120]}.lock"
+
+
+def _claim_file_lock(name: str) -> bool:
+    """Best-effort Windows file lock fallback for singleton processes."""
+    if sys.platform != "win32":
+        return True
+    fh = None
+    try:
+        import msvcrt
+
+        path = _lock_path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = path.open("a+b")
+        if fh.tell() == 0:
+            fh.write(b"0")
+            fh.flush()
+        fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        _LOCK_FILES.append(fh)
+        return True
+    except OSError:
+        if fh is not None:
+            try:
+                fh.close()
+            except Exception:
+                pass
+        return False
+    except Exception:
+        if fh is not None:
+            try:
+                fh.close()
+            except Exception:
+                pass
+        return True
 
 
 def claim_or_exit(name: str) -> bool:
@@ -24,7 +67,6 @@ def claim_or_exit(name: str) -> bool:
 
     On non-Windows platforms always returns True (caller falls through
     to whatever secondary guard exists)."""
-    global _MUTEX_HANDLE
     if sys.platform != "win32":
         return True
     try:
@@ -42,12 +84,13 @@ def claim_or_exit(name: str) -> bool:
         # Use a Local\ prefix so the mutex is scoped to the current user
         # session (avoids clashes across Fast User Switching).
         full = f"Local\\{name}"
+        ctypes.set_last_error(0)
         handle = CreateMutexW(None, False, full)
         last_error = ctypes.get_last_error()
 
         if handle == 0:
-            # Failed to create — best-effort fall through.
-            return True
+            # Failed to create; still try the file lock before falling through.
+            return _claim_file_lock(name)
 
         if last_error == ERROR_ALREADY_EXISTS:
             # Another process already owns this mutex.
@@ -58,10 +101,21 @@ def claim_or_exit(name: str) -> bool:
                 pass
             return False
 
-        # We own the mutex. Hold the handle for the process lifetime so
-        # the kernel keeps the name reserved until we exit.
-        _MUTEX_HANDLE = handle
+        # We own the mutex. Also claim a 1-byte file lock; this gives Egon's
+        # always-on services a second OS-released singleton guard if the named
+        # mutex path ever behaves inconsistently.
+        if not _claim_file_lock(name):
+            try:
+                kernel32.CloseHandle(handle)
+            except Exception:
+                pass
+            return False
+
+        # Hold handles for the process lifetime so the kernel keeps the guards
+        # reserved until we exit.
+        _MUTEX_HANDLES.append(handle)
         return True
     except Exception:
-        # ctypes failure on a weird system — fall through.
-        return True
+        # ctypes failure on a weird system; still try the file lock before
+        # falling through unprotected.
+        return _claim_file_lock(name)
