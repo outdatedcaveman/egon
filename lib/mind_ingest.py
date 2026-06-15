@@ -161,8 +161,14 @@ def _append_activity(sid: int, kind: str, payload: dict,
 
 def _upsert_memory(kind: str, content: str, tags: list[str] | None = None,
                    attribution_session_id: int | None = None) -> int | None:
+    # Sanitize tags: a None (e.g. an unresolved project slug) made the server
+    # throw "sequence item: NoneType" and silently dropped EVERY memory from a
+    # folder that didn't resolve to a project — so Claude's whole memory store
+    # never reached the mind. Strip non-str/empty tags so this can't recur for
+    # any agent. Bruno 2026-06-15.
+    clean_tags = [t for t in (tags or []) if isinstance(t, str) and t]
     body = {"kind": kind, "content": content,
-            "tags": tags or [],
+            "tags": clean_tags,
             "attribution_session_id": attribution_session_id}
     r = _post("/memory", body)
     return (r or {}).get("id")
@@ -201,11 +207,18 @@ def _scan_claude(state: dict) -> int:
             n += n_msgs
             new_sessions_this_pass += 1
 
-        # Memory files: <project>/memory/*.md
+        # Memory files: <project>/memory/*.md. Memory is DURABLE knowledge that
+        # every agent should share — ingest it even when the folder doesn't
+        # resolve to a known project (e.g. the Claude home dir
+        # `C--Users-bruno-Claude-Code`, which is exactly where Claude's main
+        # memory store lives). Attribute to `claude-shared` rather than dropping.
         mem_dir = project_dir / "memory"
         if mem_dir.exists():
+            mem_slug = slug or "claude-shared"
             for md in mem_dir.glob("*.md"):
-                key = f"{slug}::{md.name}"
+                if md.name == "MEMORY.md":
+                    continue  # index file, not a memory itself
+                key = f"{mem_slug}::{md.name}"
                 mtime = int(md.stat().st_mtime)
                 already = seen["memory"].get(key, 0)
                 if mtime <= already:
@@ -213,7 +226,7 @@ def _scan_claude(state: dict) -> int:
                 content = _safe_read(md)
                 kind = md.stem  # e.g. project_mouseion, user_aspirations
                 mid = _upsert_memory(kind=kind, content=content,
-                                     tags=["claude", "memory", slug])
+                                     tags=["claude", "memory", mem_slug])
                 if mid is None:
                     continue
                 seen["memory"][key] = mtime
