@@ -749,6 +749,111 @@ def fetch_page_content(url):
     except Exception:
         return None
 
+def _extract_primary_links(url, max_links=50):
+    """Science-News 2nd stage, part 1: for a DIGEST / roundup / index page,
+    return the candidate primary-article links [{url, title}] it points to —
+    outbound anchors whose text reads like a headline and whose URL looks like
+    an article. Bruno 2026-06-14: Science News aggregators must explode into
+    their contained articles/books, which then get classified + saved to the
+    right destinations (not the digest page itself)."""
+    try:
+        resp = _http_get(url, timeout=12)
+        if resp is None or getattr(resp, "status_code", 0) != 200:
+            return []
+        soup = BeautifulSoup((resp.text or "")[:600_000], "html.parser")
+    except Exception:
+        return []
+    from urllib.parse import urljoin, urlparse
+    _SKIP = ("/tag/", "/tags/", "/category", "/categories", "/author/", "/about",
+             "/subscribe", "/login", "/signin", "/sign-in", "/register", "/privacy",
+             "/terms", "/contact", "/feed", "/rss", "mailto:", "/search", "/account",
+             "twitter.com", "x.com", "facebook.com", "instagram.com", "linkedin.com",
+             "youtube.com", "/page/", "/comments", "#", "/donate", "/newsletter")
+    seen, out = set(), []
+    for a in soup.find_all("a", href=True):
+        href = urljoin(url, a["href"])
+        p = urlparse(href)
+        if p.scheme not in ("http", "https"):
+            continue
+        anchor = a.get_text(" ", strip=True)
+        if len(anchor) < 25:                       # headlines are substantial
+            continue
+        low = href.lower()
+        if any(s in low for s in _SKIP):
+            continue
+        path = (p.path or "").strip("/")
+        last = path.split("/")[-1] if path else ""
+        # article-like: nested path OR a hyphenated slug (substack/news style)
+        if path.count("/") < 1 and "-" not in last:
+            continue
+        key = canonicalize_url(href)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"url": href, "title": anchor[:200]})
+        if len(out) >= max_links:
+            break
+    return out
+
+
+def is_science_news_aggregator(url, metadata=None):
+    """Detect a digest/roundup/index whose value is the links it contains.
+    A page qualifies if it surfaces several distinct primary-article links."""
+    links = _extract_primary_links(url, max_links=12)
+    return len(links) >= 5, links
+
+
+def second_stage_extract(agg_url, env=None, categories=None, history=None):
+    """Science-News 2nd stage, part 2: fetch the aggregator, extract its primary
+    links, classify EACH, and save it to its own destination (Articles/Books/
+    Science News + bookmark) stamping `extracted_from` provenance. Returns a
+    summary.
+
+    `history`: when the caller already holds the in-memory history dict (the
+    sweep/drain does), pass it so children are written into the SAME dict and
+    the caller persists once — otherwise we'd load a fresh copy, save it, and
+    the caller's later save_history() would clobber the children (the classic
+    stale-history bug). When None we load+save our own (standalone/retro use)."""
+    env = env or get_env()
+    categories = categories or (load_config() or {}).get("categories", [])
+    links = _extract_primary_links(agg_url)
+    res = {"aggregator": agg_url, "found": len(links), "saved": 0,
+           "by_cat": {}, "items": []}
+    own = history is None
+    h = load_history() if own else history
+    for ln in links:
+        link_url = ln["url"]
+        meta = fetch_page_content(link_url) or {}
+        if not meta.get("title"):
+            meta["title"] = ln["title"]
+        cat = _classify_tab_candidate(link_url, meta, categories, env)
+        if not cat or cat.get("id") in (None, "", "uncategorized"):
+            continue
+        term = _resolve_terminal_tab_url(link_url, env)
+        storage_url = canonicalize_url(term) or term or link_url
+        if storage_url in h:                       # already have it
+            continue
+        title = meta.get("title") or ln["title"]
+        doi = meta.get("doi")
+        z = send_to_zotero(storage_url, title, meta.get("abstract", ""), cat["name"], doi=doi)
+        b = add_chrome_bookmark(storage_url, title, cat["name"])
+        h[storage_url] = {
+            "title": title, "category": cat["name"], "cat_id": cat["id"],
+            "date": datetime.now().isoformat(), "abstract": meta.get("abstract", ""),
+            "canonical_url": meta.get("canonical_url", storage_url),
+            "doi": doi, "extracted_from": agg_url,
+            "z_synced": z, "b_synced": b, "ai_learned": False,
+        }
+        _stamp_accountability(h[storage_url], storage_url, "second_stage_extract",
+                              f"aggregator:{agg_url}")
+        res["by_cat"][cat["id"]] = res["by_cat"].get(cat["id"], 0) + 1
+        res["saved"] += 1
+        res["items"].append({"url": storage_url, "category": cat["id"], "z": z, "b": b})
+    if res["saved"] and own:
+        save_history(h)
+    return res
+
+
 def get_pdf_title(url, tab_title=""):
     """Best-effort title resolution for PDF URLs.
     1. Use DevTools tab title if Chrome already resolved it.
@@ -1667,6 +1772,18 @@ def run_adb_sweep():
                         },
                     )
                     _record_accountability_event("history_upsert", storage_url, h[storage_url], source="adb_sweep")
+                    # Science-News 2nd stage: a digest/roundup explodes into its
+                    # contained articles/books, each classified + saved to its own
+                    # destination (writes into `h`; persisted by save_history below).
+                    # No-ops for a single news story (no primary links). Best-effort.
+                    if matched_category.get("id") == "science_news":
+                        try:
+                            ss = second_stage_extract(storage_url, env, categories, history=h)
+                            if ss.get("saved"):
+                                h[storage_url]["second_stage"] = {"found": ss["found"],
+                                    "saved": ss["saved"], "by_cat": ss["by_cat"]}
+                        except Exception:
+                            pass
                     save_history(h)
                     sweep_status["tabs_matched"] += 1
 
@@ -2831,6 +2948,16 @@ def _drain_classify_and_save(url, title, categories, env, tid):
             },
         )
         _record_accountability_event("history_upsert", storage_url, h2[storage_url], source="drain")
+        # Science-News 2nd stage — explode a digest into its contained items
+        # (writes into h2; persisted by save_history below). No-op for stories.
+        if matched.get("id") == "science_news":
+            try:
+                ss = second_stage_extract(storage_url, env, categories, history=h2)
+                if ss.get("saved"):
+                    h2[storage_url]["second_stage"] = {"found": ss["found"],
+                        "saved": ss["saved"], "by_cat": ss["by_cat"]}
+            except Exception:
+                pass
         save_history(h2)
         closed = False
         # Hard safety gate: never close uncategorized tabs, ever.
