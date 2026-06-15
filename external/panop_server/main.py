@@ -3829,6 +3829,40 @@ _register_harvest_pair(_TVTIME_LIB_STATE,      "/api/v1/tvtime/library")
 _register_harvest_pair(_TVTIME_EPISODES_STATE, "/api/v1/tvtime/episodes")
 
 
+# ── MASTER classifier endpoint — the single brain for ALL surfaces ───────────
+# Bruno 2026-06-15: Inbox/Panop, Navigation/Routster, and any future link-
+# classifying process must call ONE engine (egon's lib/classifier) so a link is
+# never categorised two different ways on two surfaces. JS surfaces (Routster)
+# POST here instead of running their own classifier. Optionally fetches the page
+# for the content/embedding layers when `fetch:true`.
+@app.post("/api/v1/classify")
+async def classify_link(req: _HReq):
+    try:
+        body = await req.json()
+    except Exception:
+        return {"status": "error", "error": "bad json"}
+    url = (body.get("url") or "").strip()
+    if not url:
+        return {"status": "error", "error": "url required"}
+    page_meta = {"title": body.get("title") or "", "abstract": body.get("abstract") or "",
+                 "text": body.get("text") or ""}
+    if body.get("fetch") and not page_meta["text"]:
+        try:
+            m = fetch_page_content(_resolve_terminal_tab_url(url))
+            if m:
+                page_meta = {**m, **{k: v for k, v in page_meta.items() if v}}
+        except Exception:
+            pass
+    try:
+        import lib.classifier as _clf
+        r = _clf.classify(url, page_meta)
+        return {"status": "ok", "url": url, "category": r.category,
+                "action": r.action, "confidence": round(r.confidence, 3),
+                "layer": r.layer, "evidence": r.evidence}
+    except Exception as e:
+        return {"status": "error", "error": str(e)[:200]}
+
+
 # ── Unified-mind endpoints — see external/panop_server/mind_endpoints.py.
 # Module-level side effect: importing it registers /api/v1/mind/* routes
 # on `app` and initializes state/mind.db. Per the additive pattern from
