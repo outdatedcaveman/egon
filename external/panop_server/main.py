@@ -1322,6 +1322,16 @@ def send_to_zotero(url, title, abstract, category_name, doi=None):
     DEDUP: checks the cached set of URLs/DOIs already in the Panop tree
     before POSTing. If already present, returns True without calling the API.
     """
+    # Bookmark-only categories (data_tools / references / shopping / opportunities
+    # / curios / study_work / content_longform) skip Zotero entirely — they save
+    # to their bookmark folder only. Bruno 2026-06-15. Articles/Books/Science News
+    # still go to Zotero.
+    try:
+        for _c in (load_config() or {}).get("categories", []):
+            if _c.get("name") == category_name and _c.get("route") == "bookmark":
+                return False
+    except Exception:
+        pass
     env = get_env()
     api_key = env.get("zotero_api_key", "").strip()
     user_id = env.get("zotero_user_id", "").strip()
