@@ -68,19 +68,39 @@ def classify(url: str, page_meta: dict | None = None) -> ClassificationResult:
     # A MATCH from the always_* lists is authoritative — return directly.
     if res.action == "match":
         return res
-    # A "never_academic" hit MUST short-circuit: do not let later layers
-    # accidentally re-classify a banned domain (this was the original bug —
-    # the /dp/ URL pattern would match amazon.com/.../dp/ even though
-    # amazon.com is explicitly on never_academic).
-    reason = (res.evidence or {}).get("reason", "")
-    if isinstance(reason, str) and reason.startswith("never_academic:"):
-        return res  # final abstain, never override
+    # NOTE: the old "never_academic short-circuit" was removed 2026-06-15. It
+    # was correct when 'articles' was the only positive class, but the full
+    # taxonomy now has legitimate categories on those very domains: github ->
+    # data_tools, wikipedia -> references, medium/substack -> content_longform.
+    # So a never_academic domain must NOT short-circuit — it flows to the kNN,
+    # which decides the right category (or 'reject' for true noise).
 
     # Layer 2: metadata + URL hard gates
     res = hard_gates.classify(url, page_meta or {})
     if res.action == "match":
         return res
 
-    # Layer 3: embedding similarity (only if exemplar centroids exist on disk)
+    # Layer 3: native ML — full-taxonomy k-NN trained on Bruno's own bookmark
+    # folders (lib/kms_knn). This is the default brain for every surface; it
+    # covers articles/books/science_news/content_longform/references/data_tools/
+    # shopping/study_work/opportunities/curios and tells e.g. an Amazon book
+    # from Amazon cutlery by title. Bruno 2026-06-15.
+    try:
+        import lib.kms_knn as _knn
+        title = (page_meta or {}).get("title", "") or ""
+        if title:
+            k = _knn.classify(title, url)
+            cat, conf = k.get("category"), k.get("confidence", 0.0)
+            if cat and cat != "reject":
+                if conf >= 0.50:
+                    return ClassificationResult.match(cat, confidence=conf, layer="kms_knn",
+                                                      share=k.get("share"), votes=k.get("votes"))
+                if conf >= 0.35:
+                    return ClassificationResult.review(cat, confidence=conf, layer="kms_knn",
+                                                       votes=k.get("votes"))
+    except Exception:
+        pass
+
+    # Layer 4 (fallback): legacy embedding centroids, if present
     res = embeddings.classify(url, page_meta or {})
     return res
