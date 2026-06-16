@@ -56,12 +56,46 @@ class ClassificationResult:
                    action="match", evidence=evidence)
 
 
+# Hosts + URL shapes that are NEVER a saveable article/book/news/longform —
+# they must be rejected BEFORE the k-NN layer (which classifies by title and
+# would otherwise mislabel "YouTube on TV" or "X — Google Search" as articles).
+# Bruno 2026-06-15: this was the bug that put youtube/x/search pages in Zotero.
+_HARD_REJECT_HOSTS = {
+    "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "music.youtube.com",
+    "x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com",
+    "facebook.com", "www.facebook.com", "m.facebook.com", "lm.facebook.com", "l.facebook.com",
+    "instagram.com", "www.instagram.com", "tiktok.com", "www.tiktok.com",
+    "reddit.com", "www.reddit.com", "old.reddit.com", "pinterest.com",
+    "linkedin.com", "www.linkedin.com", "t.co",
+    "accounts.google.com", "mail.google.com", "calendar.google.com", "drive.google.com",
+    "outlook.live.com", "outlook.office.com", "web.whatsapp.com", "messenger.com",
+    "translate.google.com", "duckduckgo.com",
+}
+
+
+def _hard_reject(url: str) -> bool:
+    from urllib.parse import urlparse
+    u = (url or "").lower()
+    host = (urlparse(u).netloc or "")
+    if host in _HARD_REJECT_HOSTS:
+        return True
+    # search-result / redirect shells (never the content itself)
+    if ("google.com/search" in u or "google.com/url?" in u or "bing.com/search" in u
+            or "/search?q=" in u or host.endswith(".google.com") and "/search" in u):
+        return True
+    return False
+
+
 def classify(url: str, page_meta: dict | None = None) -> ClassificationResult:
     """Top-level classifier. Pure function over (url, page_meta).
     Page_meta is the dict returned by Panop's `fetch_page_content` — has
     `_meta` (HTML meta tags), `title`, `text`, `abstract`, `article_links`.
     """
     from . import domain_tiers, hard_gates, embeddings
+
+    # Layer 0: hard reject — social/video/search/login URLs can never be saved.
+    if _hard_reject(url):
+        return ClassificationResult.abstain(layer="hard_reject", reason="never_academic:hard_reject")
 
     # Layer 1: domain reputation tier
     res = domain_tiers.classify(url)
