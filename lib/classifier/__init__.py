@@ -56,20 +56,25 @@ class ClassificationResult:
                    action="match", evidence=evidence)
 
 
-# Hosts + URL shapes that are NEVER a saveable article/book/news/longform —
-# they must be rejected BEFORE the k-NN layer (which classifies by title and
-# would otherwise mislabel "YouTube on TV" or "X — Google Search" as articles).
-# Bruno 2026-06-15: this was the bug that put youtube/x/search pages in Zotero.
+# GENUINE non-content — never a saveable item, hard-reject before any ML.
+# Search-result pages, auth/mail/calendar surfaces. NOT social/video (those
+# need judgement — a YouTube lecture can be longform, an X thread a reference).
 _HARD_REJECT_HOSTS = {
+    "accounts.google.com", "mail.google.com", "calendar.google.com", "drive.google.com",
+    "docs.google.com", "outlook.live.com", "outlook.office.com", "web.whatsapp.com",
+    "messenger.com", "translate.google.com",
+}
+# Social / video: do NOT blanket-reject and do NOT let the k-NN force them into a
+# scholarly bucket (it has no exemplars for them). Route to JUDGEMENT — the AI
+# arbiter decides content_longform / references / reject by the actual content.
+# Bruno 2026-06-15: "youtube and x could be a longform or reference; exercise
+# judgement, don't throw out entire domains."
+_JUDGEMENT_HOSTS = {
     "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "music.youtube.com",
     "x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com",
-    "facebook.com", "www.facebook.com", "m.facebook.com", "lm.facebook.com", "l.facebook.com",
-    "instagram.com", "www.instagram.com", "tiktok.com", "www.tiktok.com",
-    "reddit.com", "www.reddit.com", "old.reddit.com", "pinterest.com",
-    "linkedin.com", "www.linkedin.com", "t.co",
-    "accounts.google.com", "mail.google.com", "calendar.google.com", "drive.google.com",
-    "outlook.live.com", "outlook.office.com", "web.whatsapp.com", "messenger.com",
-    "translate.google.com", "duckduckgo.com",
+    "facebook.com", "www.facebook.com", "m.facebook.com", "instagram.com",
+    "tiktok.com", "reddit.com", "www.reddit.com", "old.reddit.com", "linkedin.com",
+    "t.co", "pinterest.com",
 }
 
 
@@ -79,11 +84,15 @@ def _hard_reject(url: str) -> bool:
     host = (urlparse(u).netloc or "")
     if host in _HARD_REJECT_HOSTS:
         return True
-    # search-result / redirect shells (never the content itself)
     if ("google.com/search" in u or "google.com/url?" in u or "bing.com/search" in u
-            or "/search?q=" in u or host.endswith(".google.com") and "/search" in u):
+            or "/search?q=" in u or (host.endswith(".google.com") and "/search" in u)):
         return True
     return False
+
+
+def _needs_judgement(url: str) -> bool:
+    from urllib.parse import urlparse
+    return (urlparse((url or "").lower()).netloc or "") in _JUDGEMENT_HOSTS
 
 
 def classify(url: str, page_meta: dict | None = None) -> ClassificationResult:
@@ -93,9 +102,16 @@ def classify(url: str, page_meta: dict | None = None) -> ClassificationResult:
     """
     from . import domain_tiers, hard_gates, embeddings
 
-    # Layer 0: hard reject — social/video/search/login URLs can never be saved.
+    # Layer 0a: hard reject — genuine non-content (search/auth/mail).
     if _hard_reject(url):
         return ClassificationResult.abstain(layer="hard_reject", reason="never_academic:hard_reject")
+
+    # Layer 0b: social/video need JUDGEMENT, not a forced k-NN match. Route to
+    # review so the AI arbiter decides (a YouTube lecture may be longform, an X
+    # thread a reference); the k-NN must never label these as articles/books.
+    if _needs_judgement(url):
+        return ClassificationResult.review("content_longform", confidence=0.0,
+                                           layer="needs_judgement", reason="social_video_needs_ai")
 
     # Layer 1: domain reputation tier
     res = domain_tiers.classify(url)
