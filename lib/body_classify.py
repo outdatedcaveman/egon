@@ -95,10 +95,62 @@ def _meta(html, *names):
     return ""
 
 
+_HF_RESERVED = {"blog", "docs", "models", "organizations", "settings", "join", "login",
+                "pricing", "tasks", "learn", "chat", "", "papers", "datasets", "spaces"}
+_REF_HOSTS = ("plato.stanford.edu", "iep.utm.edu", "web.archive.org", "philpeople.org",
+              "philpapers.org/profile", "hapoc.org")
+
+
+def _object_type(url):
+    """Deterministic object-type from URL structure (Bruno's taxonomy): the same
+    host can hold different object kinds, so distinguish by path. Returns
+    (category, confidence, source) or None. Works even when the body is walled."""
+    p = urlparse(url); host = (p.netloc or "").lower(); path = (p.path or "").lower()
+    segs = [s for s in path.split("/") if s]
+    if host.endswith("huggingface.co"):
+        if segs and segs[0] == "papers":
+            return ("science_news", 0.8, "obj:hf_paper")          # announcement ABOUT a paper
+        if segs and segs[0] in ("datasets", "spaces"):
+            return ("data_tools", 0.85, f"obj:hf_{segs[0]}")
+        if segs and segs[0] not in _HF_RESERVED:                  # {org}/{model} repo
+            return ("data_tools", 0.8, "obj:hf_model")
+    if (host.endswith("github.com") or host.endswith("gitlab.com")
+            or host.endswith("bitbucket.org")) and len(segs) >= 2:
+        return ("data_tools", 0.85, "obj:code_repo")
+    if host.endswith("wikipedia.org") or any(h in host + path for h in _REF_HOSTS):
+        return ("references", 0.85, "obj:reference_host")
+    if host.endswith("play.google.com") and "/store/books" in path:
+        return ("books", 0.85, "obj:play_books")
+    if host.endswith("books.google.com") or "bbm.usp.br" in host:
+        return ("books", 0.8, "obj:book_host")
+    return None
+
+
+def _body_genre(html, text, host, tl, path, ogtype):
+    """Genre from body when no strong object signal — conservative (only fires on
+    reliable markers); the trained kNN + AI handle the fuzzy middle."""
+    sn = _meta(html, "og:site_name").lower()
+    if "encyclopedia" in sn or "encyclopedia" in tl or tl.endswith("wikipedia") or "- wiki" in tl:
+        return ("references", 0.6, "genre:encyclopedic")
+    if re.search(r"pip install|npm install|git clone|conda install|cargo add|docker run|\$ pip", html, re.I):
+        return ("data_tools", 0.6, "genre:install_cmd")
+    if ("/news/" in path or "/press" in path or _meta(html, "article:section").lower() in ("news", "press")):
+        if ogtype == "article" or len(text) > 400:
+            return ("science_news", 0.6, "genre:news_section")
+    # authored long-read on a non-academic, non-news host -> content_longform
+    if (ogtype == "article" and len(text) > 2500
+            and (_meta(html, "article:author") or _meta(html, "author"))
+            and not any(host.endswith(h) for h in _ACADEMIC_HOSTS)):
+        return ("content_longform", 0.55, "genre:authored_longread")
+    return None
+
+
 def classify_by_body(url, want_text=False):
     """Return {category, confidence, source, title, abstract?, reason}. category
     may be None with source='needs_ai' (real body, ambiguous) or 'blocked'."""
     host = (urlparse(url).netloc or "").lower()
+    path = (urlparse(url).path or "").lower()
+    ot = _object_type(url)
     status, html = _fetch(url)
     title_m = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
     title = re.sub(r"\s+", " ", (title_m.group(1) if title_m else "")).strip()
@@ -108,7 +160,14 @@ def classify_by_body(url, want_text=False):
                or "checking your browser" in tl)
 
     if not blocked:
-        # ── strong BODY signals ───────────────────────────────────────────
+        # ── strong signals ────────────────────────────────────────────────
+        # Object-type wins FIRST: it only fires for hosts where Bruno's category
+        # is definitive regardless of page markup — SEP/Wikipedia carry citation
+        # meta but are references (consult), not articles; an hf paper-page is
+        # science_news not a paper; a repo is data_tools.
+        if ot:
+            return {"category": ot[0], "confidence": ot[1], "source": ot[2], "title": title}
+        # citation meta = a real paper (for every other scholarly host).
         if _meta(html, "citation_title", "citation_doi", "citation_journal_title", "citation_author"):
             return {"category": "articles", "confidence": 0.97, "source": "body:citation_meta",
                     "title": _meta(html, "citation_title") or title,
@@ -133,6 +192,11 @@ def classify_by_body(url, want_text=False):
         if (_UTILITY_RE.search(url) and not _meta(html, "citation_title")) or \
            (len(text) < 600 and any(w in tl for w in ("unsubscribe", "preference", "confirm", "whois", "sign in", "log in"))):
             return {"category": "reject", "confidence": 0.9, "source": "body:utility_page", "title": title}
+        # genre from body (encyclopedic / install-guide / news-section / long-read)
+        g = _body_genre(html, text, host, tl, path, ogtype)
+        if g:
+            return {"category": g[0], "confidence": g[1], "source": g[2], "title": title,
+                    "abstract": _meta(html, "description", "og:description")}
         # real body but ambiguous → hand to AI with extracted content
         out = {"category": None, "confidence": 0.0, "source": "needs_ai", "title": title,
                "abstract": _meta(html, "description", "og:description")}
@@ -143,6 +207,8 @@ def classify_by_body(url, want_text=False):
     # ── blocked: fall back to URL structure ───────────────────────────────
     if _UTILITY_RE.search(url):
         return {"category": "reject", "confidence": 0.8, "source": "url:utility", "title": title}
+    if ot:                                  # deterministic object-type survives a wall
+        return {"category": ot[0], "confidence": ot[1], "source": ot[2], "title": title}
     for h, p in _PAPER_HOST_PATH:
         if host.endswith(h) and p in (urlparse(url).path.lower()):
             return {"category": "articles", "confidence": 0.85, "source": "url:paper_path", "title": title}
