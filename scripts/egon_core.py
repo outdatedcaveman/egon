@@ -42,7 +42,28 @@ try:
 except Exception:
     pass
 
-PYW = ROOT / ".venv" / "Scripts" / "pythonw.exe"
+# Launch services with the BASE interpreter, NOT the .venv redirector stub: that
+# stub re-execs a child interpreter, so every service showed as TWO pythonw of
+# the same name. Base interp + the venv's site-packages on PYTHONPATH = exactly
+# ONE process per service, full deps. Bruno 2026-06-17: never two of a type.
+_VENV = ROOT / ".venv"
+_SITE = _VENV / "Lib" / "site-packages"
+
+
+def _base_pyw() -> Path:
+    try:
+        for line in (_VENV / "pyvenv.cfg").read_text(encoding="utf-8").splitlines():
+            if line.lower().replace(" ", "").startswith("home="):
+                p = Path(line.split("=", 1)[1].strip()) / "pythonw.exe"
+                if p.exists():
+                    return p
+    except Exception:
+        pass
+    return _VENV / "Scripts" / "pythonw.exe"
+
+
+PYW = _base_pyw()
+SPAWN_ENV = {**os.environ, "PYTHONPATH": str(_SITE)}
 LOG = ROOT / "logs" / "egon-core.log"
 HEALTH = ROOT / "state" / "core_health.json"
 
@@ -172,7 +193,7 @@ def check_mind(u: Unit) -> None:
         # outlives the core if the core itself is restarted.
         subprocess.Popen(
             [str(PYW), str(ROOT / "scripts" / "mind_service.py")],
-            cwd=str(ROOT),
+            cwd=str(ROOT), env=SPAWN_ENV,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008),
         )
