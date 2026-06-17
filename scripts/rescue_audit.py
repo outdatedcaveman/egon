@@ -148,16 +148,39 @@ def main():
             seen.add(c); uniq.append(it)
     print(f"unique discarded urls: {len(uniq)}")
 
-    rows, fetches = [], 0
-    for i, it in enumerate(uniq, 1):
-        will_fetch = True  # rescue_verdict decides internally; count after
-        v, src, rt = rescue_verdict(it["title"], it["url"])
-        if src.startswith(("body:", "needs_ai", "blocked", "error:")):
-            fetches += 1
-            time.sleep(1.1)
-        rows.append({**it, "verdict": v, "evidence": src, "rtitle": rt})
-        if i % 50 == 0:
-            print(f"  {i}/{len(uniq)} (body-fetches so far: {fetches})")
+    # Phase 1: decide everything we can by URL alone — no network (instant).
+    rows, need_fetch = [], []
+    for it in uniq:
+        v, src, rt = rescue_verdict(it["title"], it["url"], allow_fetch=False)
+        if src == "url:unfetched_default_keep":
+            need_fetch.append(it)            # the uncertain middle -> body-fetch
+        else:
+            rows.append({**it, "verdict": v, "evidence": src, "rtitle": rt})
+    print(f"decided by URL (no fetch): {len(rows)} | need body-fetch: {len(need_fetch)}", flush=True)
+
+    # Phase 2: body-fetch the uncertain middle CONCURRENTLY (network-bound).
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    fetches = [0]
+
+    def judge(it):
+        v, src, rt = rescue_verdict(it["title"], it["url"], allow_fetch=True)
+        return {**it, "verdict": v, "evidence": src, "rtitle": rt}
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        futs = {ex.submit(judge, it): it for it in need_fetch}
+        for f in as_completed(futs):
+            try:
+                rows.append(f.result())
+            except Exception as e:
+                it = futs[f]
+                rows.append({**it, "verdict": "RESTORE?", "evidence": f"error:{type(e).__name__}",
+                             "rtitle": it["title"]})
+            done += 1
+            fetches[0] = done
+            if done % 100 == 0:
+                print(f"  fetched {done}/{len(need_fetch)}", flush=True)
+    fetches = fetches[0]
 
     from collections import Counter
     vc = Counter(r["verdict"] for r in rows)
