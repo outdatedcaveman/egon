@@ -159,6 +159,12 @@ def classify_by_body(url, want_text=False):
                or "just a moment" in tl or "request limit" in tl or "are you a robot" in tl
                or "checking your browser" in tl)
 
+    # Social/video (blocked OR a JS shell) — never scholarly; a lecture/thread is
+    # read-or-watch-in-place. Fires regardless of fetch outcome. Bruno: judge,
+    # don't trash the domain.
+    if any(host == s or host.endswith("." + s) for s in _SOCIAL_HOSTS):
+        return {"category": "content_longform", "confidence": 0.5, "source": "url:social", "title": title}
+
     if not blocked:
         # ── strong signals ────────────────────────────────────────────────
         # Object-type wins FIRST: it only fires for hosts where Bruno's category
@@ -220,6 +226,10 @@ def classify_by_body(url, want_text=False):
     if any(host.endswith(h) for h in _ACADEMIC_HOSTS):
         return {"category": "articles", "confidence": 0.7, "source": "url:academic_host", "title": title}
     return {"category": None, "confidence": 0.0, "source": "blocked", "title": title}
+
+
+_SOCIAL_HOSTS = ("x.com", "twitter.com", "youtube.com", "youtu.be", "m.youtube.com",
+                 "reddit.com", "facebook.com", "instagram.com", "tiktok.com", "linkedin.com")
 
 
 # Hosts whose content is academic / science-news by definition — used to keep a
