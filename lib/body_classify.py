@@ -231,6 +231,13 @@ _ACADEMIC_HOSTS = (
     "psycnet.apa.org", "ssrn.com", "papers.ssrn.com", "tandfonline.com", "onlinelibrary.wiley.com",
     "cambridge.org", "plato.stanford.edu", "iep.utm.edu", "semanticscholar.org", "researchgate.net",
     "ieeexplore.ieee.org", "dl.acm.org", "journals.aps.org", "iopscience.iop.org", "doi.org",
+    # journals/preprints/archives surfaced from history (often CF-walled), 2026-06-17
+    "philarchive.org", "cell.com", "journals.sagepub.com", "worldscientific.com",
+    "journals.uchicago.edu", "siam.org", "epubs.siam.org", "jneurosci.org", "direct.mit.edu",
+    "pubsonline.informs.org", "academia.edu", "quod.lib.umich.edu", "journals.asm.org",
+    "pubs.acs.org", "authorea.com", "thelancet.com", "jamanetwork.com", "guilfordjournals.com",
+    "cacm.acm.org", "link.aps.org", "nejm.org", "jov.arvojournals.org", "publications.aaahq.org",
+    "escholarship.org", "openreview.net", "ui.adsabs.harvard.edu", "scienceconnect.io",
 )
 _SCINEWS_HOSTS = (
     "phys.org", "techxplore.com", "medicalxpress.com", "sciencedaily.com", "quantamagazine.org",

@@ -74,9 +74,13 @@ def main():
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", help="classified JSON {url:{category,title}} (default history_classified.json)")
+    ap.add_argument("--ledger", help="alternate ledger file (default history_save_ledger.jsonl)")
     ap.add_argument("--dry", action="store_true", help="show the routing plan, write nothing")
     ARGS = ap.parse_args()
     src = Path(ARGS.input) if ARGS.input else CLASSIFIED
+    global LEDGER
+    if ARGS.ledger:
+        LEDGER = Path(ARGS.ledger)
 
     zkey, zuid, iuser, ipass = _creds()
     ZH = {"Zotero-API-Key": zkey, "Zotero-API-Version": "3"}
