@@ -28,6 +28,51 @@ _UTILITY_RE = re.compile(r"/(unsubscribe|preference|preferences|preference-cente
                          r"|list-manage\.com|/page/confirm|watermark\d*\.", re.I)
 
 
+from urllib.parse import parse_qsl, urlencode, unquote
+
+# Redirect wrappers — the platform is NOT the content; the real link sits in a
+# u=/url=/q= param. Bruno 2026-06-17: "beware redirect pages — facebook in
+# particular; it's not the platform we want but the redirect links." Covers
+# google.com/url, facebook l.php + flx/warn (the "leaving Facebook" interstitial),
+# and the l./lm. mobile redirectors.
+_REDIRECT_HOST_HINT = ("facebook.com", "l.facebook.com", "lm.facebook.com", "l.instagram.com",
+                       "out.reddit.com", "href.li", "www.google.com", "google.com")
+_REDIRECT_PATH_HINT = ("/l.php", "/flx/warn", "/url", "/away")
+_TRACK_PARAMS = {"fbclid", "gclid", "utm_source", "utm_medium", "utm_campaign", "utm_term",
+                 "utm_content", "mc_cid", "mc_eid", "igshid", "ref_src", "yclid", "msclkid",
+                 "_hsenc", "_hsmi", "gad_source", "triedRedirect"}
+
+
+def _clean_target(t):
+    try:
+        p = urlparse(t)
+        qs = [(k, v) for k, v in parse_qsl(p.query) if k.lower() not in _TRACK_PARAMS]
+        return p._replace(query=urlencode(qs)).geturl()
+    except Exception:
+        return t
+
+
+def resolve_redirect(url):
+    """If `url` is a known redirect wrapper, return its real (cleaned) target;
+    else None. Used so a Facebook/Google interstitial is saved as the article it
+    points to, not as the platform."""
+    try:
+        p = urlparse(url)
+        host, path = (p.netloc or "").lower(), (p.path or "").lower()
+        looks = (any(host.endswith(h) for h in _REDIRECT_HOST_HINT)
+                 and any(h in path for h in _REDIRECT_PATH_HINT))
+        q = dict(parse_qsl(p.query))
+        for key in ("u", "url", "q"):
+            v = q.get(key)
+            if v and (looks or v.startswith("http")):
+                tgt = unquote(v)
+                if tgt.startswith("http") and urlparse(tgt).netloc.lower() != host:
+                    return _clean_target(tgt)
+    except Exception:
+        pass
+    return None
+
+
 def _fetch(url, timeout=10):
     try:
         import cloudscraper

@@ -24,7 +24,8 @@ from datetime import datetime
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from scripts.rescue_audit import canon
+from scripts.rescue_audit import canon, rescue_verdict
+from lib.body_classify import resolve_redirect
 
 
 def main():
@@ -56,14 +57,42 @@ def main():
             train.append((o.get("title", ""), o["url"], move_to))
 
     new_cands = [c for c in cands if canon(c["url"]) not in set(drop)] + add
+
+    # resolve redirect wrappers (facebook flx/warn + l.php, google/url, ...) to
+    # their real targets — the platform is not the content. Dedup, drop if the
+    # target is itself a search/utility page.
+    have = {canon(c["url"]) for c in new_cands}
+    resolved, drop_junk, drop_dup = 0, [], []
+    final = []
+    for c in new_cands:
+        tgt = resolve_redirect(c["url"])
+        if not tgt:
+            final.append(c); continue
+        tv, tsrc, trt = rescue_verdict(c.get("rtitle") or c.get("title") or "", tgt, allow_fetch=False)
+        if tv == "DISCARD":               # wrapper pointed at junk -> drop
+            drop_junk.append(tgt); continue
+        if canon(tgt) in have:            # target already in set -> drop dup wrapper
+            drop_dup.append(tgt); continue
+        have.add(canon(tgt))
+        c = {**c, "url": tgt, "evidence": f"resolved_redirect<-{c['evidence']}"}
+        resolved += 1
+        final.append(c)
+    new_cands = final
+
     print(f"corrections: {len(ovs)} | drop {len(drop)} | add {len(add)} | recategorise {len(recat)}")
+    print(f"redirect wrappers: resolved {resolved} | dropped-as-dup {len(drop_dup)} | dropped-as-junk {len(drop_junk)}")
+    if drop_junk:
+        print("  dropped-as-junk targets (confirm these really are junk):")
+        for t in drop_junk[:15]:
+            print("    " + t[:90])
     print(f"restore set: {len(cands)} -> {len(new_cands)} | training examples: {len(train)}")
 
     if not a.commit:
         print("\nDRY RUN — pass --commit to apply + train.")
         for o in ovs[:12]:
-            print(f"  {o.get('engine','?')}->{o.get('verdict','?')}"
-                  f"{(' ['+o['move_to']+']') if o.get('move_to') else ''}  {o.get('title','')[:54]}")
+            line = (f"  {o.get('engine','?')}->{o.get('verdict','?')}"
+                    f"{(' ['+o['move_to']+']') if o.get('move_to') else ''}  {o.get('title','')[:54]}")
+            print(line.encode("ascii", "replace").decode())
         return
 
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
