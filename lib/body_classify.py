@@ -28,7 +28,7 @@ _UTILITY_RE = re.compile(r"/(unsubscribe|preference|preferences|preference-cente
                          r"|list-manage\.com|/page/confirm|watermark\d*\.", re.I)
 
 
-def _fetch(url, timeout=15):
+def _fetch(url, timeout=10):
     try:
         import cloudscraper
         s = cloudscraper.create_scraper()
