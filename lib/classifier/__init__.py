@@ -101,12 +101,28 @@ def classify(url: str, page_meta: dict | None = None) -> ClassificationResult:
     `_meta` (HTML meta tags), `title`, `text`, `abstract`, `article_links`.
     """
     from . import domain_tiers, hard_gates, embeddings
+    from lib.body_classify import resolve_redirect, _object_type
+
+    # Layer 0 (pre): redirect wrapper — classify the REAL target, not the
+    # platform. A facebook l.php/flx-warn or google/url link points elsewhere.
+    # Bruno 2026-06-17: "facebook entries are the redirect links, not the platform."
+    tgt = resolve_redirect(url)
+    if tgt and tgt != url:
+        return classify(tgt, page_meta)
 
     # Layer 0a: hard reject — genuine non-content (search/auth/mail).
     if _hard_reject(url):
         return ClassificationResult.abstain(layer="hard_reject", reason="never_academic:hard_reject")
 
-    # Layer 0b: social/video need JUDGEMENT, not a forced k-NN match. Route to
+    # Layer 0b: deterministic object-type — the same host splits by what the page
+    # IS (hf paper-page->science_news vs model-repo->data_tools; SEP/Wikipedia/
+    # PhilPeople->references; code repo->data_tools; google/play books->books).
+    # Bruno's taxonomy, encoded from his 172 category corrections (2026-06-17).
+    ot = _object_type(url)
+    if ot:
+        return ClassificationResult.match(ot[0], confidence=ot[1], layer="object_type", source=ot[2])
+
+    # Layer 0c: social/video need JUDGEMENT, not a forced k-NN match. Route to
     # review so the AI arbiter decides (a YouTube lecture may be longform, an X
     # thread a reference); the k-NN must never label these as articles/books.
     if _needs_judgement(url):
