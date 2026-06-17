@@ -594,13 +594,18 @@ def check_mirror(u: Unit) -> None:
 
 
 def main() -> int:
+    # FAIL-SAFE single-instance guard: if the guard cannot run, EXIT rather than
+    # proceed unguarded — two unguarded cores = two adb keepalive loops = the PC
+    # crash on Chrome-open (2026-06-15 & -17). Never start unless provably alone.
     try:
         from lib.single_instance_mutex import claim_or_exit
-        if not claim_or_exit("Egon-Core-2026-06"):
-            log("info", "core_already_running_exit")
-            return 0
-    except Exception:
-        pass
+        alone = claim_or_exit("Egon-Core-2026-06")
+    except Exception as e:
+        log("error", "core_guard_failed_exit", error=str(e)[:160])
+        return 0
+    if not alone:
+        log("info", "core_already_running_exit")
+        return 0
 
     log("info", "core_start")
     units = {"mind": Unit("mind"), "headroom": Unit("headroom"),
