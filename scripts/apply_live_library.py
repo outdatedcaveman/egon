@@ -85,6 +85,17 @@ def main():
         if not lv:
             continue
         url = rec.get("url", ""); nc = rec.get("new_cat"); nt = rec.get("new_title", "")
+        # Social/video hosts wall their body -> the engine returns None and they'd
+        # wrongly stay in a scholarly collection (the X-links Bruno flagged). They
+        # are never articles/books/science_news; default them to content_longform
+        # (a YouTube lecture / X thread is read/watch-in-place). Bruno 2026-06-15.
+        host = (urlparse(url).netloc or "").lower().replace("www.", "")
+        SOCIAL = ("x.com", "twitter.com", "youtube.com", "youtu.be", "m.youtube.com",
+                  "reddit.com", "facebook.com", "instagram.com", "tiktok.com", "linkedin.com")
+        cur_scholarly = any(c in ("GKSJSJMJ", "B3XGDC4J", "BRZ3UUIR") for c in lv["collections"])
+        if (nc in (None, "blocked", "needs_ai") or not nc) and cur_scholarly and \
+           any(host == s or host.endswith("." + s) for s in SOCIAL):
+            nc = "content_longform"
         patch, why = {}, []
         # TRASH true junk
         if nc == "reject":
