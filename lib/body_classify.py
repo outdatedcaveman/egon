@@ -69,9 +69,18 @@ def classify_by_body(url, want_text=False):
                     "title": _meta(html, "citation_title") or title,
                     "abstract": _meta(html, "citation_abstract", "description", "og:description")}
         ogtype = _meta(html, "og:type").lower()
-        if ogtype == "book" or re.search(r'"@type"\s*:\s*"Book"|itemtype=["\'][^"\']*schema.org/Book', html, re.I):
-            return {"category": "books", "confidence": 0.9, "source": "body:book_schema", "title": title}
-        if (ogtype == "product" or re.search(r'"@type"\s*:\s*"Product"|itemprop=["\']price|add to cart', html, re.I)):
+        # Book signals must be tested BEFORE product markup: Amazon/retailer BOOK
+        # pages carry Product+price schema too, but ISBN / "Paperback" / "Kindle
+        # Edition" / "Print length" mark them as books. Bruno's rule: an Amazon
+        # book link -> Books, an Amazon cutlery link -> Shopping.
+        book_sig = (ogtype == "book"
+                    or re.search(r'"@type"\s*:\s*"Book"|itemtype=["\'][^"\']*schema.org/Book', html, re.I)
+                    or re.search(r'\bISBN(?:[- ]?1[03])?\b|Kindle Edition|Print length|\bPaperback\b|'
+                                 r'\bHardcover\b|Audible Audiobook|Mass Market Paperback|Publication date',
+                                 html, re.I))
+        if book_sig:
+            return {"category": "books", "confidence": 0.9, "source": "body:book_signals", "title": title}
+        if (ogtype == "product" or re.search(r'"@type"\s*:\s*"Product"|itemprop=["\']price|add to cart|add to basket', html, re.I)):
             return {"category": "shopping", "confidence": 0.85, "source": "body:product", "title": title}
         # contentless utility page → reject (short body, utility words, no article tags)
         text = re.sub(r"<[^>]+>", " ", html)
@@ -92,4 +101,28 @@ def classify_by_body(url, want_text=False):
     for h, p in _PAPER_HOST_PATH:
         if host.endswith(h) and p in (urlparse(url).path.lower()):
             return {"category": "articles", "confidence": 0.85, "source": "url:paper_path", "title": title}
+    # A walled page (CF "Just a moment") on a host whose content is academic /
+    # science-news by definition keeps that category — a blocked body must NOT
+    # demote a real paper to UNSURE (that's how real papers got thrown out).
+    if any(host.endswith(h) for h in _SCINEWS_HOSTS):
+        return {"category": "science_news", "confidence": 0.7, "source": "url:scinews_host", "title": title}
+    if any(host.endswith(h) for h in _ACADEMIC_HOSTS):
+        return {"category": "articles", "confidence": 0.7, "source": "url:academic_host", "title": title}
     return {"category": None, "confidence": 0.0, "source": "blocked", "title": title}
+
+
+# Hosts whose content is academic / science-news by definition — used to keep a
+# walled (un-fetchable) page in the right bucket instead of demoting to UNSURE.
+_ACADEMIC_HOSTS = (
+    "arxiv.org", "philpapers.org", "ncbi.nlm.nih.gov", "pubmed.ncbi.nlm.nih.gov", "jstor.org",
+    "nature.com", "science.org", "sciencedirect.com", "springer.com", "link.springer.com",
+    "academic.oup.com", "biorxiv.org", "medrxiv.org", "pnas.org", "aeaweb.org", "pubs.aeaweb.org",
+    "psycnet.apa.org", "ssrn.com", "papers.ssrn.com", "tandfonline.com", "onlinelibrary.wiley.com",
+    "cambridge.org", "plato.stanford.edu", "iep.utm.edu", "semanticscholar.org", "researchgate.net",
+    "ieeexplore.ieee.org", "dl.acm.org", "journals.aps.org", "iopscience.iop.org", "doi.org",
+)
+_SCINEWS_HOSTS = (
+    "phys.org", "techxplore.com", "medicalxpress.com", "sciencedaily.com", "quantamagazine.org",
+    "newscientist.com", "scientificamerican.com", "nautil.us", "aeon.co", "statnews.com",
+    "arstechnica.com", "spectrum.ieee.org",
+)
