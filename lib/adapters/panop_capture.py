@@ -59,14 +59,28 @@ def _log(level: str, event: str, **kw) -> None:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
+# Hide the adb console window AT THE CALL SITE — do NOT rely on the global
+# lib.no_console Popen-patch being imported in whatever process runs this loop.
+# A spawned mind_service/Panop that skipped that import flashed cmd.exe windows;
+# two such loops crashed Bruno's PC on Chrome-open (2026-06-15 & -17). This makes
+# adb silent unconditionally. CREATE_NO_WINDOW = 0x08000000; no-op off Windows.
+_NOWIN: dict = {}
+if sys.platform == "win32":
+    _si = subprocess.STARTUPINFO()
+    _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    _si.wShowWindow = 0  # SW_HIDE
+    _NOWIN = {"creationflags": 0x08000000, "startupinfo": _si}
+
+
 def _adb(*args, timeout: int = 30) -> tuple[int, str, str]:
-    """Run adb with a timeout. Returns (rc, stdout, stderr). Never raises."""
+    """Run adb with a timeout. Returns (rc, stdout, stderr). Never raises.
+    Always windowless (see _NOWIN) so it can never flash a console."""
     try:
         res = subprocess.run(
             [str(ADB_EXE), *args],
             capture_output=True, text=True,
             encoding="utf-8", errors="replace",
-            timeout=timeout,
+            timeout=timeout, **_NOWIN,
         )
         return res.returncode, res.stdout, res.stderr
     except subprocess.TimeoutExpired:
