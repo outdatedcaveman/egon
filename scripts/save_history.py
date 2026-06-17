@@ -71,10 +71,17 @@ def resolve(u):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--input", help="classified JSON {url:{category,title}} (default history_classified.json)")
+    ap.add_argument("--dry", action="store_true", help="show the routing plan, write nothing")
+    ARGS = ap.parse_args()
+    src = Path(ARGS.input) if ARGS.input else CLASSIFIED
+
     zkey, zuid, iuser, ipass = _creds()
     ZH = {"Zotero-API-Key": zkey, "Zotero-API-Version": "3"}
     zbase = f"https://api.zotero.org/users/{zuid}"
-    res = json.loads(CLASSIFIED.read_text(encoding="utf-8"))
+    res = json.loads(src.read_text(encoding="utf-8"))
     items = [{"url": u, "title": v.get("title") or u, "cat": v["category"]}
              for u, v in res.items() if v["category"] in SAVE]
 
@@ -85,7 +92,14 @@ def main():
             except Exception: pass
     items = [it for it in items if it["url"] not in done]
     from collections import Counter
+    dest = {"articles": "Zotero", "books": "Zotero", "science_news": "Zotero",
+            "content_longform": "Instapaper"}
+    plan = Counter(f"{i['cat']} -> {dest.get(i['cat'], 'bookmark')}" for i in items)
     print(f"to save: {len(items)} | {dict(Counter(i['cat'] for i in items))}")
+    print(f"routing: {dict(plan)}")
+    if ARGS.dry:
+        print("DRY RUN — nothing written (pass without --dry to save; dedup applies at write).")
+        return
 
     # resolve redirect-shaped urls
     print("resolving redirect URLs…")
