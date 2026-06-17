@@ -19,7 +19,7 @@ def rows_table(rows, cols):
     for r in rows:
         tds = "".join(f"<td>{c}</td>" for c in cols(r))
         trs.append(f"<tr>{tds}</tr>")
-    return "".join(trs)
+    return "\n".join(trs)
 
 
 def main():
@@ -62,26 +62,58 @@ def main():
     zt = sum(1 for c in cands if c["src"] == "zotero_trash")
     sumr = dict(Counter(c["verdict"] for c in cands))
     out = ROOT / "state" / "panop" / "rescue_review.html"
-    out.write_text(f"""<!doctype html><meta charset=utf-8><title>Rescue review (final)</title>
-<style>body{{font:14px/1.5 system-ui;margin:24px;color:#1f2328;max-width:1500px}}
-table{{border-collapse:collapse;width:100%;margin:8px 0 28px}}th,td{{padding:5px 9px;border-bottom:1px solid #eaecef;text-align:left;vertical-align:top}}
-th{{background:#f6f8fa;position:sticky;top:0}}code{{font-size:12px;color:#57606a}}tr:hover{{background:#f6f8fa}}
-h2{{margin-top:28px}}.k{{color:#1a7f37}}.d{{color:#cf222e}}</style>
+    out.write_text(f"""<!doctype html>
+<html lang=en>
+<head><meta charset="utf-8"><title>Rescue review (final)</title>
+<style>
+body{{font:14px/1.5 system-ui,Segoe UI,Arial;margin:24px;color:#1f2328;max-width:1500px}}
+table{{border-collapse:collapse;width:100%;margin:8px 0 28px}}
+th,td{{padding:5px 9px;border-bottom:1px solid #eaecef;text-align:left;vertical-align:top}}
+th{{background:#f6f8fa;position:sticky;top:0}}
+code{{font-size:12px;color:#57606a}}
+tr:hover{{background:#f6f8fa}}
+h2{{margin-top:28px}}.k{{color:#1a7f37}}.d{{color:#cf222e}}
+</style></head>
+<body>
 <h1>Rescue review — final state</h1>
-<p style='font-size:16px'>Re-judged {len(cands)+len(discard)} discarded items by body.
-<b class=k>{len(cands)} to RESTORE</b> ({zt} were in your library, {len(cands)-zt} from history) ·
-<b class=d>{len(discard)} stay discarded</b> (confirmed junk).</p>
-<p style='color:#57606a'>Nothing has been changed. To bring the library items back:
-<code>python scripts/rescue_restore.py --commit</code> (reversible — re-trashable).</p>
+<p style="font-size:16px">Re-judged {len(cands)+len(discard)} discarded items by body.
+<b class="k">{len(cands)} to RESTORE</b> ({zt} were in your library, {len(cands)-zt} from history) ·
+<b class="d">{len(discard)} stay discarded</b> (confirmed junk).</p>
+<p style="color:#57606a">Nothing has been changed. To bring the library items back:
+<code>python scripts/rescue_restore.py --commit</code> (reversible — re-trashable).
+A spreadsheet version sits next to this file: <code>rescue_review.csv</code>.</p>
 
-<h2 class=d>① The {len(discard)} that STAY discarded — confirm these are all junk</h2>
-<table><tr><th>evidence</th><th>title</th><th>url</th></tr>{rows_table(discard, dcols)}</table>
+<h2 class="d">① The {len(discard)} that STAY discarded — confirm these are all junk</h2>
+<table>
+<thead><tr><th>evidence</th><th>title</th><th>url</th></tr></thead>
+<tbody>
+{rows_table(discard, dcols)}
+</tbody></table>
 
-<h2 class=k>② The {len(cands)} to RESTORE — confirm none are junk (library first)</h2>
-<table><tr><th>verdict</th><th>from</th><th>evidence</th><th>title</th><th>url</th></tr>{rows_table(cands, rcols)}</table>
+<h2 class="k">② The {len(cands)} to RESTORE — confirm none are junk (library first)</h2>
+<table>
+<thead><tr><th>verdict</th><th>from</th><th>evidence</th><th>title</th><th>url</th></tr></thead>
+<tbody>
+{rows_table(cands, rcols)}
+</tbody></table>
+</body></html>
 """, encoding="utf-8")
+
+    # CSV fallback (opens in Excel; sortable/filterable)
+    import csv
+    csv_path = ROOT / "state" / "panop" / "rescue_review.csv"
+    with csv_path.open("w", newline="", encoding="utf-8-sig") as fh:
+        w = csv.writer(fh)
+        w.writerow(["action", "verdict", "source", "evidence", "title", "url"])
+        for c in cands:
+            w.writerow(["RESTORE", c["verdict"], "library" if c["src"] == "zotero_trash" else "history",
+                        c["evidence"], c.get("rtitle") or c.get("title") or "", c["url"]])
+        for d in discard:
+            w.writerow(["DISCARD", "DISCARD", "", d["evidence"], d.get("title") or "", d["url"]])
+
     print(f"restore: {len(cands)} {sumr} | discard: {len(discard)}")
     print(f"review report: {out}")
+    print(f"spreadsheet:   {csv_path}")
 
 
 if __name__ == "__main__":
