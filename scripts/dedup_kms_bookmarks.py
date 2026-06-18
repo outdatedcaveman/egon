@@ -60,23 +60,43 @@ def main():
         print("ABORT: Chrome is running — close it first (raw Bookmarks write would be clobbered).")
         return
     bm = json.loads(BMFILE.read_text(encoding="utf-8"))
-    node = None
+    # find ALL folders under any "KMS Output" parent (same May-28 dup bug hit them all)
+    kms_roots = []
+    def collect_kms(node, path=""):
+        if node.get("type") == "folder":
+            full = path + "/" + node.get("name", "")
+            if node.get("name", "").strip() == "KMS Output":
+                kms_roots.append(node)
+            for c in node.get("children", []):
+                collect_kms(c, full)
     for root in bm["roots"].values():
         if isinstance(root, dict):
-            node = node or find_folder(root)
-    if not node:
-        print("KMS Output/Articles not found"); return
+            collect_kms(root)
+    # every category subfolder under each KMS Output
+    targets = []
+    for kr in kms_roots:
+        for sub in kr.get("children", []):
+            if sub.get("type") == "folder":
+                targets.append(sub)
+    if not targets:
+        print("no KMS Output subfolders found"); return
 
-    kids = node.get("children", [])
-    urls = [c for c in kids if c.get("type") == "url"]
-    other = [c for c in kids if c.get("type") != "url"]   # preserve any subfolders
-    seen, deduped = set(), []
-    for c in urls:
-        k = canon(c.get("url", ""))
-        if k in seen:
-            continue
-        seen.add(k); deduped.append(c)
-    print(f"{TARGET}: {len(urls)} url entries -> {len(deduped)} unique (subfolders kept: {len(other)})")
+    total_before = total_after = 0
+    plans = []
+    for sub in targets:
+        kids = sub.get("children", [])
+        urls = [c for c in kids if c.get("type") == "url"]
+        other = [c for c in kids if c.get("type") != "url"]
+        seen, deduped = set(), []
+        for c in urls:
+            k = canon(c.get("url", ""))
+            if k in seen:
+                continue
+            seen.add(k); deduped.append(c)
+        total_before += len(urls); total_after += len(deduped)
+        plans.append((sub, other, deduped, len(urls)))
+        print(f"  {sub.get('name',''):20} {len(urls):>7} -> {len(deduped):>6} unique")
+    print(f"TOTAL: {total_before} -> {total_after}  (removing {total_before-total_after} dups)")
 
     if not a.commit:
         print("DRY RUN — pass --commit to rewrite (Chrome must be closed; full backup first).")
@@ -85,17 +105,17 @@ def main():
     BK.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
     shutil.copy(BMFILE, BK / f"chrome_bookmarks_predeup_{stamp}.json")
-    node["children"] = other + deduped
-    bm.pop("checksum", None)                              # let Chrome recompute
+    for sub, other, deduped, _ in plans:
+        sub["children"] = other + deduped
+    bm.pop("checksum", None)
     tmp = BMFILE.with_suffix(".egon_tmp")
     tmp.write_text(json.dumps(bm, ensure_ascii=False, indent=3), encoding="utf-8")
     tmp.replace(BMFILE)
-    # drop stale .bak so Chrome can't restore the bloated version
     bak = BMFILE.with_name("Bookmarks.bak")
     if bak.exists():
         bak.replace(BK / f"chrome_Bookmarks.bak_{stamp}")
-    print(f"DEDUPED -> {len(deduped)} bookmarks (backup chrome_bookmarks_predeup_{stamp}.json). "
-          f"Removed {len(urls)-len(deduped)} duplicates.")
+    print(f"DEDUPED all KMS Output folders -> {total_after} bookmarks "
+          f"(removed {total_before-total_after} dups; backup chrome_bookmarks_predeup_{stamp}.json).")
 
 
 if __name__ == "__main__":

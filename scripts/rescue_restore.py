@@ -56,7 +56,10 @@ def main():
     live = {}
     for i in range(0, len(keys), 50):
         chunk = keys[i:i+50]
-        r = requests.get(f"{base}/items?itemKey={','.join(chunk)}&limit=50", headers=H, timeout=40)
+        # includeTrashed=1 is REQUIRED: the items we're restoring are IN the
+        # trash, and /items excludes trashed items by default (empty result).
+        r = requests.get(f"{base}/items?itemKey={','.join(chunk)}&includeTrashed=1&limit=50",
+                         headers=H, timeout=40)
         if r.status_code == 200:
             for it in r.json():
                 live[it["key"]] = it["version"]
