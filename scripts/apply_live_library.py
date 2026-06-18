@@ -35,12 +35,25 @@ KEY2CAT = {v: k for k, v in CATKEY.items()}
 _BADTITLE = ("just a moment", "attention required", "access denied", "page not found",
              "not found", "untitled", "forbidden", "are you a robot", "checking your",
              "request limit", "redirecting", "loading", "site maintenance", "error 4",
-             "error 5", "this site can", "bot verification")
+             "error 5", "this site can", "bot verification", "cloudflare", "captcha",
+             "sign in", "log in", "please wait", "unavailable", "blocked", "denied",
+             "403", "404", "500", "502", "503", "robot", "verify you", "security check",
+             "one moment", "enable javascript", "are you human", "not a bot",
+             "making sure you", "just a sec", "verifying you", "checking if")
+# bare publisher/site brand names that are NOT real titles
+_SITEBRANDS = {"sciencedirect", "springer", "springerlink", "wiley", "wiley online library",
+               "ssrn", "jstor", "researchgate", "academia.edu", "tandfonline", "mdpi",
+               "ieee xplore", "acm digital library", "pubmed", "google scholar", "semantic scholar",
+               "redirecting", "home", "homepage", "loading"}
 
 
 def is_good_title(t, url):
     t = (t or "").strip(); tl = t.lower()
-    if len(t) < 6 or any(b in tl for b in _BADTITLE):
+    if len(t) < 8 or any(b in tl for b in _BADTITLE):
+        return False
+    if tl.startswith("http") or tl in _SITEBRANDS:
+        return False
+    if " " not in t:                       # single token -> a domain/brand, not a title
         return False
     host = (urlparse(url).netloc or "").replace("www.", "").lower()
     bare = tl.replace("www.", "").rstrip("/")
@@ -96,6 +109,14 @@ def main():
         if (nc in (None, "blocked", "needs_ai") or not nc) and cur_scholarly and \
            any(host == s or host.endswith("." + s) for s in SOCIAL):
             nc = "content_longform"
+        # Amazon walls its body, so body:product can't tell a BOOK from goods —
+        # 200+ real books (Frege, "To Live: A Novel"...) were being demoted to
+        # shopping. NEVER move an Amazon (or google-redirect) item to shopping;
+        # keep its existing placement. Genuine non-Amazon shops still move.
+        surl = (rec.get("surl") or url).lower()
+        if nc == "shopping" and ("amazon." in surl or "amazon." in host
+                                 or "google.com/url" in url.lower() or host == "google.com"):
+            nc = None
         patch, why = {}, []
         # TRASH true junk
         if nc == "reject":
