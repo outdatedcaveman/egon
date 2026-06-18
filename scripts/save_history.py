@@ -178,7 +178,7 @@ def main():
     for it in items:
         bycat.setdefault(it["cat"], []).append(it)
     lines = ['<!DOCTYPE NETSCAPE-Bookmark-file-1>', '<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">',
-             '<TITLE>Bookmarks</TITLE>', '<H1>Bookmarks</H1>', '<DL><p>', '    <DT><H3>Panop (History)</H3>', '    <DL><p>']
+             '<TITLE>Bookmarks</TITLE>', '<H1>Bookmarks</H1>', '<DL><p>', '    <DT><H3>KMS Output</H3>', '    <DL><p>']
     for cat, its in bycat.items():
         lines.append(f'        <DT><H3>{html.escape(BFOLDER[cat])}</H3>')
         lines.append('        <DL><p>')
@@ -198,7 +198,7 @@ def main():
         k = (it["surl"], BFOLDER[it["cat"]])
         if k not in have:
             q.append({"url": it["surl"], "title": it["title"][:300], "category": BFOLDER[it["cat"]],
-                      "queued_at": datetime.now().isoformat()})
+                      "parent": "KMS Output", "queued_at": datetime.now().isoformat()})
             have.add(k)
         trace(it, bookmark="queued")
     PENDING.write_text(json.dumps(q, ensure_ascii=False), encoding="utf-8")
