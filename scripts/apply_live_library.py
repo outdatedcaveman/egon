@@ -62,6 +62,12 @@ def is_good_title(t, url):
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--commit", action="store_true"); a = ap.parse_args()
+    global _kms
+    try:
+        import lib.kms_knn as _kms  # title-based book/goods sorter (Bruno's bookmarks)
+        _kms.classify("warmup", "https://amazon.com/dp/x")  # load model once up front
+    except Exception:
+        _kms = None
     pe = json.loads((ROOT / "panop_env.json").read_text(encoding="utf-8-sig"))
     H = {"Zotero-API-Key": pe["zotero_api_key"], "Zotero-API-Version": "3"}
     HW = {**H, "Content-Type": "application/json"}
@@ -109,14 +115,20 @@ def main():
         if (nc in (None, "blocked", "needs_ai") or not nc) and cur_scholarly and \
            any(host == s or host.endswith("." + s) for s in SOCIAL):
             nc = "content_longform"
-        # Amazon walls its body, so body:product can't tell a BOOK from goods —
-        # 200+ real books (Frege, "To Live: A Novel"...) were being demoted to
-        # shopping. NEVER move an Amazon (or google-redirect) item to shopping;
-        # keep its existing placement. Genuine non-Amazon shops still move.
+        # Amazon (& google-redirect-to-amazon) wall their body, so body:product
+        # can't tell a BOOK ("Frege: Philosophy of Mathematics") from goods
+        # ("Lava Louças 8 Serviços"). Don't be blunt — use the kNN trained on
+        # Bruno's OWN bookmarks (his amazon books vs his amazon goods) to sort by
+        # TITLE, but only when it's CONFIDENT (>=0.60); otherwise leave the item
+        # where it is. Bruno 2026-06-17: be smarter, not all amazon = shopping.
         surl = (rec.get("surl") or url).lower()
-        if nc == "shopping" and ("amazon." in surl or "amazon." in host
-                                 or "google.com/url" in url.lower() or host == "google.com"):
-            nc = None
+        is_amazon = ("amazon." in surl or "amazon." in host
+                     or "google.com/url" in url.lower() or host == "google.com")
+        if is_amazon and nc in ("shopping", "books", None, "blocked", "needs_ai"):
+            ttl = (rec.get("new_title") or lv.get("title") or "").strip()
+            kk = _kms.classify(ttl, surl) if (ttl and _kms) else {}
+            nc = kk.get("category") if (kk.get("confidence", 0) >= 0.60
+                                        and kk.get("category") in ("books", "shopping")) else None
         patch, why = {}, []
         # TRASH true junk
         if nc == "reject":
