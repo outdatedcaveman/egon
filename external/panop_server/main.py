@@ -1459,6 +1459,78 @@ def _adb_list_devices(adb_exe):
         elif state == "offline":      offline.append(did)
     return ready, unauth, offline
 
+def _zotero_in_cache(storage_url, doi=None, title=None):
+    """Fast dedup against the in-memory Zotero cache (no API). Same logic the
+    per-item send_to_zotero used — needed because batch-save defers the POST."""
+    with _zotero_url_cache_lock:
+        urls = set(_zotero_url_cache.get("urls") or [])
+        dois = set(_zotero_url_cache.get("dois") or [])
+        tks = set(_zotero_url_cache.get("titlekeys") or [])
+    c = canonicalize_url(storage_url)
+    if storage_url in urls or (c and c in urls):
+        return True
+    if doi and doi.lower() in dois:
+        return True
+    tk = _title_dedup_key(title, c or storage_url)
+    return bool(tk and tk in tks)
+
+
+def _batch_zotero_post(items, env):
+    """BATCH-create new Zotero items, 50 per POST instead of one call each — the
+    fix for serial saves crawling under Zotero rate-limiting. items: list of
+    {storage_url, title, abstract, category_name, doi}. Returns {storage_url: ok}.
+    Updates the in-memory cache so the new items dedup next time. Bruno 2026-06-19."""
+    out = {}
+    if not items:
+        return out
+    api_key = env.get("zotero_api_key", "").strip()
+    user_id = env.get("zotero_user_id", "").strip()
+    if not api_key or not user_id:
+        return {it["storage_url"]: False for it in items}
+    parent = env.get("zotero_collection_key", "").strip() or \
+        _get_or_create_collection(env.get("bookmark_folder", "KMS Output") or "KMS Output")
+    catkeys = {}
+    for it in items:
+        cn = it["category_name"]
+        if cn not in catkeys:
+            catkeys[cn] = (_get_or_create_collection(cn, parent_key=parent) if parent else None)
+    for i in range(0, len(items), 50):
+        chunk = items[i:i + 50]
+        payload = []
+        for it in chunk:
+            ck = catkeys.get(it["category_name"]) or parent
+            d = {"itemType": "webpage", "title": (it["title"] or "Untitled")[:250],
+                 "url": it["storage_url"], "abstractNote": it.get("abstract") or "",
+                 "date": datetime.now().strftime("%Y-%m-%d"),
+                 "tags": [{"tag": it["category_name"]}] if it["category_name"] else [],
+                 "collections": [ck] if ck else []}
+            if it.get("doi"):
+                d["extra"] = f"DOI: {it['doi']}"
+            payload.append(d)
+        succ = {}
+        try:
+            r = requests.post(f"{_zotero_base()}/items", headers=_zotero_headers(),
+                              json=payload, timeout=60)
+            if r.status_code in (200, 201) and r.content:
+                succ = r.json().get("successful") or {}
+        except Exception:
+            succ = {}
+        with _zotero_url_cache_lock:
+            for j, it in enumerate(chunk):
+                created = succ.get(str(j))
+                ok = bool(created)
+                out[it["storage_url"]] = ok
+                if ok:
+                    su = it["storage_url"]
+                    _zotero_url_cache["urls"].add(su)
+                    nk = (created or {}).get("key") or ((created or {}).get("data") or {}).get("key")
+                    nv = (created or {}).get("version") or ((created or {}).get("data") or {}).get("version")
+                    if nk:
+                        _zotero_url_cache["by_url"][su] = {"key": nk, "version": nv}
+        time.sleep(0.2)
+    return out
+
+
 def run_adb_sweep():
     global sweep_status
     sweep_status["running"] = True
@@ -1712,6 +1784,7 @@ def run_adb_sweep():
         # Run up to 8 tabs in parallel — enough throughput without hammering RAM/CPU
         WORKERS = 8
         _done_ctr = [0]
+        _zbatch = []   # net-new items, BATCH-posted to Zotero after the loop
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             futures = {pool.submit(process_tab, tab, cat, needs_fetch): (tab, cat)
                        for tab, cat, needs_fetch in candidates}
@@ -1799,7 +1872,16 @@ def run_adb_sweep():
                     with open(os.path.join(target_dir, f"{fname}.json"), "w", encoding="utf-8") as f:
                         json.dump(entry_data, f, indent=2, ensure_ascii=False)
 
-                    z_ok = send_to_zotero(storage_url, title, metadata.get("abstract", ""), matched_category["name"], doi=doi)
+                    # DEDUP vs the Zotero cache (no API). Items already in Zotero
+                    # are marked synced; genuinely-new ones are DEFERRED and
+                    # BATCH-posted (50/POST) after the loop — not one slow call each.
+                    if _zotero_in_cache(storage_url, doi, title):
+                        z_ok = True
+                    else:
+                        z_ok = False
+                        _zbatch.append({"storage_url": storage_url, "title": title,
+                                        "abstract": (metadata.get("abstract", "") if metadata else ""),
+                                        "category_name": matched_category["name"], "doi": doi})
                     b_ok = add_chrome_bookmark(storage_url, title, matched_category["name"])
 
                     # IMPORTANT: write to `h` (just-loaded, line 1131), NOT the
@@ -1855,6 +1937,22 @@ def run_adb_sweep():
 
                 except Exception:
                     continue
+
+        # BATCH-save the deferred net-new items to Zotero (50 per POST), then flip
+        # their z_synced so the deferred close pass is eligible to close them.
+        if _zbatch:
+            _dbg(f"=== batch zotero: {len(_zbatch)} new items ===")
+            try:
+                _zres = _batch_zotero_post(_zbatch, env)
+                _saved = sum(1 for v in _zres.values() if v)
+                _h2 = load_history()
+                for _u, _ok in _zres.items():
+                    if _ok and _u in _h2:
+                        _h2[_u]["z_synced"] = True
+                save_history(_h2)
+                _dbg(f"=== batch zotero done: {_saved}/{len(_zbatch)} saved ===")
+            except Exception as _e:
+                _dbg(f"batch zotero error: {type(_e).__name__}: {str(_e)[:80]}")
 
         # Post-sweep autonomous dedup cleanup
         try:
