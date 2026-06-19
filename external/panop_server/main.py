@@ -1601,14 +1601,10 @@ def run_adb_sweep():
             except Exception:
                 pass
 
-            _RESTRICT = _restricted_cat_ids()
             domain_matched_cat = None
             needs_fetch = False
 
-            # Classify by URL ALONE (object-type / domain / paper-path / academic
-            # host rules — no page fetch). A confident URL match needs NO body
-            # fetch: that is the speed win (1600 discarded tabs were each being
-            # reactivated+fetched). Bruno 2026-06-18 / 3-phase rewrite.
+            # Check if smart classifier matches directly without page content
             try:
                 import lib.classifier as classifier
                 res = classifier.classify(true_url, None)
@@ -1616,35 +1612,28 @@ def run_adb_sweep():
                     matched = next((c for c in categories if c.get("id") == res.category), None)
                     if matched:
                         domain_matched_cat = matched
-                        needs_fetch = False          # URL-confident → skip fetch
+                        needs_fetch = True
             except Exception:
                 pass
 
-            # ACTIVE RESTRICTION (e.g. Articles/Books/Science News only): drop
-            # everything else HERE — before the expensive pool — so non-allowed
-            # tabs are never fetched, never saved, and stay OPEN on the phone.
-            if _RESTRICT:
-                cid = (domain_matched_cat or {}).get("id", "").lower()
-                if cid in _RESTRICT and domain_matched_cat:
-                    candidates.append((tab, domain_matched_cat, needs_fetch))
-                else:
-                    sweep_status["skipped_restricted"] = sweep_status.get("skipped_restricted", 0) + 1
-                continue
-
-            # Unrestricted: fall back to domain-keyword rules (fetch only if the
-            # URL classifier didn't already match).
             if not domain_matched_cat:
                 for cat in categories:
                     domains = cat.get("domain_keywords", [])
+                    body_req = cat.get("body_required", [])
+                    body_forb = cat.get("body_forbidden", [])
                     tab_group = cat.get("tab_group", "")
+
                     if tab_group and tab_group.lower() not in str(tab).lower():
                         continue
+
                     domain_match = any(d.lower() in url_lower for d in domains if d) if domains else True
+
                     if not domain_match and strict and domains:
-                        continue
+                        continue  # strict mode: skip if no domain match
+
                     if domain_match or not domains:
                         domain_matched_cat = cat
-                        needs_fetch = True       # keyword-only guess → verify by body
+                        needs_fetch = True
                         break
 
             if domain_matched_cat:
