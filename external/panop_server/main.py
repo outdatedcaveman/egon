@@ -1667,14 +1667,19 @@ def run_adb_sweep():
             if needs_fetch and not is_pdf:
                 metadata = fetch_page_content(terminal_url)  # returns None on failure
 
-            matched_category = _classify_tab_candidate(terminal_url, metadata, categories, env)
-            if not matched_category:
-                if catch_uncat:
-                    matched_category = next((c for c in categories if c.get("id") == "uncategorized"), None)
-                    if not matched_category:
-                        matched_category = {"name": "Uncategorized", "id": "uncategorized", "dest_folder": os.path.join(OUTPUT_DIR(), "Uncategorized")}
-                else:
-                    return None
+            if not needs_fetch and cat:
+                # URL-confident classification from Phase 1 — no body needed (the
+                # speed path: trust the object-type/domain/paper-path match).
+                matched_category = cat
+            else:
+                matched_category = _classify_tab_candidate(terminal_url, metadata, categories, env)
+                if not matched_category:
+                    if catch_uncat:
+                        matched_category = next((c for c in categories if c.get("id") == "uncategorized"), None)
+                        if not matched_category:
+                            matched_category = {"name": "Uncategorized", "id": "uncategorized", "dest_folder": os.path.join(OUTPUT_DIR(), "Uncategorized")}
+                    else:
+                        return None
 
             # Title: prefer page metadata, fall back to PDF-aware resolution, then DevTools title
             if is_pdf:
