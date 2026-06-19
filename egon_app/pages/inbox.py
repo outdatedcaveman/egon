@@ -2320,6 +2320,20 @@ class InboxPage(QWidget):
         btn_fetch.clicked.connect(self._fetch_now_action)
         btn_layout.addWidget(btn_fetch)
 
+        # 1b. Fetch — Articles / Books / Science News ONLY (save + close only those)
+        btn_fetch_abs = QPushButton("📚 A/B/SciNews Only")
+        btn_fetch_abs.setCursor(Qt.PointingHandCursor)
+        btn_fetch_abs.setStyleSheet(
+            "QPushButton { background: #2563EB; color: white; padding: 4px 12px; "
+            "border-radius: 4px; font-weight: 700; font-size: 12px; border: none; }"
+            "QPushButton:hover { background: #1D4ED8; }"
+        )
+        btn_fetch_abs.setFixedHeight(26)
+        btn_fetch_abs.setToolTip("Fetch + clean ONLY Articles, Books and Science News — "
+                                 "closes only those tabs; everything else stays open on the phone.")
+        btn_fetch_abs.clicked.connect(self._fetch_restricted_action)
+        btn_layout.addWidget(btn_fetch_abs)
+
         # 2. Drain All Tabs
         btn_drain = QPushButton("📥 Drain All Tabs")
         btn_drain.setCursor(Qt.PointingHandCursor)
@@ -2957,6 +2971,21 @@ class InboxPage(QWidget):
                 self._status_lbl.setText(f"❌ Fetch trigger failed: {err}")
 
         t = _spawn_http(self, "POST", f"{_PANOP_BASE}/fetch_now", callback)
+        self._threads.append(t)
+        t.finished.connect(lambda: self._threads.remove(t) if t in self._threads else None)
+
+    def _fetch_restricted_action(self) -> None:
+        """Restrict the routine to Articles/Books/Science News, then fetch. Only
+        those three get saved + closed; everything else stays open. Bruno 2026-06-18."""
+        self._status_lbl.setText("⏳ Restricting to Articles / Books / Science News, then fetching…")
+
+        def after_restrict(_res):
+            # Whatever the restrict call returns, kick off the (now-limited) sweep.
+            self._fetch_now_action()
+
+        t = _spawn_http(self, "POST",
+                        f"{_PANOP_BASE}/restrict_categories?categories=articles,books,science_news",
+                        after_restrict)
         self._threads.append(t)
         t.finished.connect(lambda: self._threads.remove(t) if t in self._threads else None)
 

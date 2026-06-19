@@ -106,6 +106,7 @@ def get_env():
             "strict_domain_scan": True,
             "port": 8000,
             "bookmark_folder": "KMS Output",     # unified bookmark base (Inbox/Panop + Routster). Bruno 2026-06-18
+            "restrict_categories": [],            # if non-empty, ONLY these cat ids are saved+closed (e.g. ["articles","books","science_news"])
             "zotero_api_key": "",                 # Zotero Web API key
             "zotero_user_id": "",                 # Zotero numeric user ID
             "zotero_collection_key": "",          # optional: target collection key
@@ -126,7 +127,7 @@ def get_env():
             env = json.load(f)
         # Back-fill new keys if missing (upgrade path)
         changed = False
-        for k, v in [("bookmark_folder","KMS Output"),("zotero_api_key",""),("zotero_user_id",""),("zotero_collection_key",""),("close_tabs_after_save", False), ("require_manual_vetting_before_close", True), ("enable_autonomous_sweep", False), ("resolve_terminal_redirects", True), ("chrome_profile", "Default")]:
+        for k, v in [("bookmark_folder","KMS Output"),("restrict_categories", []),("zotero_api_key",""),("zotero_user_id",""),("zotero_collection_key",""),("close_tabs_after_save", False), ("require_manual_vetting_before_close", True), ("enable_autonomous_sweep", False), ("resolve_terminal_redirects", True), ("chrome_profile", "Default")]:
             if k not in env: env[k] = v; changed = True
         if changed: save_env(env)
         return env
@@ -1684,6 +1685,15 @@ def run_adb_sweep():
                         continue
                     url, matched_category, title, metadata, tab_id = result
 
+                    # ACTIVE RESTRICTION (Bruno 2026-06-18): when the routine is
+                    # limited to certain categories (e.g. Articles/Books/Science
+                    # News only), skip everything else entirely — don't save, and
+                    # the tab stays OPEN on the phone (never closed).
+                    _rc = _restricted_cat_ids()
+                    if _rc and (matched_category or {}).get("id", "").lower() not in _rc:
+                        sweep_status["skipped_restricted"] = sweep_status.get("skipped_restricted", 0) + 1
+                        continue
+
                     # Prefer canonical URL as the storage key (collapses m./www./tracking variants)
                     canon_url = canonicalize_url(url)
                     storage_url = canon_url or url
@@ -2347,6 +2357,23 @@ def f_now(background_tasks: BackgroundTasks):
     background_tasks.add_task(run_adb_sweep)
     return {"status": "fetching"}
 
+
+@app.post("/api/v1/restrict_categories")
+def set_restrict_categories(categories: str = ""):
+    """Limit the routine to certain categories (save+close ONLY these). Pass a
+    comma-separated list of cat ids, e.g. categories=articles,books,science_news.
+    Empty = no restriction (all categories). Bruno 2026-06-18."""
+    env = get_env()
+    cats = [c.strip().lower() for c in (categories or "").split(",") if c.strip()]
+    env["restrict_categories"] = cats
+    save_env(env)
+    return {"status": "ok", "restrict_categories": cats}
+
+
+@app.get("/api/v1/restrict_categories")
+def get_restrict_categories():
+    return {"restrict_categories": get_env().get("restrict_categories") or []}
+
 enrich_status = {"running": False, "total": 0, "done": 0, "updated": 0, "last_run": None, "cancel": False}
 
 def run_enrich():
@@ -2787,16 +2814,30 @@ def _load_drain_state():
 def _save_drain_state(s):
     save_json(_drain_state_file(), s)
 
+def _restricted_cat_ids():
+    """Category ids the routine may currently save+close (empty set = ALL).
+    Set via config 'restrict_categories' (the Inbox 'Articles/Books/Science News
+    only' button writes it). Bruno 2026-06-18: restrict to those three for now."""
+    try:
+        r = get_env().get("restrict_categories") or []
+        return {str(c).strip().lower() for c in r if str(c).strip()}
+    except Exception:
+        return set()
+
+
 def _safe_to_close(item):
     """HARD SAFETY GUARD. Refuses to close a tab unless:
         (1) it has a real category match (not 'uncategorized' / empty)
-        (2) AND the item has been backed up to BOTH Zotero and Chrome Bookmarks
+        (2) its category is within the ACTIVE restriction (if any)
+        (3) AND the item has been backed up to BOTH Zotero and Chrome Bookmarks
     No env flag, no future code path, can override this. A tab that does not
     pass this gate is left OPEN on the phone, no matter what."""
     if _manual_vetting_required(): return False
     if not item: return False
     cat_id = (item.get("cat_id") or "").strip().lower()
     if not cat_id or cat_id == "uncategorized": return False
+    _rc = _restricted_cat_ids()
+    if _rc and cat_id not in _rc: return False   # only close the allowed categories
     return bool(item.get("z_synced")) and bool(item.get("b_synced"))
 
 def _append_close_audit(entry):
