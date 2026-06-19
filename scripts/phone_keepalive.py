@@ -131,11 +131,38 @@ def _is_reachable(adb: Path, target: str) -> bool:
     return rc == 0
 
 
+def _usb_device(adb: Path) -> str | None:
+    """A USB-attached device id (serial, no ':' port) in 'device' state, if any."""
+    rc, out = _adb(adb, "devices", timeout=8)
+    for line in (out or "").splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1] == "device" and ":" not in parts[0]:
+            return parts[0]
+    return None
+
+
+def _usb_recover(adb: Path, target: str) -> bool:
+    """Wireless connect failed → the phone's `adb tcpip 5555` mode is off (reboot/
+    deep-sleep resets it). If a USB cable is now plugged in, re-enable tcpip and
+    reconnect — auto-healing without any manual command. Bruno 2026-06-18."""
+    dev = _usb_device(adb)
+    if not dev:
+        return False
+    _log("warn", "usb_recover_tcpip", dev=dev, target=target)
+    _adb(adb, "-s", dev, "tcpip", "5555", timeout=8)
+    time.sleep(2)
+    _adb(adb, "connect", target, timeout=8)
+    return _is_reachable(adb, target)
+
+
 def _ensure_connected(adb: Path, target: str) -> bool:
     if _is_reachable(adb, target):
         return True
     _adb(adb, "connect", target, timeout=8)
-    return _is_reachable(adb, target)
+    if _is_reachable(adb, target):
+        return True
+    # tcpip mode likely off after reboot/deep-sleep — heal via USB if present.
+    return _usb_recover(adb, target)
 
 
 def _assert_keepalive(adb: Path, target: str) -> dict:
