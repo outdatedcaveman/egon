@@ -1368,14 +1368,11 @@ def send_to_zotero(url, title, abstract, category_name, doi=None):
         # duplicate explosion the URL-only dedup let through. Bruno 2026-06-14.
         elif tkey and tkey in titlekey_set: hit = by_titlekey.get(tkey)
         if hit and hit.get("key"):
-            try:
-                _patch_zotero_item_if_richer(
-                    hit["key"],
-                    incoming_title=title, incoming_abstract=abstract,
-                    incoming_doi=doi, incoming_tag=category_name
-                )
-            except Exception:
-                pass
+            # Already in Zotero — return immediately. The old per-dup "upgrade"
+            # PATCH was a network call for EVERY duplicate; during a sweep of a
+            # mostly-already-saved tab set that is hundreds of (rate-limited)
+            # requests for marginal benefit, and was the sweep's real bottleneck.
+            # Field enrichment is the separate enrich pass's job. Bruno 2026-06-19.
             return True
 
         parent_folder_name = env.get("bookmark_folder", "Panop") or "Panop"
@@ -1579,8 +1576,19 @@ def run_adb_sweep():
 
         # ── PHASE 1: Pure string matching (no network, instant) ──────────────
         # Build list of (tab, cat, needs_body_fetch) for candidates only
+        import time as _t
+        _dbgf = os.path.join(OUTPUT_DIR(), "sweep_debug.log")
+        def _dbg(m):
+            try:
+                with open(_dbgf, "a", encoding="utf-8") as _f:
+                    _f.write(f"{_t.strftime('%H:%M:%S')} {m}\n")
+            except Exception:
+                pass
+        _dbg(f"=== PHASE1 start: {len(tabs)} tabs ===")
         candidates = []  # (tab, matched_cat_no_body_check, needs_fetch)
-        for tab in tabs:
+        for _idx, tab in enumerate(tabs):
+            if _idx % 50 == 0:
+                _dbg(f"P1 {_idx}/{len(tabs)} cands={len(candidates)} url={(tab.get('url') or '')[:90]}")
             url = tab.get("url", "")
             true_url = _resolve_terminal_tab_url(url, env)
             storage_probe = canonicalize_url(true_url) or true_url
@@ -1688,13 +1696,30 @@ def run_adb_sweep():
                 title = (metadata or {}).get("title") or tab.get("title", "") or "Untitled"
             return (terminal_url, matched_category, title, metadata or {}, tab.get("id"))
 
+        # Pre-warm the Zotero dedup cache ONCE before the pool. LOAD the persisted
+        # cache (instant) rather than walk the whole ~10k-item tree live — that walk
+        # is throttle-prone and was the real hang (Zotero rate-limits a heavily-used
+        # key). The sweep already dedups against LOCAL history (above); this is the
+        # secondary guard. A fresh full walk runs separately, off the hot path.
+        _dbg(f"=== PHASE1 done: {len(candidates)} candidates; loading zotero cache ===")
+        try:
+            _load_zotero_url_cache()
+            _dbg(f"zotero cache loaded: {len(_zotero_url_cache.get('urls') or [])} urls")
+        except Exception as _e:
+            _dbg(f"cache load error: {type(_e).__name__}")
+        _dbg("=== PHASE2 start: saving ===")
+
         # Run up to 8 tabs in parallel — enough throughput without hammering RAM/CPU
         WORKERS = 8
+        _done_ctr = [0]
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             futures = {pool.submit(process_tab, tab, cat, needs_fetch): (tab, cat)
                        for tab, cat, needs_fetch in candidates}
 
             for future in as_completed(futures):
+                _done_ctr[0] += 1
+                if _done_ctr[0] % 25 == 0:
+                    _dbg(f"P2 {_done_ctr[0]}/{len(candidates)} matched={sweep_status.get('tabs_matched')}")
                 try:
                     result = future.result()
                     if result is None:
