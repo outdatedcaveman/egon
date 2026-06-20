@@ -36,12 +36,22 @@ if sys.platform == "win32":
     _orig_run = _sp.run
 
     def _silent_run(*popenargs, **kwargs):
-        timeout = kwargs.get("timeout")
+        timeout = kwargs.pop("timeout", None)
         if timeout is not None:
+            check = kwargs.pop("check", False)
+            capture_output = kwargs.pop("capture_output", False)
+            if capture_output:
+                if kwargs.get("stdout") is not None or kwargs.get("stderr") is not None:
+                    raise ValueError("stdout and stderr arguments may not be used with capture_output.")
+                kwargs["stdout"] = _sp.PIPE
+                kwargs["stderr"] = _sp.PIPE
             with _sp.Popen(*popenargs, **kwargs) as process:
                 try:
                     stdout, stderr = process.communicate(timeout=timeout)
-                    return _sp.CompletedProcess(process.args, process.returncode, stdout, stderr)
+                    ret = _sp.CompletedProcess(process.args, process.returncode, stdout, stderr)
+                    if check and process.returncode != 0:
+                        raise _sp.CalledProcessError(process.returncode, process.args, output=stdout, stderr=stderr)
+                    return ret
                 except _sp.TimeoutExpired as exc:
                     try:
                         process.kill()

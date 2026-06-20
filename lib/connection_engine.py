@@ -186,29 +186,112 @@ def _semantic_connect(text: str, terms: list[str], limit: int) -> list[dict] | N
 
 def connect(text: str, limit: int = 18) -> dict[str, Any]:
     """The button. Give it what you're writing; get ranked connections from
-    your archives + the shared mind. Semantic (embedding) ranking when the
+    your archives + the shared mind. Hybrid (RRF fusion) ranking when semantic
     index is ready, lexical fallback otherwise; matched terms attached as 'why'."""
     text = (text or "").strip()
     if len(text) < 3:
         return {"status": "error", "error": "give me at least a few words"}
     terms = _salient_terms(text)
 
-    semantic = _semantic_connect(text, terms, limit)
+    # 1. Fetch semantic connections if ready
+    semantic = _semantic_connect(text, terms, limit=limit + 30)
+    
+    # 2. Fetch lexical connections (archives + memory)
+    lexical_archives = _archive_hits(terms, limit=limit + 30)
+    lexical_memories = _memory_hits(terms, limit=20)
+    lexical = sorted(lexical_archives + lexical_memories, key=lambda h: h["score"], reverse=True)
+
     if semantic is not None:
+        # Hybrid Fusion using Reciprocal Rank Fusion (RRF)
+        k = 60
+        unique_items = {}
+        
+        # Rank mapping for semantic (already sorted)
+        for rank, h in enumerate(semantic, 1):
+            url = h.get("url")
+            title = h.get("title")
+            dkey = (url or "").strip().lower() or title.strip().lower()
+            if dkey not in unique_items:
+                unique_items[dkey] = {
+                    "source": h.get("source"),
+                    "title": title,
+                    "snippet": h.get("snippet"),
+                    "url": url,
+                    "why": h.get("why", []),
+                    "semantic_rank": rank,
+                    "semantic_score": h.get("score", 0.0),
+                    "lexical_rank": None,
+                    "lexical_score": 0.0,
+                }
+
+        # Rank mapping for lexical (already sorted)
+        for rank, h in enumerate(lexical, 1):
+            url = h.get("url")
+            title = h.get("title")
+            dkey = (url or "").strip().lower() or title.strip().lower()
+            if dkey in unique_items:
+                item = unique_items[dkey]
+                item["lexical_rank"] = rank
+                item["lexical_score"] = h.get("score", 0.0)
+                # Merge and deduplicate the matched terms
+                item["why"] = list(dict.fromkeys(item["why"] + h.get("why", [])))
+            else:
+                unique_items[dkey] = {
+                    "source": h.get("source"),
+                    "title": title,
+                    "snippet": h.get("snippet"),
+                    "url": url,
+                    "why": h.get("why", []),
+                    "semantic_rank": None,
+                    "semantic_score": 0.0,
+                    "lexical_rank": rank,
+                    "lexical_score": h.get("score", 0.0),
+                }
+
+        # Compute RRF score
+        for item in unique_items.values():
+            r_sem = item["semantic_rank"]
+            r_lex = item["lexical_rank"]
+            score_sem = 1.0 / (k + r_sem) if r_sem is not None else 0.0
+            score_lex = 1.0 / (k + r_lex) if r_lex is not None else 0.0
+            item["score"] = round(score_sem + score_lex, 5)
+
+        # Sort combined list by RRF score descending
+        combined = sorted(unique_items.values(), key=lambda x: x["score"], reverse=True)
+        
+        # Apply soft source diversity filter (max 6 items per archive)
+        diversified = []
+        per_source = {}
+        for item in combined:
+            src = item.get("source") or "?"
+            if src != "mind-memory":
+                per_source[src] = per_source.get(src, 0) + 1
+                if per_source[src] > 6:
+                    continue
+            clean_item = {
+                "source": src,
+                "title": item["title"],
+                "snippet": item["snippet"],
+                "url": item["url"],
+                "score": item["score"],
+                "why": item["why"][:6],
+            }
+            diversified.append(clean_item)
+
         return {
             "status": "ok",
-            "mode": "semantic",
+            "mode": "hybrid",
             "terms": terms[:12],
-            "count": len(semantic),
-            "connections": semantic[:limit + 8],
+            "count": len(diversified),
+            "connections": diversified[:limit + 8],
         }
 
     # Lexical fallback (index still building, or no model).
     if not terms:
         return {"status": "ok", "mode": "lexical", "terms": [], "connections": [],
                 "note": "no salient terms found in input"}
-    connections = sorted(_archive_hits(terms, limit=limit) + _memory_hits(terms, limit=8),
-                         key=lambda h: h["score"], reverse=True)
+                
+    connections = sorted(lexical, key=lambda h: h["score"], reverse=True)
     return {
         "status": "ok",
         "mode": "lexical",

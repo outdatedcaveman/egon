@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
-ENV_PATH = Path(r"C:/Users/bruno/Claude Code/claude-meta/.env")
+ENV_PATH = ROOT.parent / "claude-meta" / ".env"   # sibling repo; no hardcoded user path
 
 _DEFAULTS = {
     "endpoint": "http://localhost:11434/v1",
@@ -106,7 +106,7 @@ def synthesize(text: str, connections: list[dict],
     items = []
     for i, c in enumerate(connections[:max_items], 1):
         items.append(f"{i}. [{c.get('source','?')}] {c.get('title','')}"
-                     + (f" — {c.get('snippet','')[:110]}" if c.get("snippet") else ""))
+                     + (f" — {c.get('snippet','')[:800]}" if c.get("snippet") else ""))
     if not items:
         return {"status": "error", "error": "no connections to synthesize"}
 

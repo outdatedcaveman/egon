@@ -228,7 +228,7 @@ def scan_and_reconcile_categories() -> dict[str, Any]:
     # 1. Scan Antigravity brain sessions
     brain_dir = Path.home() / ".gemini" / "antigravity" / "brain"
     if brain_dir.exists():
-        for path in brain_dir.rglob("*.md"):
+        for path in brain_dir.glob("categorical_*.md"):
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
                 categories.extend(parse_categories_from_markdown(text))
@@ -238,7 +238,9 @@ def scan_and_reconcile_categories() -> dict[str, Any]:
     scan_paths = list(ROOT.glob("*.md"))
     state_dir = ROOT / "state"
     if state_dir.exists():
-        scan_paths.extend(state_dir.rglob("*.md"))
+        scan_paths.extend(state_dir.glob("*.md"))
+        if (state_dir / "panop").exists():
+            scan_paths.extend((state_dir / "panop").glob("*.md"))
     docs_dir = ROOT / "docs"
     if docs_dir.exists():
         scan_paths.extend(docs_dir.rglob("*.md"))

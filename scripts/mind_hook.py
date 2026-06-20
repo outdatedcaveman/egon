@@ -306,6 +306,7 @@ def cmd_prompt() -> int:
         "budget_chars": 5500,
         "limit_activity": 8,
         "limit_memory": 8,
+        "agent": AGENT_NAME,
     })
     if not ctx or ctx.get("status") != "ok":
         ctx = _get("/context", {"project": project, "query": prompt[:200]})
@@ -446,9 +447,12 @@ CMDS = {"stop": cmd_stop, "prompt": cmd_prompt, "pretool": cmd_pretool, "tool": 
 
 
 def main() -> int:
+    global AGENT_NAME
     if len(sys.argv) < 2 or sys.argv[1] not in CMDS:
-        print("usage: mind_hook.py {stop|prompt|pretool|tool}", file=sys.stderr)
+        print("usage: mind_hook.py {stop|prompt|pretool|tool} [agent_name]", file=sys.stderr)
         return 2
+    if len(sys.argv) > 2:
+        AGENT_NAME = sys.argv[2]
     try:
         return CMDS[sys.argv[1]]()
     except Exception as e:

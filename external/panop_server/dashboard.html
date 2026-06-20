@@ -1,0 +1,1047 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Egon Mind Dashboard</title>
+    <!-- Modern Typography & Icons -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Outfit', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #09090b;
+            color: #fafafa;
+        }
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #18181b;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #3f3f46;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #52525b;
+        }
+        /* Glassmorphism utility */
+        .glass-card {
+            background: rgba(24, 24, 27, 0.65);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(63, 63, 70, 0.4);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+        .glow-green {
+            box-shadow: 0 0 25px rgba(16, 185, 129, 0.2);
+        }
+        .glow-indigo {
+            box-shadow: 0 0 25px rgba(99, 102, 241, 0.2);
+        }
+        /* Card flip / slide transitions */
+        .slide-in {
+            animation: slideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(12px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased">
+
+    <!-- Top Navigation Header -->
+    <header class="glass-card sticky top-0 z-50 border-b border-zinc-800/80 bg-zinc-950/80 px-6 py-4 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <span class="text-2xl">🛰️</span>
+            <div>
+                <h1 class="text-xl font-bold tracking-tight text-white flex items-center gap-2">
+                    Egon Mind Control Panel
+                </h1>
+                <p class="text-xs text-zinc-500 font-medium">Shared multi-agent operating engine</p>
+            </div>
+        </div>
+        <div class="flex items-center gap-4">
+            <div id="connection-badge" class="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                <span class="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                Mind API Online
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Dashboard Body -->
+    <main class="flex-1 max-w-7xl w-full mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+        
+        <!-- Left Column: Metrics & Scorecard (4 cols) -->
+        <section class="lg:col-span-4 flex flex-col gap-6">
+            <!-- Score Card panel -->
+            <div class="glass-card rounded-2xl p-6 flex flex-col items-center justify-center text-center relative overflow-hidden">
+                <div class="absolute -right-16 -top-16 h-36 w-36 rounded-full bg-indigo-500/10 blur-3xl"></div>
+                <h2 class="text-sm font-semibold tracking-wide uppercase text-zinc-400 self-start mb-4">Meta-Harness Health</h2>
+                <div class="relative flex items-center justify-center mb-4">
+                    <svg class="h-36 w-36 transform -rotate-90">
+                        <circle cx="72" cy="72" r="62" stroke="#27272a" stroke-width="12" fill="transparent" />
+                        <circle id="score-circle" cx="72" cy="72" r="62" stroke="url(#indigoGrad)" stroke-width="12" fill="transparent"
+                                stroke-dasharray="390" stroke-dashoffset="390" class="transition-all duration-1000 ease-out" />
+                        <defs>
+                            <linearGradient id="indigoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" stop-color="#818cf8" />
+                                <stop offset="100%" stop-color="#4f46e5" />
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                    <div class="absolute flex flex-col items-center justify-center">
+                        <span id="score-val" class="text-4xl font-extrabold tracking-tight text-white">0</span>
+                        <span id="grade-val" class="text-xs text-zinc-400 uppercase tracking-widest font-semibold mt-1">loading</span>
+                    </div>
+                </div>
+                <p class="text-xs text-zinc-400 mt-2 px-4 leading-relaxed">
+                    Overall compliance score based on token ROI, active leases, context coverage, and audit logs.
+                </p>
+            </div>
+
+            <!-- Detailed Metrics panel -->
+            <div class="glass-card rounded-2xl p-6 flex flex-col gap-4">
+                <h3 class="text-sm font-semibold text-zinc-400 mb-2 uppercase tracking-wider">Harness Coverage Indicators</h3>
+                
+                <!-- Indicators -->
+                <div class="space-y-4">
+                    <div>
+                        <div class="flex justify-between text-xs font-semibold mb-1 text-zinc-300">
+                            <span>Context Coverage</span>
+                            <span id="ctx-cov-val">0%</span>
+                        </div>
+                        <div class="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                            <div id="ctx-cov-bar" class="bg-indigo-500 h-1.5 rounded-full transition-all duration-700" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="flex justify-between text-xs font-semibold mb-1 text-zinc-300">
+                            <span>Context Broker v2 Adoption</span>
+                            <span id="v2-adopt-val">0%</span>
+                        </div>
+                        <div class="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                            <div id="v2-adopt-bar" class="bg-violet-500 h-1.5 rounded-full transition-all duration-700" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="flex justify-between text-xs font-semibold mb-1 text-zinc-300">
+                            <span>Durable Memory Coverage</span>
+                            <span id="mem-cov-val">0%</span>
+                        </div>
+                        <div class="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                            <div id="mem-cov-bar" class="bg-teal-500 h-1.5 rounded-full transition-all duration-700" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="flex justify-between text-xs font-semibold mb-1 text-zinc-300">
+                            <span>Token ROI Savings</span>
+                            <span id="token-roi-val">0%</span>
+                        </div>
+                        <div class="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                            <div id="token-roi-bar" class="bg-emerald-500 h-1.5 rounded-full transition-all duration-700" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Center Column: Spaced Repetition Card Deck (4 cols) -->
+        <section class="lg:col-span-4 flex flex-col gap-6">
+            <div class="glass-card rounded-2xl p-6 flex-1 flex flex-col justify-between min-h-[400px]">
+                <div class="flex justify-between items-center border-b border-zinc-800/80 pb-3 mb-4">
+                    <div class="flex gap-2">
+                        <button id="tab-memory" class="text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg bg-zinc-800 text-white border border-zinc-700/60" onclick="switchTab('memory')">Memory</button>
+                        <button id="tab-classifier" class="text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg text-zinc-400 hover:text-white" onclick="switchTab('classifier')">Classifier</button>
+                        <button id="tab-rag" class="text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg text-zinc-400 hover:text-white" onclick="switchTab('rag')">RAG Sandbox</button>
+                        <button id="tab-orchestrator" class="text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg text-zinc-400 hover:text-white" onclick="switchTab('orchestrator')">Orchestrator</button>
+                    </div>
+                    <span id="recall-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">Spaced SM-2</span>
+                </div>
+                
+                <!-- Memory Tab Content -->
+                <div id="panel-memory" class="flex-1 flex flex-col justify-between">
+                    <!-- Card Inner (Changes on State) -->
+                    <div class="flex-1 flex flex-col justify-center items-center text-center slide-in" id="card-stage">
+                        <div id="card-prompt-wrapper" class="w-full">
+                            <span class="text-zinc-600 font-semibold text-xs tracking-wider uppercase" id="card-kind">FACT</span>
+                            <h3 class="text-lg font-semibold text-white mt-2 leading-snug px-2" id="card-content">
+                                Loading next review concept...
+                            </h3>
+                        </div>
+                        <div id="card-answer-wrapper" class="w-full hidden mt-4 pt-4 border-t border-zinc-800/60 text-sm text-zinc-300 leading-relaxed max-h-[220px] overflow-y-auto text-left px-2">
+                            <!-- Answer markdown rendered here -->
+                        </div>
+                    </div>
+
+                    <!-- Card Controls -->
+                    <div class="border-t border-zinc-800/80 pt-4 mt-4">
+                        <button id="btn-show" class="w-full py-2.5 rounded-xl font-semibold bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white transition duration-200">
+                            Reveal Memory Details
+                        </button>
+                        <div id="btn-ratings" class="hidden flex flex-col gap-2">
+                            <p class="text-[10px] text-zinc-500 font-semibold uppercase tracking-wider text-center mb-1">Rate your retention (0-5)</p>
+                            <div class="grid grid-cols-6 gap-1">
+                                <button onclick="submitReview(0)" class="py-2 rounded-lg bg-zinc-800 hover:bg-red-500/20 hover:text-red-400 border border-zinc-700 text-xs font-semibold transition">0</button>
+                                <button onclick="submitReview(1)" class="py-2 rounded-lg bg-zinc-800 hover:bg-orange-500/20 hover:text-orange-400 border border-zinc-700 text-xs font-semibold transition">1</button>
+                                <button onclick="submitReview(2)" class="py-2 rounded-lg bg-zinc-800 hover:bg-amber-500/20 hover:text-amber-400 border border-zinc-700 text-xs font-semibold transition">2</button>
+                                <button onclick="submitReview(3)" class="py-2 rounded-lg bg-zinc-800 hover:bg-yellow-500/20 hover:text-yellow-400 border border-zinc-700 text-xs font-semibold transition">3</button>
+                                <button onclick="submitReview(4)" class="py-2 rounded-lg bg-zinc-800 hover:bg-emerald-500/20 hover:text-emerald-400 border border-zinc-700 text-xs font-semibold transition">4</button>
+                                <button onclick="submitReview(5)" class="py-2 rounded-lg bg-zinc-800 hover:bg-green-500/20 hover:text-green-400 border border-zinc-700 text-xs font-semibold transition">5</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Classifier Tab Content -->
+                <div id="panel-classifier" class="hidden flex-1 flex flex-col justify-between">
+                    <div class="flex-1 flex flex-col justify-center items-center text-center slide-in" id="classifier-stage">
+                        <div class="w-full">
+                            <span class="text-indigo-400 font-semibold text-xs tracking-wider uppercase" id="cls-suggest">k-NN SUGGESTION</span>
+                            <h3 class="text-sm font-semibold text-white mt-2 leading-snug px-2 line-clamp-3" id="cls-title">
+                                Loading next classification candidate...
+                            </h3>
+                            <a href="" target="_blank" rel="noopener" id="cls-url" class="text-xs text-indigo-400 hover:underline mt-2 truncate w-full px-4 block"></a>
+                        </div>
+                    </div>
+
+                    <!-- Category Buttons -->
+                    <div class="border-t border-zinc-800/80 pt-4 mt-4 flex flex-col gap-2">
+                        <p class="text-[10px] text-zinc-500 font-semibold uppercase tracking-wider text-center mb-1">Select correct category</p>
+                        <div class="grid grid-cols-2 gap-2">
+                            <button onclick="submitClassification('articles')" class="py-2 rounded-lg bg-zinc-800 hover:bg-indigo-500/20 hover:text-indigo-400 border border-zinc-700 text-xs font-semibold transition">articles (paper)</button>
+                            <button onclick="submitClassification('books')" class="py-2 rounded-lg bg-zinc-800 hover:bg-violet-500/20 hover:text-violet-400 border border-zinc-700 text-xs font-semibold transition">books</button>
+                            <button onclick="submitClassification('science_longform')" class="py-2 rounded-lg bg-zinc-800 hover:bg-teal-500/20 hover:text-teal-400 border border-zinc-700 text-xs font-semibold transition">science_longform</button>
+                            <button onclick="submitClassification('science_news')" class="py-2 rounded-lg bg-zinc-800 hover:bg-emerald-500/20 hover:text-emerald-400 border border-zinc-700 text-xs font-semibold transition">science_news</button>
+                        </div>
+                        <button onclick="submitClassification('reject')" class="w-full py-2.5 rounded-xl font-semibold bg-red-900/40 hover:bg-red-900/60 text-red-300 border border-red-800/60 transition duration-200 mt-1 text-xs">
+                            reject (discard)
+                        </button>
+                    </div>
+                </div>
+
+                <!-- RAG Sandbox Tab Content -->
+                <div id="panel-rag" class="hidden flex-1 flex flex-col justify-between">
+                    <div class="flex-1 flex flex-col justify-start slide-in" id="rag-stage">
+                        <span class="text-indigo-400 font-semibold text-xs tracking-wider uppercase mb-2">PERSONAL OPERATING RAG</span>
+                        <textarea id="rag-input" placeholder="Type a concept or paste your writing to search or synthesize..." 
+                                  class="w-full h-24 bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-indigo-500 transition resize-none"></textarea>
+                        
+                        <div class="flex gap-2 mt-2">
+                            <button id="btn-connect" onclick="runConnect()" class="flex-1 py-2 rounded-xl font-semibold bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white text-xs transition duration-200">
+                                Connect
+                            </button>
+                            <button id="btn-synthesize" onclick="runSynthesize()" class="flex-1 py-2 rounded-xl font-semibold bg-teal-600 hover:bg-teal-500 active:bg-teal-700 text-white text-xs transition duration-200">
+                                Synthesize
+                            </button>
+                        </div>
+                        
+                        <!-- RAG Output Area -->
+                        <div id="rag-output-wrapper" class="flex-1 mt-4 pt-4 border-t border-zinc-800/60 overflow-y-auto max-h-[190px] text-xs">
+                            <div id="rag-results" class="space-y-3 pr-1 text-zinc-400">
+                                <p class="italic text-zinc-500 text-center py-4">Enter query and click Connect or Synthesize.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Orchestrator Tab Content -->
+                <div id="panel-orchestrator" class="hidden flex-1 flex flex-col justify-between">
+                    <div class="flex-1 flex flex-col justify-start slide-in" id="orchestrator-stage">
+                        <span class="text-violet-400 font-semibold text-xs tracking-wider uppercase mb-2">AI TASK ORCHESTRATOR</span>
+                        <textarea id="orch-input" placeholder="Enter high-level command to decompose and delegate to AIs..." 
+                                  class="w-full h-20 bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-violet-500 transition resize-none mb-2"></textarea>
+                        
+                        <button id="btn-orch-dispatch" onclick="runOrchDispatch()" class="w-full py-2 rounded-xl font-semibold bg-violet-600 hover:bg-violet-500 active:bg-violet-700 text-white text-xs transition duration-200 shadow-lg shadow-violet-500/10">
+                            Decompose & Dispatch
+                        </button>
+                        
+                        <!-- Agent Status Grid -->
+                        <div class="mt-4 border-t border-zinc-800/60 pt-3">
+                            <span class="text-[10px] text-zinc-500 font-bold uppercase tracking-wider block mb-2">Agent Assignments</span>
+                            <div class="grid grid-cols-2 gap-2" id="orch-agents-grid">
+                                <div class="p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800/60 text-left">
+                                    <div class="flex justify-between items-center mb-1">
+                                        <span class="text-xs font-semibold text-zinc-300">claude-code</span>
+                                        <span class="text-[9px] text-zinc-500">idle</span>
+                                    </div>
+                                    <p class="text-[10px] text-zinc-600 italic">No assigned task</p>
+                                </div>
+                                <div class="p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800/60 text-left">
+                                    <div class="flex justify-between items-center mb-1">
+                                        <span class="text-xs font-semibold text-zinc-300">antigravity</span>
+                                        <span class="text-[9px] text-zinc-500">idle</span>
+                                    </div>
+                                    <p class="text-[10px] text-zinc-600 italic">No assigned task</p>
+                                </div>
+                                <div class="p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800/60 text-left">
+                                    <div class="flex justify-between items-center mb-1">
+                                        <span class="text-xs font-semibold text-zinc-300">hermes</span>
+                                        <span class="text-[9px] text-zinc-500">idle</span>
+                                    </div>
+                                    <p class="text-[10px] text-zinc-600 italic">No assigned task</p>
+                                </div>
+                                <div class="p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800/60 text-left">
+                                    <div class="flex justify-between items-center mb-1">
+                                        <span class="text-xs font-semibold text-zinc-300">codex</span>
+                                        <span class="text-[9px] text-zinc-500">idle</span>
+                                    </div>
+                                    <p class="text-[10px] text-zinc-600 italic">No assigned task</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Active tasks history/queue -->
+                        <div id="orch-queue-wrapper" class="flex-1 mt-3 pt-3 border-t border-zinc-800/60 overflow-y-auto max-h-[120px] text-[10px]">
+                            <div id="orch-tasks-queue" class="space-y-1.5 text-zinc-400">
+                                <p class="italic text-zinc-500 text-center py-2">No active tasks in queue.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Right Column: Active Sessions & Recent Logs (4 cols) -->
+        <section class="lg:col-span-4 flex flex-col gap-6">
+            <!-- Active Sessions List -->
+            <div class="glass-card rounded-2xl p-6 flex flex-col max-h-[220px]">
+                <h2 class="text-sm font-semibold tracking-wide uppercase text-zinc-400 border-b border-zinc-800/80 pb-4 mb-4">Active Sessions</h2>
+                <div class="flex-1 overflow-y-auto space-y-3 pr-1" id="sessions-container">
+                    <p class="text-xs text-zinc-500 italic">Querying active sessions...</p>
+                </div>
+            </div>
+
+            <!-- Active File Leases List -->
+            <div class="glass-card rounded-2xl p-6 flex flex-col max-h-[220px]">
+                <h2 class="text-sm font-semibold tracking-wide uppercase text-zinc-400 border-b border-zinc-800/80 pb-4 mb-4">Active File Leases</h2>
+                <div class="flex-1 overflow-y-auto space-y-3 pr-1" id="leases-container">
+                    <p class="text-xs text-zinc-500 italic">No active file leases.</p>
+                </div>
+            </div>
+
+            <!-- Recent Activity Stream -->
+            <div class="glass-card rounded-2xl p-6 flex-1 flex flex-col max-h-[300px]">
+                <h2 class="text-sm font-semibold tracking-wide uppercase text-zinc-400 border-b border-zinc-800/80 pb-4 mb-4">Recent Activity Logs</h2>
+                <div class="flex-1 overflow-y-auto space-y-4 pr-1" id="activity-container">
+                    <p class="text-xs text-zinc-500 italic">Querying activity stream...</p>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="text-center py-6 text-xs text-zinc-600 font-medium">
+        Egon Unified Mind v0.2 · 100% Local Sandbox
+    </footer>
+
+    <!-- App State Manager Script -->
+    <script>
+        let currentCard = null;
+
+        // Start polling Egon status
+        async function fetchScorecard() {
+            try {
+                const response = await fetch('/api/v1/mind/scorecard');
+                const data = await response.json();
+                if (data.status === 'ok') {
+                    updateScorecard(data);
+                }
+            } catch (err) {
+                console.error("Scorecard query failed:", err);
+            }
+        }
+
+        async function fetchEnforcementStatus() {
+            try {
+                const response = await fetch('/api/v1/mind/enforcement/status');
+                const data = await response.json();
+                if (data.status === 'ok') {
+                    updateActiveSessions(data.checks);
+                }
+            } catch (err) {
+                console.error("Enforcement query failed:", err);
+            }
+        }
+
+        async function fetchActivity() {
+            try {
+                const response = await fetch('/api/v1/mind/activity?limit=15');
+                const data = await response.json();
+                if (data.status === 'ok') {
+                    updateActivityStream(data.activity);
+                }
+            } catch (err) {
+                console.error("Activity stream query failed:", err);
+            }
+        }
+
+        // Spaced Repetition Card Deck logic
+        async function loadNextCard() {
+            const btnShow = document.getElementById('btn-show');
+            const btnRatings = document.getElementById('btn-ratings');
+            const answerWrapper = document.getElementById('card-answer-wrapper');
+            const cardStage = document.getElementById('card-stage');
+
+            btnShow.classList.remove('hidden');
+            btnRatings.classList.add('hidden');
+            answerWrapper.classList.add('hidden');
+
+            try {
+                const response = await fetch('/api/v1/mind/memory/recall');
+                const data = await response.json();
+                if (data.status === 'ok' && data.card) {
+                    currentCard = data.card;
+                    
+                    // Reset animation
+                    cardStage.classList.remove('slide-in');
+                    void cardStage.offsetWidth; // Trigger reflow
+                    cardStage.classList.add('slide-in');
+
+                    document.getElementById('card-kind').innerText = `${currentCard.kind} ${data.is_fallback ? '(Review Queue Empty)' : ''}`;
+                    document.getElementById('card-content').innerText = currentCard.content.split('\n')[0];
+                    
+                    // Simple markdown parsing for memory content body
+                    const contentBody = currentCard.content;
+                    answerWrapper.innerHTML = contentBody.replace(/\n/g, '<br>').replace(/`([^`]+)`/g, '<code class="bg-zinc-800 text-indigo-400 px-1 py-0.5 rounded font-mono text-xs">$1</code>');
+                } else {
+                    document.getElementById('card-kind').innerText = 'STATUS';
+                    document.getElementById('card-content').innerText = 'No memory cards found in database.';
+                    btnShow.classList.add('hidden');
+                }
+            } catch (err) {
+                console.error("Memory card recall failed:", err);
+            }
+        }
+
+        async function submitReview(rating) {
+            if (!currentCard) return;
+            try {
+                const response = await fetch(`/api/v1/mind/memory/${currentCard.id}/review`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rating: rating })
+                });
+                const resData = await response.json();
+                if (resData.status === 'ok') {
+                    loadNextCard();
+                    fetchScorecard(); // update indicators
+                }
+            } catch (err) {
+                console.error("Card review submission failed:", err);
+            }
+        }
+
+        // DOM Manipulations
+        function updateScorecard(data) {
+            const score = data.score;
+            document.getElementById('score-val').innerText = score;
+            document.getElementById('grade-val').innerText = data.grade;
+
+            // Update SVG circle offset: circumference = 390
+            const offset = 390 - (390 * score) / 100;
+            document.getElementById('score-circle').style.strokeDashoffset = offset;
+
+            // Detailed progress meters
+            const metrics = data.metrics;
+            
+            document.getElementById('ctx-cov-val').innerText = `${metrics.context_coverage}%`;
+            document.getElementById('ctx-cov-bar').style.width = `${metrics.context_coverage}%`;
+            
+            document.getElementById('v2-adopt-val').innerText = `${metrics.v2_context_adoption}%`;
+            document.getElementById('v2-adopt-bar').style.width = `${metrics.v2_context_adoption}%`;
+            
+            document.getElementById('mem-cov-val').innerText = `${metrics.durable_memory_coverage}%`;
+            document.getElementById('mem-cov-bar').style.width = `${metrics.durable_memory_coverage}%`;
+            
+            document.getElementById('token-roi-val').innerText = `${metrics.estimated_token_roi}%`;
+            document.getElementById('token-roi-bar').style.width = `${metrics.estimated_token_roi}%`;
+        }
+
+        function updateActiveSessions(checks) {
+            const container = document.getElementById('sessions-container');
+            container.innerHTML = '';
+            
+            // Query Egon active sessions directly
+            fetch('/api/v1/mind/stats')
+                .then(r => r.json())
+                .then(stats => {
+                    if (stats.status === 'ok') {
+                        fetchOpenSessionsList();
+                    }
+                });
+        }
+
+        async function fetchOpenSessionsList() {
+            const container = document.getElementById('sessions-container');
+            try {
+                const response = await fetch('/api/v1/mind/activity');
+                const data = await response.json();
+                if (data.status === 'ok') {
+                    // Extract active unique session objects
+                    const uniqueSessionsMap = new Map();
+                    data.activity.forEach(a => {
+                        if (uniqueSessionsMap.size < 5) {
+                            uniqueSessionsMap.set(a.session_id, {
+                                id: a.session_id,
+                                agent: a.agent_name || a.agent || 'Agent',
+                                project: a.project_slug || a.project || 'shared',
+                                age_m: Math.round((Date.now() / 1000 - a.ts) / 60)
+                            });
+                        }
+                    });
+
+                    if (uniqueSessionsMap.size === 0) {
+                        container.innerHTML = '<p class="text-xs text-zinc-500 italic">No active sessions detected.</p>';
+                        return;
+                    }
+
+                    container.innerHTML = '';
+                    uniqueSessionsMap.forEach(s => {
+                        const item = document.createElement('div');
+                        item.className = 'flex items-center justify-between p-3 rounded-xl bg-zinc-900 border border-zinc-800/60';
+                        item.innerHTML = `
+                            <div class="flex items-center gap-3">
+                                <span class="text-lg">🤖</span>
+                                <div>
+                                    <h4 class="text-xs font-semibold text-white">${s.agent}</h4>
+                                    <p class="text-[10px] text-zinc-500">project: <span class="text-indigo-400 font-semibold">${s.project}</span></p>
+                                </div>
+                            </div>
+                            <span class="text-[10px] text-zinc-500 font-medium">${s.age_m > 60 ? Math.round(s.age_m/60) + 'h' : s.age_m + 'm'} ago</span>
+                        `;
+                        container.appendChild(item);
+                    });
+                }
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        function updateActivityStream(activities) {
+            const container = document.getElementById('activity-container');
+            if (!activities || activities.length === 0) {
+                container.innerHTML = '<p class="text-xs text-zinc-500 italic">No recent logs found.</p>';
+                return;
+            }
+            container.innerHTML = '';
+            activities.slice(0, 7).forEach(a => {
+                const item = document.createElement('div');
+                item.className = 'flex gap-3 text-xs leading-relaxed';
+                
+                let icon = '⚡';
+                if (a.kind === 'tool_use') icon = '🛠️';
+                if (a.kind === 'user') icon = '👤';
+                if (a.kind === 'assistant') icon = '🤖';
+                if (a.kind === 'memory') icon = '🧠';
+
+                const summary = a.payload?.text_preview || a.payload?.content_preview || JSON.stringify(a.payload).slice(0, 100);
+                
+                item.innerHTML = `
+                    <span class="text-sm shrink-0">${icon}</span>
+                    <div class="flex-1 border-b border-zinc-900 pb-2.5">
+                        <div class="flex justify-between mb-0.5 text-zinc-400">
+                            <span class="font-semibold text-zinc-300">${a.agent_name || 'body'} <span class="text-zinc-600 font-medium">(${a.kind})</span></span>
+                            <span class="text-[10px] text-zinc-600">${new Date(a.ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                        </div>
+                        <p class="text-zinc-500 line-clamp-2">${summary}</p>
+                    </div>
+                `;
+                container.appendChild(item);
+            });
+        }
+
+        // Wire Button Click for answer reveal
+        document.getElementById('btn-show').addEventListener('click', () => {
+            document.getElementById('btn-show').classList.add('hidden');
+            document.getElementById('btn-ratings').classList.remove('hidden');
+            document.getElementById('card-answer-wrapper').classList.remove('hidden');
+        });
+
+        // Tab Switching Logic
+        function switchTab(tab) {
+            const tabMemory = document.getElementById('tab-memory');
+            const tabClassifier = document.getElementById('tab-classifier');
+            const tabRag = document.getElementById('tab-rag');
+            const tabOrchestrator = document.getElementById('tab-orchestrator');
+            const panelMemory = document.getElementById('panel-memory');
+            const panelClassifier = document.getElementById('panel-classifier');
+            const panelRag = document.getElementById('panel-rag');
+            const panelOrchestrator = document.getElementById('panel-orchestrator');
+            const recallBadge = document.getElementById('recall-badge');
+
+            // Reset active classes
+            [tabMemory, tabClassifier, tabRag, tabOrchestrator].forEach(t => {
+                if (t) t.className = 'text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg text-zinc-400 hover:text-white';
+            });
+            [panelMemory, panelClassifier, panelRag, panelOrchestrator].forEach(p => {
+                if (p) p.classList.add('hidden');
+            });
+
+            if (tab === 'memory') {
+                tabMemory.className = 'text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg bg-zinc-800 text-white border border-zinc-700/60';
+                panelMemory.classList.remove('hidden');
+                recallBadge.innerText = 'Spaced SM-2';
+                recallBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20';
+            } else if (tab === 'classifier') {
+                tabClassifier.className = 'text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg bg-zinc-800 text-white border border-zinc-700/60';
+                panelClassifier.classList.remove('hidden');
+                recallBadge.innerText = 'KMS Feedback';
+                recallBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20';
+                fetchLowConf();
+            } else if (tab === 'rag') {
+                tabRag.className = 'text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg bg-zinc-800 text-white border border-zinc-700/60';
+                panelRag.classList.remove('hidden');
+                recallBadge.innerText = 'RAG Sandbox';
+                recallBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-teal-500/10 text-teal-400 border border-teal-500/20';
+            } else if (tab === 'orchestrator') {
+                tabOrchestrator.className = 'text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg bg-zinc-800 text-white border border-zinc-700/60';
+                panelOrchestrator.classList.remove('hidden');
+                recallBadge.innerText = 'Orchestrator';
+                recallBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-violet-500/10 text-violet-400 border border-violet-500/20';
+                fetchOrchStatus();
+            }
+        }
+
+        // Classifier low confidence review
+        let currentLowConf = null;
+
+        async function fetchLowConf() {
+            try {
+                const response = await fetch('/api/v1/classifier/lowconf');
+                const data = await response.json();
+                const clsStage = document.getElementById('classifier-stage');
+                if (data.status === 'ok' && data.candidates && data.candidates.length > 0) {
+                    currentLowConf = data.candidates[0];
+                    
+                    // Reset animation
+                    clsStage.classList.remove('slide-in');
+                    void clsStage.offsetWidth; // Trigger reflow
+                    clsStage.classList.add('slide-in');
+
+                    document.getElementById('cls-suggest').innerText = `k-NN SUGGESTION: ${currentLowConf.category} (${Math.round((currentLowConf.confidence || 0) * 100)}%)`;
+                    document.getElementById('cls-title').innerText = currentLowConf.title || 'No Title';
+                    const link = document.getElementById('cls-url');
+                    link.href = currentLowConf.url;
+                    link.innerText = currentLowConf.url;
+                    link.classList.remove('hidden');
+                } else {
+                    currentLowConf = null;
+                    document.getElementById('cls-suggest').innerText = 'COMPLETE';
+                    document.getElementById('cls-title').innerText = 'No low-confidence candidates to review!';
+                    const link = document.getElementById('cls-url');
+                    link.href = '#';
+                    link.innerText = '';
+                    link.classList.add('hidden');
+                }
+            } catch (err) {
+                console.error("Classifier lowconf query failed:", err);
+            }
+        }
+
+        async function submitClassification(category) {
+            if (!currentLowConf) return;
+            try {
+                const response = await fetch('/api/v1/classifier/review', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        url: currentLowConf.url,
+                        title: currentLowConf.title || '',
+                        category: category
+                    })
+                });
+                const resData = await response.json();
+                if (resData.status === 'ok') {
+                    fetchLowConf();
+                }
+            } catch (err) {
+                console.error("Classification review submission failed:", err);
+            }
+        }
+
+        // Active File Leases Logic
+        async function fetchFileLeases() {
+            try {
+                const response = await fetch('/api/v1/mind/files/leases');
+                const data = await response.json();
+                if (data.status === 'ok') {
+                    updateFileLeases(data.leases);
+                }
+            } catch (err) {
+                console.error("Leases query failed:", err);
+            }
+        }
+
+        function updateFileLeases(leases) {
+            const container = document.getElementById('leases-container');
+            if (!leases || leases.length === 0) {
+                container.innerHTML = '<p class="text-xs text-zinc-500 italic">No active file leases.</p>';
+                return;
+            }
+            container.innerHTML = '';
+            leases.forEach(l => {
+                const item = document.createElement('div');
+                item.className = 'flex items-center justify-between p-3 rounded-xl bg-zinc-900 border border-zinc-800/60 text-xs';
+                
+                // Show short filename and truncate path in hover
+                const pathParts = l.path.split('/');
+                const filename = pathParts[pathParts.length - 1];
+                
+                item.innerHTML = `
+                    <div class="flex-1 min-w-0 pr-2">
+                        <h4 class="font-semibold text-white truncate" title="${l.path}">${filename}</h4>
+                        <p class="text-[10px] text-zinc-500 truncate">agent: <span class="text-indigo-400 font-semibold">${l.agent_name || 'unknown'}</span> · project: <span class="text-teal-400 font-semibold">${l.project_slug || 'shared'}</span></p>
+                    </div>
+                    <span class="text-[10px] text-zinc-500 font-medium shrink-0">${l.expires_in}s left</span>
+                `;
+                container.appendChild(item);
+            });
+        }
+
+        // RAG Sandbox Handlers
+        async function runConnect() {
+            const text = document.getElementById('rag-input').value.trim();
+            const resultsDiv = document.getElementById('rag-results');
+            if (!text) {
+                resultsDiv.innerHTML = '<p class="text-zinc-500 italic text-center py-4">Please enter a query.</p>';
+                return;
+            }
+            resultsDiv.innerHTML = '<p class="text-zinc-500 italic text-center py-4">Searching hybrid index...</p>';
+            try {
+                const response = await fetch('/api/v1/mind/connect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: text, limit: 6 })
+                });
+                const data = await response.json();
+                if (data.status === 'ok') {
+                    renderConnections(data.connections);
+                } else {
+                    resultsDiv.innerHTML = `<p class="text-red-400 py-2">Error: ${data.error || 'unknown'}</p>`;
+                }
+            } catch (err) {
+                resultsDiv.innerHTML = `<p class="text-red-400 py-2">Failed: ${err.message}</p>`;
+            }
+        }
+
+        async function runSynthesize() {
+            const text = document.getElementById('rag-input').value.trim();
+            const resultsDiv = document.getElementById('rag-results');
+            if (!text) {
+                resultsDiv.innerHTML = '<p class="text-zinc-500 italic text-center py-4">Please enter a query.</p>';
+                return;
+            }
+            resultsDiv.innerHTML = '<p class="text-zinc-500 italic text-center py-4">Running local LLM synthesis...</p>';
+            try {
+                const response = await fetch('/api/v1/mind/synthesize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: text, limit: 6 })
+                });
+                const data = await response.json();
+                if (data.status === 'ok') {
+                    renderSynthesis(data);
+                } else {
+                    resultsDiv.innerHTML = `<p class="text-red-400 py-2">Error: ${data.error || 'unknown'}</p>`;
+                }
+            } catch (err) {
+                resultsDiv.innerHTML = `<p class="text-red-400 py-2">Failed: ${err.message}</p>`;
+            }
+        }
+
+        function renderConnections(connections) {
+            const div = document.getElementById('rag-results');
+            if (!connections || connections.length === 0) {
+                div.innerHTML = '<p class="text-zinc-500 italic text-center py-4">No connections found.</p>';
+                return;
+            }
+            div.innerHTML = '';
+            connections.forEach((c) => {
+                const item = document.createElement('div');
+                item.className = 'p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800/40 hover:border-zinc-700/60 transition text-left mt-2';
+                
+                let sourceIcon = '📄';
+                if (c.source === 'zotero') sourceIcon = '📚';
+                if (c.source === 'notion_workspace') sourceIcon = '📝';
+                if (c.source === 'chrome_bookmarks') sourceIcon = '🔖';
+                if (c.source === 'mind-memory') sourceIcon = '🧠';
+                if (c.source === 'files') sourceIcon = '📁';
+                
+                const titleText = c.title || 'Untitled';
+                const snippetText = c.snippet ? c.snippet.slice(0, 300) + (c.snippet.length > 300 ? '...' : '') : '';
+                const whyText = c.why && c.why.length > 0 ? `<div class="mt-1.5 flex flex-wrap gap-1"><span class="text-[9px] text-zinc-500 self-center">matched:</span> ${c.why.map(w => `<span class="bg-indigo-500/10 text-indigo-400 px-1 py-0.5 rounded text-[9px] font-mono">${w}</span>`).join('')}</div>` : '';
+                const scoreText = c.score ? `<span class="text-[9px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded font-mono">score: ${c.score}</span>` : '';
+                const linkHref = c.url ? `<a href="${c.url}" target="_blank" class="text-indigo-400 hover:text-indigo-300 transition font-medium">${titleText}</a>` : `<span class="text-zinc-300">${titleText}</span>`;
+                
+                item.innerHTML = `
+                    <div class="flex justify-between items-start gap-2 mb-1">
+                        <div class="flex items-center gap-1.5 min-w-0">
+                            <span class="shrink-0 text-xs">${sourceIcon}</span>
+                            <div class="text-[11px] truncate font-semibold">${linkHref}</div>
+                        </div>
+                        ${scoreText}
+                    </div>
+                    <p class="text-[10px] text-zinc-500 leading-relaxed">${snippetText}</p>
+                    ${whyText}
+                `;
+                div.appendChild(item);
+            });
+        }
+
+        function renderSynthesis(data) {
+            const div = document.getElementById('rag-results');
+            div.innerHTML = '';
+            
+            const syn = data.synthesis;
+            let insightText = '';
+            if (syn && syn.status === 'ok') {
+                insightText = syn.insight || 'No insight returned.';
+            } else {
+                insightText = syn && syn.error ? `Synthesis unavailable: ${syn.error}` : 'Local LLM returned unavailable.';
+            }
+            
+            const formattedInsight = insightText
+                .replace(/\n/g, '<br>')
+                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+                .replace(/`([^`]+)`/g, '<code class="bg-zinc-800 text-teal-400 px-1 py-0.5 rounded font-mono text-[10px]">$1</code>');
+
+            const insightCard = document.createElement('div');
+            insightCard.className = 'p-3 rounded-xl bg-teal-500/5 border border-teal-500/20 text-[11px] text-zinc-300 leading-relaxed mb-4 text-left';
+            insightCard.innerHTML = `
+                <div class="font-bold text-teal-400 mb-1 flex items-center gap-1.5">
+                    <span>🧠</span> Local LLM Synthesis Insight
+                </div>
+                <div>${formattedInsight}</div>
+            `;
+            div.appendChild(insightCard);
+
+            const connectionsHeader = document.createElement('div');
+            connectionsHeader.className = 'text-[10px] text-zinc-500 font-bold uppercase tracking-wider mb-2 text-left';
+            connectionsHeader.innerText = 'Supporting Connection Sources';
+            div.appendChild(connectionsHeader);
+            
+            const connWrapper = document.createElement('div');
+            connWrapper.className = 'space-y-3';
+            div.appendChild(connWrapper);
+            
+            if (!data.connections || data.connections.length === 0) {
+                const p = document.createElement('p');
+                p.className = 'text-zinc-500 italic text-center py-2';
+                p.innerText = 'No supporting connections found.';
+                connWrapper.appendChild(p);
+                return;
+            }
+            data.connections.forEach((c) => {
+                const item = document.createElement('div');
+                item.className = 'p-2.5 rounded-xl bg-zinc-900/40 border border-zinc-800/40 text-[10px] text-left';
+                
+                let sourceIcon = '📄';
+                if (c.source === 'zotero') sourceIcon = '📚';
+                if (c.source === 'notion_workspace') sourceIcon = '📝';
+                if (c.source === 'chrome_bookmarks') sourceIcon = '🔖';
+                if (c.source === 'mind-memory') sourceIcon = '🧠';
+                if (c.source === 'files') sourceIcon = '📁';
+                
+                const titleText = c.title || 'Untitled';
+                const linkHref = c.url ? `<a href="${c.url}" target="_blank" class="text-indigo-400 hover:text-indigo-300 transition font-medium">${titleText}</a>` : `<span class="text-zinc-300">${titleText}</span>`;
+                const snippetText = c.snippet ? c.snippet.slice(0, 180) + (c.snippet.length > 180 ? '...' : '') : '';
+                
+                item.innerHTML = `
+                    <div class="flex items-center gap-1.5 mb-1">
+                        <span class="shrink-0">${sourceIcon}</span>
+                        <div class="font-semibold truncate">${linkHref}</div>
+                    </div>
+                    <p class="text-zinc-500 leading-normal">${snippetText}</p>
+                `;
+                connWrapper.appendChild(item);
+            });
+        }
+
+        // Orchestrator Logic
+        async function fetchOrchStatus() {
+            try {
+                const response = await fetch('/api/v1/mind/orchestrator/status');
+                const data = await response.json();
+                if (data.status === 'ok') {
+                    updateOrchUI(data.tasks);
+                }
+            } catch (err) {
+                console.error("Orchestrator status query failed:", err);
+            }
+        }
+
+        async function runOrchDispatch() {
+            const prompt = document.getElementById('orch-input').value.trim();
+            const btn = document.getElementById('btn-orch-dispatch');
+            if (!prompt) return;
+
+            btn.disabled = true;
+            btn.innerText = 'Decomposing & Dispatching...';
+            btn.className = 'w-full py-2 rounded-xl font-semibold bg-violet-850 text-violet-400 text-xs transition cursor-not-allowed';
+
+            try {
+                const response = await fetch('/api/v1/mind/orchestrator/dispatch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: prompt })
+                });
+                const data = await response.json();
+                if (data.status === 'ok') {
+                    document.getElementById('orch-input').value = '';
+                    fetchOrchStatus();
+                } else {
+                    alert('Dispatch failed: ' + (data.error || 'unknown'));
+                }
+            } catch (err) {
+                alert('Dispatch failed: ' + err.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'Decompose & Dispatch';
+                btn.className = 'w-full py-2 rounded-xl font-semibold bg-violet-600 hover:bg-violet-500 active:bg-violet-700 text-white text-xs transition duration-200 shadow-lg shadow-violet-500/10';
+            }
+        }
+
+        async function completeOrchTask(taskId) {
+            try {
+                const response = await fetch('/api/v1/mind/orchestrator/complete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ task_id: taskId, status: 'completed' })
+                });
+                const data = await response.json();
+                if (data.status === 'ok') {
+                    fetchOrchStatus();
+                }
+            } catch (err) {
+                console.error("Complete task failed:", err);
+            }
+        }
+
+        function updateOrchUI(tasks) {
+            const agentStatus = {
+                'claude-code': null,
+                'antigravity': null,
+                'hermes': null,
+                'codex': null
+            };
+
+            tasks.forEach(t => {
+                const agent = t.agent_name.toLowerCase();
+                if (agent in agentStatus && agentStatus[agent] === null) {
+                    agentStatus[agent] = t;
+                }
+            });
+
+            const agents = ['claude-code', 'antigravity', 'hermes', 'codex'];
+            const grid = document.getElementById('orch-agents-grid');
+            grid.innerHTML = '';
+
+            agents.forEach(name => {
+                const t = agentStatus[name];
+                let status = 'idle';
+                let desc = 'No assigned task';
+                let statusClass = 'text-zinc-500';
+                let cardClass = 'bg-zinc-900/60 border-zinc-800/60';
+                let actionBtn = '';
+
+                if (t) {
+                    status = t.status;
+                    desc = t.sub_task_desc;
+                    if (status === 'pending') {
+                        statusClass = 'text-amber-400 font-semibold';
+                        cardClass = 'bg-amber-500/5 border-amber-500/20';
+                    } else if (status === 'assigned') {
+                        statusClass = 'text-indigo-400 font-semibold animate-pulse';
+                        cardClass = 'bg-indigo-500/5 border-indigo-500/20';
+                    } else if (status === 'completed') {
+                        statusClass = 'text-emerald-400 font-semibold';
+                        cardClass = 'bg-emerald-500/5 border-emerald-500/20';
+                    } else if (status === 'failed') {
+                        statusClass = 'text-red-400 font-semibold';
+                        cardClass = 'bg-red-500/5 border-red-500/20';
+                    }
+
+                    if (status === 'pending' || status === 'assigned') {
+                        actionBtn = `<button onclick="completeOrchTask(${t.id})" class="text-[9px] bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-1 py-0.5 rounded transition">Resolve</button>`;
+                    }
+                }
+
+                const card = document.createElement('div');
+                card.className = `p-2.5 rounded-xl border text-left flex flex-col justify-between min-h-[75px] ${cardClass}`;
+                card.innerHTML = `
+                    <div>
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="text-xs font-semibold text-zinc-200">${name}</span>
+                            <span class="text-[9px] uppercase tracking-wider ${statusClass}">${status}</span>
+                        </div>
+                        <p class="text-[10px] text-zinc-400 line-clamp-3" title="${desc}">${desc}</p>
+                    </div>
+                    ${actionBtn ? `<div class="mt-1.5 flex justify-end">${actionBtn}</div>` : ''}
+                `;
+                grid.appendChild(card);
+            });
+
+            const queueList = document.getElementById('orch-tasks-queue');
+            const activeTasks = tasks.filter(t => t.status === 'pending' || t.status === 'assigned');
+            if (activeTasks.length === 0) {
+                queueList.innerHTML = '<p class="italic text-zinc-500 text-center py-2">No active tasks in queue.</p>';
+                return;
+            }
+
+            queueList.innerHTML = '';
+            activeTasks.forEach(t => {
+                const item = document.createElement('div');
+                item.className = 'flex items-center justify-between p-2 rounded-lg bg-zinc-900 border border-zinc-800/40 mt-1';
+                item.innerHTML = `
+                    <div class="truncate mr-2 flex-1">
+                        <span class="font-semibold text-zinc-300">[${t.agent_name}]</span>
+                        <span class="text-zinc-400 text-[10px]" title="${t.sub_task_desc}">${t.sub_task_desc}</span>
+                    </div>
+                    <button onclick="completeOrchTask(${t.id})" class="text-[9px] bg-zinc-800 hover:bg-zinc-700 hover:text-emerald-400 text-zinc-400 px-1.5 py-0.5 rounded shrink-0 transition">Done</button>
+                `;
+                queueList.appendChild(item);
+            });
+        }
+
+        // Initialize Page Data
+        fetchScorecard();
+        fetchEnforcementStatus();
+        fetchActivity();
+        fetchFileLeases();
+        loadNextCard();
+        fetchOrchStatus();
+
+        // Refresh loop
+        setInterval(() => {
+            fetchScorecard();
+            fetchEnforcementStatus();
+            fetchActivity();
+            fetchFileLeases();
+            fetchOrchStatus();
+        }, 15000);
+    </script>
+</body>
+</html>

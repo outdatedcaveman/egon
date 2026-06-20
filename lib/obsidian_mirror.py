@@ -205,7 +205,20 @@ def mirror_all(sources: list[str] | None = None) -> dict:
     for source, items in _mind_entities().items():
         results[source] = mirror_source(source, {"items": items})
 
-    total = sum(r.get("written", 0) for r in results.values())
+    # 4) unified resources (Option B)
+    try:
+        from lib.unified_mirror import run_unified_mirror
+        unified_res = run_unified_mirror()
+        results["unified_resources"] = {
+            "status": "ok",
+            "written": unified_res.get("obsidian_written", 0),
+            "groups_found": unified_res.get("groups_found", 0),
+            "notion_result": unified_res.get("notion_result")
+        }
+    except Exception as e:
+        results["unified_resources"] = {"status": "error", "error": str(e)[:80]}
+
+    total = sum(r.get("written", 0) for r in results.values() if isinstance(r, dict))
     return {"status": "ok", "total_written": total, "by_source": results}
 
 

@@ -21,6 +21,7 @@ from egon_app.pages import (
 # Nav definition: (slug, icon-char, label, is_ledger_emphasis)
 NAV = [
     ("home",       "🏠", "Home",           False),
+    ("orchestrator", "🪄", "Orchestrator",  False),
     ("connect",    "✨", "Connect & Search", False),
     ("inbox",      "📥", "Inbox",          False),
     ("artifacts",  "🗂", "Artifacts",      False),
@@ -61,6 +62,11 @@ def _databases_page():
 def _persona_page():
     from egon_app.pages.persona import PersonaPage
     return PersonaPage()
+
+
+def _orchestrator_page():
+    from egon_app.pages.orchestrator import OrchestratorPage
+    return OrchestratorPage()
 
 
 class MainWindow(QMainWindow):
@@ -243,6 +249,7 @@ class MainWindow(QMainWindow):
         # renders a source-card grid from data.last_pass().
         self._page_classes = {
             "home":       HomePage,
+            "orchestrator": _orchestrator_page,
             "inbox":      InboxPage,
             "navigation": NavigationPage,
             "ledger":     LedgerPage,
