@@ -80,8 +80,53 @@ def _embed(texts: list[str]) -> np.ndarray | None:
 
 
 # ── corpus ───────────────────────────────────────────────────────────────────
+def chunk_text(text: str, max_chars: int = 900, overlap_chars: int = 150) -> list[str]:
+    """Splits text into chunks of max_chars with overlap_chars overlap, split on space/paragraph."""
+    if not text:
+        return []
+    text = text.strip()
+    if len(text) <= max_chars:
+        return [text]
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + max_chars
+        if end >= len(text):
+            chunks.append(text[start:].strip())
+            break
+        # Try to find a nice place to split (newline or space) within the last 150 characters of the chunk
+        split_pos = text.rfind("\n", start + max_chars - 150, end)
+        if split_pos == -1 or split_pos <= start:
+            split_pos = text.rfind(" ", start + max_chars - 150, end)
+        if split_pos != -1 and split_pos > start:
+            end = split_pos
+        chunks.append(text[start:end].strip())
+        start = end - overlap_chars
+        if start >= end:  # Prevent infinite loops if overlap is misconfigured
+            start = end
+    return [c for c in chunks if c]
+
+
+def _item_full_text(it: dict, source: str) -> str:
+    """Extracts rich text fields from a snapshot item for full text RAG."""
+    parts = []
+    title = it.get("title") or it.get("name") or ""
+    if title:
+        parts.append(title)
+    for k in ("abstract", "content", "summary", "snippet", "subtitle", "description", "body"):
+        val = it.get(k)
+        if val and isinstance(val, str) and val.strip():
+            parts.append(val.strip())
+    for k in ("folder", "authors", "creator", "journal"):
+        val = it.get(k)
+        if val:
+            parts.append(f"{k}: {val}")
+    return "\n".join(parts)
+
+
+# ── corpus ───────────────────────────────────────────────────────────────────
 def _archive_items() -> list[dict]:
-    """Every snapshot item across all sources, as connect-shaped dicts."""
+    """Every snapshot item across all sources, split into chunks if long."""
     from lib import cross_search
     out = []
     for source in cross_search._all_sources():
@@ -94,11 +139,34 @@ def _archive_items() -> list[dict]:
                 continue
             url = cross_search.pretty_url(it)
             sub = cross_search.pretty_subline(it, source)
-            uid = "arc:" + hashlib.md5(
+            parent_uid = "arc:" + hashlib.md5(
                 ((url or "") + "|" + title).encode("utf-8", "ignore")).hexdigest()
-            out.append({"uid": uid, "source": source, "title": title[:200],
-                        "url": url, "snippet": sub[:200],
-                        "text": (title + " " + sub)[:_MAX_TEXT]})
+            
+            # Extract full text content
+            full_text = _item_full_text(it, source)
+            chunks = chunk_text(full_text, max_chars=900, overlap_chars=150)
+            
+            if len(chunks) <= 1:
+                # Keep it simple if it's small (or empty)
+                snippet_text = sub if sub else (full_text[:200] if full_text else "")
+                out.append({
+                    "uid": parent_uid,
+                    "source": source,
+                    "title": title[:200],
+                    "url": url,
+                    "snippet": snippet_text[:200],
+                    "text": (title + " " + (snippet_text or ""))[:_MAX_TEXT]
+                })
+            else:
+                for idx, chunk in enumerate(chunks):
+                    out.append({
+                        "uid": f"{parent_uid}:c{idx}",
+                        "source": source,
+                        "title": f"{title[:170]} (Part {idx + 1})",
+                        "url": url,
+                        "snippet": chunk,
+                        "text": chunk
+                    })
     return out
 
 
@@ -118,22 +186,37 @@ def _memory_items() -> list[dict]:
         content = (r["content"] or "").strip()
         if not content:
             continue
-        out.append({
-            "uid": f"mem:{r['id']}",
-            "source": "mind-memory",
-            "title": f"memory {r['id']} [{r['kind']}]",
-            "url": None,
-            "snippet": content[:200],
-            "text": (content + " " + (r["tags"] or ""))[:_MAX_TEXT],
-        })
+        parent_uid = f"mem:{r['id']}"
+        title = f"memory {r['id']} [{r['kind']}]"
+        tags = (r["tags"] or "").strip()
+        full_text = content + (" tags: " + tags if tags else "")
+        chunks = chunk_text(full_text, max_chars=900, overlap_chars=150)
+        
+        if len(chunks) <= 1:
+            out.append({
+                "uid": parent_uid,
+                "source": "mind-memory",
+                "title": title,
+                "url": None,
+                "snippet": content[:200],
+                "text": (content + " " + tags)[:_MAX_TEXT]
+            })
+        else:
+            for idx, chunk in enumerate(chunks):
+                out.append({
+                    "uid": f"{parent_uid}:c{idx}",
+                    "source": "mind-memory",
+                    "title": f"{title} (Part {idx + 1})",
+                    "url": None,
+                    "snippet": chunk,
+                    "text": chunk
+                })
     return out
 
 
 def _file_items() -> list[dict]:
     """Local + Drive files from state/files_index.jsonl (lib/file_indexer).
-    Metadata-only tier: we embed filename + parent folders — rich enough for
-    academic PDFs — and never touch file contents (Drive placeholders would
-    force-download). Bruno 2026-06-12, the big play tier 1."""
+    Metadata-only tier by default, upgraded to full-text chunking if hydrated extract is on disk."""
     path = ROOT / "state" / "files_index.jsonl"
     if not path.exists():
         return []
@@ -153,25 +236,43 @@ def _file_items() -> list[dict]:
                 stem = pathlib.PurePath(name).stem.replace("_", " ")
                 digest = hashlib.md5(
                     it.get("path", "").encode("utf-8", "ignore")).hexdigest()
-                text = stem + " " + parents
-                # Tier-2 upgrade: pinned files have an extract on disk
-                # (lib/hydration_worker) — fold it in for a content-level
-                # embedding instead of filename-only.
+                url = "file:///" + it.get("path", "").replace("\\", "/")
+                parent_uid = "file:" + digest
+                
+                # Base metadata text (stem + parent folders)
+                meta_text = stem + " " + parents
+                
+                # Check for extracted text
                 xp = ROOT / "state" / "file_extracts" / f"{digest}.txt"
+                file_text = ""
                 if xp.exists():
                     try:
-                        text += " " + xp.read_text(
-                            encoding="utf-8", errors="replace")[:1500]
+                        # Read up to 40,000 characters to keep vector size reasonable but capture full content
+                        file_text = xp.read_text(encoding="utf-8", errors="replace")[:40000]
                     except Exception:
                         pass
-                out.append({
-                    "uid": "file:" + digest,
-                    "source": "files",
-                    "title": name[:200],
-                    "url": "file:///" + it.get("path", "").replace("\\", "/"),
-                    "snippet": (it.get("path") or "")[-200:],
-                    "text": text[:_MAX_TEXT],
-                })
+                
+                if file_text:
+                    full_text = meta_text + " " + file_text
+                    chunks = chunk_text(full_text, max_chars=900, overlap_chars=150)
+                    for idx, chunk in enumerate(chunks):
+                        out.append({
+                            "uid": f"{parent_uid}:c{idx}",
+                            "source": "files",
+                            "title": f"{name[:170]} (Part {idx + 1})",
+                            "url": url,
+                            "snippet": chunk,
+                            "text": chunk
+                        })
+                else:
+                    out.append({
+                        "uid": parent_uid,
+                        "source": "files",
+                        "title": name[:200],
+                        "url": url,
+                        "snippet": (it.get("path") or "")[-200:],
+                        "text": meta_text[:_MAX_TEXT]
+                    })
     except Exception:
         return []
     return out

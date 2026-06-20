@@ -12,10 +12,12 @@ from egon_app.pages.search import SearchPage
 from egon_app.pages.mind import MindPage
 from egon_app.pages.projects import ProjectsPage
 from egon_app.pages.connect import ConnectPage
+from egon_app.pages.orchestrator import OrchestratorPage
 from egon_app.pages.generic import make_page as make_generic_page
 
 __all__ = [
     "HomePage", "InboxPage", "NavigationPage", "LedgerPage", "SyncPage",
     "MemoryPage", "SettingsPage", "ReferencesPage", "MediaPage",
-    "SearchPage", "MindPage", "ProjectsPage", "ConnectPage", "make_generic_page",
+    "SearchPage", "MindPage", "ProjectsPage", "ConnectPage", "OrchestratorPage",
+    "make_generic_page",
 ]

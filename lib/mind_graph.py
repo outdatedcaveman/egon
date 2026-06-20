@@ -315,12 +315,15 @@ def _scan_categories() -> list[tuple[Any, str]]:
         return []
 
     paths = list(ROOT.glob("*.md"))
-    for folder in (ROOT / "docs", ROOT / "state"):
-        if folder.exists():
-            paths.extend(folder.rglob("*.md"))
+    if (ROOT / "docs").exists():
+        paths.extend((ROOT / "docs").rglob("*.md"))
+    if (ROOT / "state").exists():
+        paths.extend((ROOT / "state").glob("*.md"))
+        if (ROOT / "state" / "panop").exists():
+            paths.extend((ROOT / "state" / "panop").glob("*.md"))
     brain = Path.home() / ".gemini" / "antigravity" / "brain"
     if brain.exists():
-        paths.extend(brain.rglob("*.md"))
+        paths.extend(brain.glob("categorical_*.md"))
 
     items: list[tuple[Any, str]] = []
     for path in paths[:2000]:

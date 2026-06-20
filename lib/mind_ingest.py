@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -50,6 +51,9 @@ MAX_NEW_SESSIONS_PER_PASS = 30
 _AGENT_CLAUDE = ("claude-code", "ide-agent")
 _AGENT_CODEX = ("codex", "ide-agent")
 _AGENT_ANTIGRAVITY = ("antigravity", "ide-agent")
+_AGENT_HERMES = ("hermes-agent", "background-agent")
+
+_HERMES_DB = USER_HOME / ".hermes" / "state.db"
 
 
 # ── state persistence ──────────────────────────────────────────────────────
@@ -550,6 +554,10 @@ def _iter_assets():
         ("codex:config", "codex", "config", H / ".codex" / "config.toml", 6000),
         ("antigravity:gemini-md", "antigravity", "rules",
          H / ".gemini" / "GEMINI.md", 12000),
+        ("hermes:memory-md", "hermes-agent", "rules",
+         H / ".hermes" / "memories" / "MEMORY.md", 12000),
+        ("hermes:user-md", "hermes-agent", "rules",
+         H / ".hermes" / "memories" / "USER.md", 12000),
     ]
     for key, agent, kind, path, cap in fixed:
         if path.exists():
@@ -638,6 +646,167 @@ def _scan_antigravity(state: dict) -> int:
                 continue
             seen["notes"][key] = mtime
             n += 1
+    return n
+
+
+def _safe_get_col(row: sqlite3.Row, key: str, default: Any = None) -> Any:
+    try:
+        return row[key]
+    except Exception:
+        return default
+
+
+def _attribute_hermes_project(title: str | None, system_prompt: str | None, messages: list[sqlite3.Row]) -> str | None:
+    from lib.mind_project_resolver import canonical_slug, known_project_slugs
+    known = known_project_slugs()
+    if title:
+        slug = canonical_slug(title)
+        if slug in known:
+            return slug
+    if system_prompt:
+        for word in re.findall(r"[A-Za-z0-9_\-]+", system_prompt):
+            slug = canonical_slug(word)
+            if slug in known:
+                return slug
+    for msg in messages[:20]:
+        content = _safe_get_col(msg, "content", "") or ""
+        for seg in _PROJECT_PATH_RE.findall(content):
+            slug = canonical_slug("x/" + seg)
+            if slug in known:
+                return slug
+    return None
+
+
+def _scan_hermes(state: dict) -> int:
+    seen = state.setdefault("hermes", {"sessions": {}})
+    n = 0
+    if not _HERMES_DB.exists():
+        return 0
+
+    try:
+        db_mtime = int(_HERMES_DB.stat().st_mtime)
+        if db_mtime <= seen.get("db_mtime", 0):
+            return 0
+    except OSError:
+        return 0
+
+    conn = None
+    try:
+        conn = sqlite3.connect(_HERMES_DB, timeout=10)
+        conn.row_factory = sqlite3.Row
+        
+        sessions = conn.execute("SELECT * FROM sessions ORDER BY started_at ASC").fetchall()
+        new_sessions_this_pass = 0
+        
+        for s in sessions:
+            session_id = _safe_get_col(s, "id")
+            if not session_id:
+                continue
+            message_count = _safe_get_col(s, "message_count", 0) or 0
+            ended_at = _safe_get_col(s, "ended_at")
+            
+            seen_sess = seen["sessions"].setdefault(session_id, {})
+            seen_msg_count = seen_sess.get("message_count", 0)
+            seen_ended = seen_sess.get("ended_at")
+            
+            if message_count <= seen_msg_count and ended_at == seen_ended:
+                continue
+                
+            if new_sessions_this_pass >= MAX_NEW_SESSIONS_PER_PASS:
+                break
+                
+            messages = conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
+                (session_id,)
+            ).fetchall()
+            
+            title = _safe_get_col(s, "title")
+            sys_prompt = _safe_get_col(s, "system_prompt")
+            project = _attribute_hermes_project(title, sys_prompt, messages)
+            
+            started_epoch = int(_safe_get_col(s, "started_at") or _now())
+            sid = _start_session(_AGENT_HERMES[0], external_id=session_id, project=project, started_at=started_epoch)
+            if sid is None:
+                continue
+                
+            new_msgs = messages[seen_msg_count:]
+            activity_count = 0
+            
+            for msg in new_msgs:
+                role = _safe_get_col(msg, "role", "message")
+                kind = role if role in ("user", "assistant") else "message"
+                ts = int(_safe_get_col(msg, "timestamp") or _now())
+                
+                payload = {
+                    "role": role,
+                    "text_preview": (_safe_get_col(msg, "content") or "")[:400]
+                }
+                
+                if role == "assistant":
+                    reasoning = _safe_get_col(msg, "reasoning")
+                    if reasoning:
+                        payload["reasoning_preview"] = reasoning[:300]
+                        
+                tool_calls_raw = _safe_get_col(msg, "tool_calls")
+                tools_used = []
+                if tool_calls_raw:
+                    try:
+                        tool_calls = json.loads(tool_calls_raw)
+                        if isinstance(tool_calls, list):
+                            for tc in tool_calls:
+                                if isinstance(tc, dict):
+                                    tname = tc.get("function", {}).get("name") or tc.get("name")
+                                    if tname:
+                                        tools_used.append(tname)
+                    except Exception:
+                        pass
+                
+                if tools_used:
+                    payload["tools"] = tools_used
+                    
+                if _append_activity(sid, kind=kind, payload=payload, ts=ts):
+                    activity_count += 1
+                    
+                if role == "assistant":
+                    model = _safe_get_col(s, "model") or "nous-hermes"
+                    msg_tokens = _safe_get_col(msg, "token_count") or len(_safe_get_col(msg, "content") or "") // 4
+                    
+                    # Look for preceding user message token count or estimate
+                    preceding_prompt = 1000
+                    if len(messages) > 1:
+                        prev_content = _safe_get_col(messages[max(0, seen_msg_count + activity_count - 2)], "content")
+                        if prev_content:
+                            preceding_prompt = len(prev_content) // 4
+                            
+                    usage = {
+                        "prompt_tokens": preceding_prompt,
+                        "completion_tokens": msg_tokens
+                    }
+                    _post("/ledger/turns", {
+                        "session_id": sid,
+                        "ts": ts,
+                        "model": model,
+                        "usage": usage,
+                        "tools": tools_used
+                    })
+
+            seen["sessions"][session_id] = {
+                "message_count": max(seen_msg_count + len(new_msgs), message_count),
+                "ended_at": ended_at
+            }
+            n += activity_count
+            new_sessions_this_pass += 1
+            
+            if ended_at:
+                _end_session(sid, summary=title, ended_at=int(ended_at))
+                
+        seen["db_mtime"] = db_mtime
+    except Exception as e:
+        print(f"[mind_ingest] Hermes scan error: {e}", flush=True)
+    finally:
+        if conn:
+            conn.close()
+            
     return n
 
 
@@ -742,7 +911,35 @@ def ingest_once() -> dict:
             "hint": "Panop must be listening on http://127.0.0.1:8000/api/v1/mind",
         }
     state = _load_state()
-    for name, kind in (_AGENT_CLAUDE, _AGENT_CODEX, _AGENT_ANTIGRAVITY):
+    
+    # Auto-compaction check (every 12 hours)
+    last_compaction = state.get("last_compaction_at", 0)
+    now = int(time.time())
+    compact_count = 0
+    if now - last_compaction > 43200:
+        try:
+            from scripts.compact_transcripts import main as compact_main
+            compact_res = compact_main()
+            if compact_res == 0:
+                state["last_compaction_at"] = now
+                compact_count = 1
+        except Exception as e:
+            print(f"[mind_ingest] Auto-compaction failed: {e}", flush=True)
+
+    # Auto-introspection check (every 12 hours)
+    last_introspection = state.get("last_introspection_at", 0)
+    introspection_count = 0
+    if now - last_introspection > 43200:
+        try:
+            from scripts.introspection import run_periodic_introspection
+            introspection_res = run_periodic_introspection()
+            if introspection_res.get("status") == "ok":
+                state["last_introspection_at"] = now
+                introspection_count = 1
+        except Exception as e:
+            print(f"[mind_ingest] Auto-introspection failed: {e}", flush=True)
+
+    for name, kind in (_AGENT_CLAUDE, _AGENT_CODEX, _AGENT_ANTIGRAVITY, _AGENT_HERMES):
         if _register_agent(name, kind) is None:
             return {
                 "status": "error",
@@ -754,7 +951,10 @@ def ingest_once() -> dict:
         "claude": _scan_claude(state),
         "codex": _scan_codex(state),
         "antigravity": _scan_antigravity(state),
+        "hermes": _scan_hermes(state),
         "agent_assets": _scan_agent_assets(state),
+        "auto_compaction": compact_count,
+        "auto_introspection": introspection_count,
     }
     state["last_ingest_at"] = int(time.time())
     _save_state(state)
@@ -797,6 +997,11 @@ class MindIngestService:
         self._stop.wait(8.0)
         while not self._stop.is_set():
             try:
+                try:
+                    from lib import snapshots_runner
+                    snapshots_runner.run_snapshots_if_due(force=False, caller="headless")
+                except Exception as se:
+                    print(f"[mind_ingest] Snapshot runner trigger failed: {se}", flush=True)
                 self.last_result = ingest_once()
             except Exception as e:
                 self.last_result = {

@@ -178,6 +178,7 @@ CREATE INDEX files_project ON files (project_id);
 | Claude Code | `~/.claude/projects/<slug>/` JSONL transcripts + `memory/*.md` | One session per JSONL; activity rows per Tool use; memory rows from `memory/*.md`. |
 | Codex | `~/.codex/sessions/.../rollout-*.jsonl` + `~/.codex/memories/rollout_summaries/*.md` | Session per rollout; activity per tool use; memory per summary. |
 | Antigravity (Gemini IDE) | `~/.gemini/antigravity/brain/<session>/*.md` + screenshots | Session per brain folder; memory per plan/note `.md`; files index for the screenshots (so other agents can see the plan was drawn). |
+| hermes-agent | `~/.hermes/state.db` SQLite + `~/.hermes/memories/*.md` | Session + activity turns parsed from SQLite; `MEMORY.md` and `USER.md` rules assets. |
 | ChatGPT / Gemini web | n/a for pull (cloud-hosted) | v2 only — Custom GPT actions / Gemini Extensions calling Egon's REST API. |
 | Future agents | a generic `~/.ai-bodies/<agent>/inbox/` dir | Anything dropped into the inbox is ingested. Lowest-friction integration. |
 
@@ -222,12 +223,11 @@ once they're built.
    UserPromptSubmit, PostToolUse) that POST to Egon's API.
 2. Verify the round-trip with a test session.
 
-### Phase D — Codex + Antigravity push
+### Phase D — Codex + Antigravity + Hermes integration
 
-1. Codex doesn't have a hook system as of writing — pull stays the
-   integration. If/when that changes, port the Claude pattern.
-2. Antigravity does have an extension layer; replicate the Claude
-   pattern via that.
+1. Codex doesn't have a hook system as of writing — pull stays the integration. If/when that changes, port the Claude pattern.
+2. Antigravity does have an extension layer; replicate the Claude pattern via that.
+3. Hermes Agent pulls local state via `state.db` SQLite parsing and ingests rule assets (`MEMORY.md` and `USER.md`). Added in June 2026.
 
 ### Phase E — Cloud bodies (ChatGPT, Gemini web)
 

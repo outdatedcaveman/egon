@@ -67,10 +67,22 @@ def _zotero_map(item: dict) -> tuple[str, dict]:
     }
 
 
+def _unified_resource_map(item: dict) -> tuple[str, dict]:
+    return item.get("id", ""), {
+        "Title":  item.get("title"),
+        "URL":    item.get("url"),
+        "Detail": item.get("abstract"),
+        "Kind":   item.get("kind"),
+        "Year":   item.get("year"),
+        "Key":    item.get("id"),
+    }
+
+
 MAPPERS: dict[str, Callable[[dict], tuple[str, dict]]] = {
     "letterboxd":       _letterboxd_map,
     "chrome_bookmarks": _chrome_bookmark_map,
     "zotero":           _zotero_map,
+    "unified_resources": _unified_resource_map,
 }
 
 

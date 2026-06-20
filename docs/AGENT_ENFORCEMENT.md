@@ -1,7 +1,7 @@
 # Egon Agent Enforcement Contract
 
 This is the shared operating contract for Claude Code, Codex, Antigravity,
-ChatGPT, and future AI bodies working inside Bruno's Personal OS.
+ChatGPT, Hermes Agent, and future AI bodies working inside Bruno's Personal OS.
 
 ## Non-Negotiable Startup
 

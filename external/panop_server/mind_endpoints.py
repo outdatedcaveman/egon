@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 
 from fastapi import Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 from external.panop_server.main import app  # late-bound; main.py imports us at end
 
@@ -41,7 +41,7 @@ _ROOT = Path(__file__).resolve().parent.parent.parent
 _DB_PATH = _ROOT / "state" / "mind.db"
 _DB_LOCK = threading.RLock()
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SCHEMA = [
     "PRAGMA journal_mode = WAL",
@@ -138,6 +138,16 @@ _SCHEMA = [
         UNIQUE (session_id, ts, input_tokens, output_tokens)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_turns_ledger_ts ON turns_ledger (ts)",
+    """CREATE TABLE IF NOT EXISTS orchestrator_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_prompt TEXT NOT NULL,
+        agent_name TEXT NOT NULL,
+        sub_task_desc TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'assigned', 'completed', 'failed')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_orchestrator_tasks_agent ON orchestrator_tasks (agent_name, status)",
 ]
 
 
@@ -271,6 +281,58 @@ def mind_list_projects():
         return {"status": "ok", "projects": [dict(r) for r in rows]}
     except Exception as e:
         return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.post("/api/v1/mind/orchestrator/dispatch")
+async def mind_orchestrator_dispatch(req: Request):
+    try:
+        body = await req.json()
+        prompt = (body.get("prompt") or "").strip()
+        if not prompt:
+            return {"status": "error", "error": "prompt required"}
+        
+        from lib.orchestration_engine import dispatch_prompt
+        tasks = dispatch_prompt(prompt)
+        
+        # Trigger the Hermes runner asynchronously
+        try:
+            from lib.hermes_runner import trigger_hermes_runner
+            trigger_hermes_runner()
+        except Exception as e:
+            print(f"[mind_endpoints] Failed to trigger hermes runner: {e}", flush=True)
+            
+        return {"status": "ok", "tasks": tasks}
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.get("/api/v1/mind/orchestrator/status")
+def mind_orchestrator_status():
+    try:
+        from lib.orchestration_engine import get_tasks_status
+        tasks = get_tasks_status()
+        return {"status": "ok", "tasks": tasks}
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.post("/api/v1/mind/orchestrator/complete")
+async def mind_orchestrator_complete(req: Request):
+    try:
+        body = await req.json()
+        task_id = body.get("task_id")
+        status = body.get("status") or "completed"
+        if task_id is None:
+            return {"status": "error", "error": "task_id required"}
+        
+        from lib.orchestration_engine import update_task_status
+        ok = update_task_status(int(task_id), status)
+        if ok:
+            return {"status": "ok"}
+        return {"status": "error", "error": "failed to update task status"}
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
 
 
 @app.post("/api/v1/mind/sessions/start")
@@ -681,7 +743,8 @@ def mind_context_v2(project: str | None = None,
                     limit_activity: int = 8,
                     limit_memory: int = 8,
                     include_graph: bool = True,
-                    include_audit: bool = True):
+                    include_audit: bool = True,
+                    agent: str | None = None):
     """Context Broker v2: compact shared-mind capsule for prompt injection."""
     try:
         from lib.mind_context_broker import build_context_capsule
@@ -694,6 +757,7 @@ def mind_context_v2(project: str | None = None,
             limit_memory=limit_memory,
             include_graph=include_graph,
             include_audit=include_audit,
+            agent=agent,
         )
     except Exception as e:
         return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
@@ -1219,3 +1283,56 @@ async def mind_categorical_synthesize(req: Request):
         return res
     except Exception as e:
         return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def get_dashboard():
+    dashboard_path = Path(__file__).resolve().parent / "dashboard.html"
+    if not dashboard_path.exists():
+        return HTMLResponse(content="<h1>Dashboard Template Not Found</h1>", status_code=404)
+    return HTMLResponse(content=dashboard_path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/v1/classifier/lowconf")
+def get_classifier_lowconf():
+    lowconf_path = _ROOT / "state" / "panop" / "history_lowconf.json"
+    if not lowconf_path.exists():
+        return {"status": "ok", "candidates": []}
+    try:
+        data = json.loads(lowconf_path.read_text(encoding="utf-8"))
+        return {"status": "ok", "candidates": data[:10]}
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.post("/api/v1/classifier/review")
+async def post_classifier_review(req: Request):
+    try:
+        body = await req.json()
+        url = body.get("url")
+        title = body.get("title")
+        category = body.get("category")
+        if not url or not category:
+            return {"status": "error", "error": "url and category required"}
+
+        from lib import kms_knn
+        kms_knn.learn(title or "", url, category)
+
+        # Trigger k-NN index rebuild asynchronously
+        threading.Thread(target=kms_knn.build_index, daemon=True, name="knn-index-build").start()
+
+        # Remove from history_lowconf.json
+        lowconf_path = _ROOT / "state" / "panop" / "history_lowconf.json"
+        if lowconf_path.exists():
+            try:
+                data = json.loads(lowconf_path.read_text(encoding="utf-8"))
+                filtered = [item for item in data if item.get("url") != url]
+                lowconf_path.write_text(json.dumps(filtered, indent=2, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
+
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+

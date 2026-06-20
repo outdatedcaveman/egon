@@ -76,7 +76,7 @@ HEAVY_IDLE_AFTER_S = int(os.environ.get("EGON_CORE_HEAVY_IDLE_AFTER_S", "1800"))
 MIND_STATS = "http://127.0.0.1:8000/api/v1/mind/stats"
 HEADROOM_HEALTH = "http://127.0.0.1:8787/health"
 OLLAMA_TAGS = "http://127.0.0.1:11434/api/tags"
-OLLAMA_EXE = Path(r"C:/Users/bruno/AppData/Local/Programs/Ollama/ollama.exe")
+OLLAMA_EXE = Path.home() / "AppData/Local/Programs/Ollama/ollama.exe"  # no hardcoded user path
 
 
 def log(level: str, event: str, **kw) -> None:
@@ -282,6 +282,16 @@ def check_index(u: Unit) -> None:
         except Exception as e:
             log("warn", "hydration_failed", error=str(e)[:160])
         try:
+            # auto-hydration crawler: automatically extract text for already
+            # locally hydrated cloud files on Google Drive. lib/auto_hydrate_crawler.
+            from lib import auto_hydrate_crawler
+            ahst = auto_hydrate_crawler.run_crawler()
+            if ahst.get("status") == "ok":
+                log("info", "auto_hydration_run", **{k: v for k, v in ahst.items()
+                                                     if k != "status"})
+        except Exception as e:
+            log("warn", "auto_hydration_failed", error=str(e)[:160])
+        try:
             # files first so the fresh files_index.jsonl feeds this build
             # (big-play tier 1: Drive+PC filenames into the Connect engine)
             from lib import file_indexer
@@ -436,124 +446,30 @@ def write_health(units: dict[str, Unit]) -> None:
 # fired unless the Egon UI happened to be open at 6AM — kindle went stale
 # 2026-05-27 and instapaper (3,212 harvested items) NEVER got a snapshot.
 # Bruno 2026-06-12: the always-on core owns freshness now. Daily, off-thread.
-SNAPSHOTS_EVERY_S = 24 * 3600
-_snap_running = False
-_snap_last = 0.0
-
-
-_SNAP_MARK = ROOT / "state" / "snapshots_last_run.json"
-
 
 def check_snapshots(u: Unit) -> None:
-    global _snap_running, _snap_last
-    # Gate on OUR last full-refresh time (persisted), NOT the newest snapshot
-    # file. 2026-06-13 bug: one fresh source (bookmarks) made the newest-file
-    # age <48h, so the whole refresh was skipped — leaving zotero stale at the
-    # old 5k snapshot for weeks. Now every source is re-snapshotted daily.
+    from lib import snapshots_runner
+    
     last = 0.0
-    try:
-        last = float(json.loads(_SNAP_MARK.read_text(encoding="utf-8"))["ts"])
-    except Exception:
-        pass
+    if snapshots_runner.SNAP_MARK.exists():
+        try:
+            last = float(json.loads(snapshots_runner.SNAP_MARK.read_text(encoding="utf-8"))["ts"])
+        except Exception:
+            pass
+            
     age_h = (time.time() - last) / 3600 if last else None
     u.ok = age_h is not None and age_h < 48
+    
+    is_running = snapshots_runner._running
     u.detail = (f"all-sources age={age_h:.0f}h" if age_h is not None
-                else "never") + (" (refreshing)" if _snap_running else "")
-    allowed, why = _heavy_allowed()
+                else "never") + (" (refreshing)" if is_running else "")
+                
+    allowed, why = snapshots_runner.is_heavy_allowed(caller="core")
     if not allowed:
         u.detail += f" ({why})"
-        return
-    due = last == 0.0 or time.time() - last > SNAPSHOTS_EVERY_S
-    if _snap_running or not due or time.time() - _snap_last < 3600:
-        return
-    _snap_last = time.time()
-    _snap_running = True
+        
+    snapshots_runner.run_snapshots_if_due(force=False, caller="core")
 
-    def _run():
-        global _snap_running
-        try:
-            import importlib
-            from lib.snapshot_store import write_snapshot
-            import scripts.pass_sources as _ps  # single source of truth
-            pairs = _ps.SNAPSHOT_ADAPTERS
-        except Exception:
-            # fallback: inline list mirrors scripts/pass.py
-            pairs = (
-                ("chrome_bookmarks", "lib.adapters.chrome_bookmarks"),
-                ("zotero", "lib.adapters.zotero_local"),
-                ("letterboxd", "lib.adapters.letterboxd"),
-                ("youtube_music", "lib.adapters.youtube"),
-                ("notion_workspace", "lib.adapters.notion_workspace"),
-                ("tvtime", "lib.adapters.tvtime"),
-                ("kindle", "lib.adapters.kindle"),
-                ("pocketcasts", "lib.adapters.pocketcasts"),
-                ("paperpile", "lib.adapters.paperpile"),
-                ("instapaper", "lib.adapters.instapaper"),
-                ("youtube_history", "lib.adapters.youtube_history"),
-                ("youtube_oauth", "lib.adapters.youtube_oauth"),
-                ("trakt", "lib.adapters.trakt"),
-            )
-        try:
-            # Export inbox first (state/inbox/): ANY vendor zip — Takeout
-            # (YouTube/Fit/Gemini/My Activity), TV Time, Amazon DSAR — is
-            # detected, extracted, parsed and merged before snapshotting.
-            from lib import export_inbox
-            eres = export_inbox.process()
-            if eres.get("imported"):
-                log("info", "exports_imported",
-                    zips=len(eres["imported"]),
-                    detail=str(eres["imported"])[:200])
-        except Exception as e:
-            log("warn", "export_inbox_failed", error=str(e)[:120])
-        try:
-            # legacy direct-file path (bare watch-history.json drops)
-            from lib import youtube_takeout
-            tres = youtube_takeout.import_takeout()
-            if tres.get("status") == "ok":
-                log("info", "takeout_imported", **{k: tres[k] for k in
-                    ("file", "entries", "new") if k in tres})
-        except Exception as e:
-            log("warn", "takeout_failed", error=str(e)[:120])
-        try:
-            import importlib
-            from lib.snapshot_store import write_snapshot
-            done = failed = 0
-            for source, modpath in pairs:
-                try:
-                    mod = importlib.import_module(modpath)
-                    snap = mod.snapshot()
-                    if snap and snap.get("status") == "ok" and snap.get("items"):
-                        write_snapshot(source, snap)
-                        done += 1
-                except Exception as e:
-                    failed += 1
-                    log("warn", "snapshot_failed", source=source,
-                        error=str(e)[:100])
-            try:
-                _SNAP_MARK.write_text(json.dumps({"ts": time.time()}),
-                                      encoding="utf-8")
-            except Exception:
-                pass
-            log("info", "snapshots_refreshed", ok=done, failed=failed)
-            # TV Time -> Trakt: push the (auto-harvested) TV Time back-catalog
-            # into Trakt, the durable home. Trakt dedups, so this is safe to
-            # run daily; going forward Trakt auto-scrobbles. Once-for-all
-            # (Bruno 2026-06-13). No-op unless Trakt is authed + TV Time data.
-            try:
-                from lib.adapters import trakt
-                if trakt.live_status().get("status") == "ok":
-                    pr = trakt.push_tvtime_history()
-                    if pr.get("status") == "ok":
-                        log("info", "tvtime_to_trakt",
-                            matched=pr.get("matched"), unmatched=pr.get("unmatched"))
-            except Exception as e:
-                log("warn", "tvtime_to_trakt_failed", error=str(e)[:120])
-        except Exception as e:
-            log("warn", "snapshots_run_failed", error=str(e)[:160])
-        finally:
-            _snap_running = False
-
-    threading.Thread(target=_run, name="egon-snapshots", daemon=True).start()
 
 
 # Notion mirror increment cadence — every 5 min advance one bounded batch.

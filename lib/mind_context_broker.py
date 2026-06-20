@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from lib import semantic_index as si
+
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "state" / "mind.db"
 
@@ -26,7 +28,8 @@ def build_context_capsule(project: str | None = None,
                           limit_memory: int = 8,
                           limit_activity: int = 8,
                           include_graph: bool = True,
-                          include_audit: bool = True) -> dict[str, Any]:
+                          include_audit: bool = True,
+                          agent: str | None = None) -> dict[str, Any]:
     """Return a compact, directly injectable shared-mind capsule."""
     if not DB_PATH.exists():
         return {"status": "error", "error": "mind.db missing"}
@@ -35,7 +38,7 @@ def build_context_capsule(project: str | None = None,
     query_tokens = _tokens(query)
     project_norm = (project or "").strip().lower()
 
-    memories = _ranked_memory(project_norm, query_tokens, limit=max(1, limit_memory))
+    memories = _ranked_memory(project_norm, query_tokens, limit=max(1, limit_memory), query=query)
     activity = _recent_activity(project_norm, limit=max(1, limit_activity))
     sessions = _active_sessions(project_norm)
     audit = _audit(project_norm, enabled=include_audit)
@@ -54,6 +57,16 @@ def build_context_capsule(project: str | None = None,
             "Write a durable memory when a decision, invariant, failure mode, or reusable pattern is learned.",
         ],
     }
+
+    if agent:
+        try:
+            from lib.orchestration_engine import get_pending_task
+            delegated = get_pending_task(agent)
+            if delegated:
+                sections["delegated_task"] = delegated
+        except Exception as e:
+            print(f"[mind_context_broker] failed to check delegated tasks: {e}", flush=True)
+
     briefing = _render_briefing(project, query, sections, graph)
     briefing = _fit_budget(briefing, budget)
 
@@ -118,8 +131,27 @@ def _clip(text: Any, limit: int = 360) -> str:
     return s[: max(0, limit - 1)].rstrip() + "..."
 
 
-def _ranked_memory(project: str, tokens: set[str], limit: int) -> list[dict[str, Any]]:
+def _ranked_memory(project: str, tokens: set[str], limit: int, query: str | None = None) -> list[dict[str, Any]]:
     rows: list[sqlite3.Row]
+    
+    # Semantic search matches
+    semantic_ids = []
+    semantic_scores = {}
+    if query:
+        try:
+            if si.is_ready():
+                hits = si.search(query, top_k=limit * 2)
+                for h in hits:
+                    if h.get("source") == "mind-memory" and h.get("uid", "").startswith("mem:"):
+                        try:
+                            mid = int(h["uid"].split(":")[1])
+                            semantic_ids.append(mid)
+                            semantic_scores[mid] = h.get("score", 0.0)
+                        except Exception:
+                            continue
+        except Exception as e:
+            print(f"[mind_context_broker] semantic search fail: {e}", flush=True)
+
     with _connect() as conn:
         clauses = ["superseded_by_memory_id IS NULL"]
         params: list[Any] = []
@@ -133,6 +165,10 @@ def _ranked_memory(project: str, tokens: set[str], limit: int) -> list[dict[str,
                 token_clauses.append("(LOWER(content) LIKE ? OR LOWER(COALESCE(tags, '')) LIKE ?)")
                 params.extend([f"%{token}%", f"%{token}%"])
             match_clauses.append("(" + " OR ".join(token_clauses) + ")")
+        if semantic_ids:
+            placeholders = ",".join("?" for _ in semantic_ids)
+            match_clauses.append(f"id IN ({placeholders})")
+            params.extend(semantic_ids)
         
         sql = "SELECT * FROM memory"
         if match_clauses:
@@ -154,6 +190,8 @@ def _ranked_memory(project: str, tokens: set[str], limit: int) -> list[dict[str,
             if project and project in (r["tags"] or "").lower():
                 score += 8
             score += sum(2 for t in tokens if t in haystack)
+            if rid in semantic_scores:
+                score += int(semantic_scores[rid] * 12)
             score += {"decision": 5, "preference": 4, "pattern": 4, "skill": 3, "fact": 2}.get(r["kind"], 1)
             age_days = max(0, (now - int(r["updated_at"] or 0)) // 86400)
             score += max(0, 6 - age_days)
@@ -226,6 +264,8 @@ def _ranked_memory(project: str, tokens: set[str], limit: int) -> list[dict[str,
             if project and project in (r["tags"] or "").lower():
                 own_score += 8
             own_score += sum(2 for t in tokens if t in haystack)
+            if rid in semantic_scores:
+                own_score += int(semantic_scores[rid] * 12)
             own_score += {"decision": 5, "preference": 4, "pattern": 4, "skill": 3, "fact": 2}.get(r["kind"], 1)
             age_days = max(0, (now - int(r["updated_at"] or 0)) // 86400)
             own_score += max(0, 6 - age_days)
@@ -403,8 +443,21 @@ def _render_briefing(project: str | None,
         f"Project: {project or 'unspecified'}",
         f"Query: {_clip(query, 220) if query else 'none'}",
         "",
-        "What matters now:",
     ]
+    if sections.get("delegated_task"):
+        task = sections["delegated_task"]
+        lines.extend([
+            "==================================================",
+            "!!! EGON DELEGATED TASK !!!",
+            f"You have been assigned this sub-task from the Orchestrator:",
+            f"  Description: {task['sub_task_desc']}",
+            f"  Parent Prompt Context: {task['parent_prompt']}",
+            f"Please prioritize completing this task. When done, write a memory with the outcome.",
+            "==================================================",
+            ""
+        ])
+
+    lines.append("What matters now:")
     lines.extend(f"- {item}" for item in sections["what_matters_now"])
 
     if sections["durable_memory"]:
