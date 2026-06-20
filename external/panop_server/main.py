@@ -1785,6 +1785,7 @@ def run_adb_sweep():
         WORKERS = 8
         _done_ctr = [0]
         _zbatch = []   # net-new items, BATCH-posted to Zotero after the loop
+        _scinews_urls = []   # science_news digests -> 2nd-stage exploded AFTER the loop
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             futures = {pool.submit(process_tab, tab, cat, needs_fetch): (tab, cat)
                        for tab, cat, needs_fetch in candidates}
@@ -1923,18 +1924,10 @@ def run_adb_sweep():
                     # contained articles/books, each classified + saved to its own
                     # destination (writes into `h`; persisted by save_history below).
                     # No-ops for a single news story (no primary links). Best-effort.
-                    # Science-News 2nd stage does per-item network (fetch digest +
-                    # classify + save each sub-link) — that serialised the sweep
-                    # under rate-limiting. OFF by default during the sweep; run it
-                    # as a separate pass. Bruno 2026-06-19.
-                    if matched_category.get("id") == "science_news" and env.get("second_stage_in_sweep", False):
-                        try:
-                            ss = second_stage_extract(storage_url, env, categories, history=h)
-                            if ss.get("saved"):
-                                h[storage_url]["second_stage"] = {"found": ss["found"],
-                                    "saved": ss["saved"], "by_cat": ss["by_cat"]}
-                        except Exception:
-                            pass
+                    # Science-News 2nd stage: collect now, explode AFTER the loop so
+                    # its per-digest network never blocks the fast main sweep.
+                    if matched_category.get("id") == "science_news":
+                        _scinews_urls.append(storage_url)
                     save_history(h)
                     sweep_status["tabs_matched"] += 1
 
@@ -1961,6 +1954,29 @@ def run_adb_sweep():
                 _dbg(f"=== batch zotero done: {_saved}/{len(_zbatch)} saved ===")
             except Exception as _e:
                 _dbg(f"batch zotero error: {type(_e).__name__}: {str(_e)[:80]}")
+
+        # Science-News 2nd stage (POST-pass): explode each saved news digest into
+        # its contained articles/books -> their own destinations. Runs AFTER the
+        # fast main loop so its per-digest fetch+classify+save never blocks it.
+        if _scinews_urls:
+            _dbg(f"=== 2nd stage: {len(_scinews_urls)} science_news digests ===")
+            try:
+                _h3 = load_history()
+                _ss_total = 0
+                for _su in _scinews_urls:
+                    try:
+                        ss = second_stage_extract(_su, env, categories, history=_h3)
+                        if ss.get("saved"):
+                            _ss_total += ss["saved"]
+                            if _su in _h3:
+                                _h3[_su]["second_stage"] = {"found": ss["found"],
+                                    "saved": ss["saved"], "by_cat": ss["by_cat"]}
+                    except Exception:
+                        pass
+                save_history(_h3)
+                _dbg(f"=== 2nd stage done: {_ss_total} sub-items saved ===")
+            except Exception as _e:
+                _dbg(f"2nd stage error: {type(_e).__name__}")
 
         # Post-sweep autonomous dedup cleanup
         try:
