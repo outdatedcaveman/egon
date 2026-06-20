@@ -64,3 +64,7 @@ build_egon*.log
 # internal AI-session logs — not for the public repo
 docs/HANDOFF_*.md
 docs/RECONCILE_*.md
+panop_env.json.bak*
+external/panop_server/panop_env.json.bak*
+*.bak-*
+release_*.log

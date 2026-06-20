@@ -1003,6 +1003,122 @@ def _write_bookmark_now(url, title, category_name):
     except Exception:
         return False
 
+# ── batch bookmark writing ──────────────────────────────────────────────────
+# Per-item _write_bookmark_now rewrites the whole ~100MB Bookmarks file each
+# call (~9.5s with Chrome closed). During a sweep we buffer every direct write
+# and flush them all in ONE read+write. Mirror of the Zotero batch. Bruno
+# 2026-06-20 ("batch save to zotero AND bookmarks").
+_bookmark_batch_mode = False
+_bookmark_batch_buffer = []          # list of (url, title, category_name)
+_bookmark_batch_lock = threading.RLock()
+
+# Memo for scan_chrome_bookmarks_for_panop — keyed by Bookmarks-file mtime so it
+# re-parses the ~100MB file only when it actually changes (the per-tab close
+# verification called it once per tab → minutes of redundant parsing).
+_bk_scan_memo = {"mtime": 0, "data": set()}
+_bk_scan_memo_lock = threading.RLock()
+
+def _begin_bookmark_batch():
+    global _bookmark_batch_mode, _bookmark_batch_buffer
+    with _bookmark_batch_lock:
+        _bookmark_batch_mode = True
+        _bookmark_batch_buffer = []
+
+def _flush_bookmark_batch():
+    """Write every buffered bookmark to the Chrome Bookmarks file in ONE pass.
+    Returns the set of urls actually written. Disables batch mode."""
+    global _bookmark_batch_mode, _bookmark_batch_buffer
+    with _bookmark_batch_lock:
+        items = list(_bookmark_batch_buffer)
+        _bookmark_batch_buffer = []
+        _bookmark_batch_mode = False
+    if not items:
+        return set()
+    return _write_bookmarks_bulk(items)
+
+def _write_bookmarks_bulk(items):
+    """Insert MANY bookmarks with a SINGLE file read+write (amortises the
+    ~100MB rewrite across all items). items: iterable of (url, title,
+    category_name). Returns the set of urls present after the write. ONLY safe
+    when Chrome is not running. Mirrors _write_bookmark_now's folder logic."""
+    env = get_env()
+    profile_name = env.get("chrome_profile", "Default") or "Default"
+    profile = os.environ.get("USERPROFILE")
+    if not profile: return set()
+    udir = os.path.join(profile, "AppData", "Local", "Google", "Chrome", "User Data", profile_name)
+    book_path = os.path.join(udir, "Bookmarks")
+    if not os.path.exists(book_path): return set()
+    try:
+        with open(book_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        other = data.setdefault("roots", {}).setdefault("other", {})
+        other.setdefault("children", [])
+        panop_folder_name = env.get("bookmark_folder", "Panop") or "Panop"
+
+        def _stamp(): return str(int(time.time() * 1000000))
+
+        panop_folder = next(
+            (c for c in other["children"]
+             if c.get("type") == "folder" and c.get("name", "") == panop_folder_name),
+            None)
+        if not panop_folder:
+            panop_folder = {"children": [], "date_added": _stamp(), "date_last_used": "0",
+                            "guid": _new_guid(), "name": panop_folder_name, "type": "folder"}
+            other["children"].append(panop_folder)
+        elif not panop_folder.get("guid"):
+            panop_folder["guid"] = _new_guid()
+
+        # Resolve (and create) each category folder ONCE, cached by name.
+        _cat_cache = {}
+        def _cat_folder(category_name):
+            key = (category_name or "").lower()
+            f = _cat_cache.get(key)
+            if f is not None: return f
+            f = next((c for c in panop_folder["children"]
+                      if c.get("type") == "folder" and c.get("name", "").lower() == key), None)
+            if not f:
+                f = {"children": [], "date_added": _stamp(), "date_last_used": "0",
+                     "guid": _new_guid(), "name": category_name, "type": "folder"}
+                panop_folder["children"].append(f)
+            elif not f.get("guid"):
+                f["guid"] = _new_guid()
+            _cat_cache[key] = f
+            return f
+
+        written = set()
+        for url, title, category_name in items:
+            try:
+                cat_folder = _cat_folder(category_name)
+                cat_folder.setdefault("children", [])
+                existing = next((c for c in cat_folder["children"]
+                                 if c.get("url") == url), None)
+                if existing:
+                    cur = (existing.get("name") or "").strip()
+                    new = (title or "").strip()
+                    if new and new.lower() not in _GENERIC_TITLES and (
+                        cur.lower() in _GENERIC_TITLES or len(new) > len(cur) + 3):
+                        existing["name"] = new
+                else:
+                    cat_folder["children"].append({
+                        "date_added": _stamp(), "date_last_used": "0", "guid": _new_guid(),
+                        "name": title or url, "type": "url", "url": url})
+                written.add(url)
+            except Exception:
+                continue
+
+        data.pop("checksum", None)
+        tmp = book_path + ".panop.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, book_path)
+        bak = book_path + ".bak"
+        if os.path.exists(bak):
+            try: os.remove(bak)
+            except Exception: pass
+        return written
+    except Exception:
+        return set()
+
 def scan_chrome_bookmarks_for_panop():
     """Walks the user's Chrome Bookmarks file and returns every URL present
     inside the Panop folder tree under 'Outros favoritos'. Used to flip
@@ -1017,6 +1133,17 @@ def scan_chrome_bookmarks_for_panop():
     if not profile: return set()
     book_path = os.path.join(profile, "AppData", "Local", "Google", "Chrome", "User Data", profile_name, "Bookmarks")
     if not os.path.exists(book_path): return set()
+    # mtime-keyed memo: parse the ~100MB file only when it changed. The per-tab
+    # close verification calls this once per tab — without this it re-parsed 100MB
+    # for every tab and the close pass took tens of minutes.
+    try:
+        _mt = os.path.getmtime(book_path)
+    except OSError:
+        _mt = 0
+    if _mt:
+        with _bk_scan_memo_lock:
+            if _bk_scan_memo["mtime"] == _mt:
+                return _bk_scan_memo["data"]
     try:
         with open(book_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -1037,6 +1164,10 @@ def scan_chrome_bookmarks_for_panop():
         for ch in node.get("children") or []:
             walk(ch)
     walk(panop)
+    if _mt:
+        with _bk_scan_memo_lock:
+            _bk_scan_memo["mtime"] = _mt
+            _bk_scan_memo["data"] = urls
     return urls
 
 def reconcile_all():
@@ -1096,6 +1227,14 @@ def add_chrome_bookmark(url, title, category_name):
         if is_chrome_running():
             _queue_bookmark(url, title, category_name)
             return False
+    # Chrome not running — direct write. If a sweep has opened a bookmark batch,
+    # buffer this write so the ~100MB Bookmarks file is rewritten ONCE at flush
+    # instead of per-item. Return False (honest: not yet persisted); the sweep
+    # flips b_synced=true only for urls the flush actually wrote.
+    with _bookmark_batch_lock:
+        if _bookmark_batch_mode:
+            _bookmark_batch_buffer.append((url, title, category_name))
+            return False
     ok = _write_bookmark_now(url, title, category_name)
     if not ok:
         # Direct write failed; fall back to queueing for the extension.
@@ -1114,6 +1253,9 @@ _zotero_url_cache_lock = threading.Lock()
 # by_url / by_doi → {"key": str, "version": int} so we can PATCH existing items.
 _zotero_url_cache = {"urls": set(), "dois": set(), "by_url": {}, "by_doi": {},
                      "titlekeys": set(), "by_titlekey": {}, "ts": 0}
+ZOTERO_CACHE_TTL_S = 180   # within a close pass refresh is called per-tab; one
+                           # fresh API walk serves them all (re-walking the
+                           # throttled API per tab hung the whole pass).
 
 def _load_zotero_url_cache():
     data = load_json(ZOTERO_URL_CACHE_FILE(), {"urls": [], "dois": [], "by_url": {}, "by_doi": {}, "ts": 0})
@@ -1144,6 +1286,10 @@ def refresh_zotero_url_cache():
     env = get_env()
     if not env.get("zotero_api_key", "").strip() or not env.get("zotero_user_id", "").strip():
         return 0
+    # TTL guard (lock-free read): skip the full API walk when the cache is still
+    # fresh. Lets the per-tab close-verification reuse one walk for the whole pass.
+    if time.time() - _zotero_url_cache.get("ts", 0) < ZOTERO_CACHE_TTL_S:
+        return len(_zotero_url_cache.get("urls") or ())
     with _zotero_url_cache_lock:
         try:
             parent_name = env.get("bookmark_folder", "Panop") or "Panop"
@@ -1786,6 +1932,9 @@ def run_adb_sweep():
         _done_ctr = [0]
         _zbatch = []   # net-new items, BATCH-posted to Zotero after the loop
         _scinews_urls = []   # science_news digests -> 2nd-stage exploded AFTER the loop
+        # Open a bookmark batch: every direct write (main loop AND 2nd stage) is
+        # buffered and flushed in ONE ~100MB file rewrite after both finish.
+        _begin_bookmark_batch()
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             futures = {pool.submit(process_tab, tab, cat, needs_fetch): (tab, cat)
                        for tab, cat, needs_fetch in candidates}
@@ -1978,6 +2127,36 @@ def run_adb_sweep():
             except Exception as _e:
                 _dbg(f"2nd stage error: {type(_e).__name__}")
 
+        # FLUSH the bookmark batch: ONE ~100MB rewrite for every bookmark
+        # buffered by the main loop + 2nd stage (vs ~9.5s per-item before).
+        # Then flip b_synced on the rows whose bookmark was actually written.
+        try:
+            _bk_t0 = _t.time()
+            _written = _flush_bookmark_batch()
+            _dbg(f"=== bookmark flush: {len(_written)} written in {(_t.time()-_bk_t0):.1f}s ===")
+            if _written:
+                _h4 = load_history()
+                _flipped = 0
+                for _u in _written:
+                    if _u in _h4 and not _h4[_u].get("b_synced"):
+                        _h4[_u]["b_synced"] = True
+                        _flipped += 1
+                if _flipped:
+                    save_history(_h4)
+                _dbg(f"=== b_synced flipped: {_flipped} ===")
+        except Exception as _e:
+            _dbg(f"bookmark flush error: {type(_e).__name__}: {str(_e)[:80]}")
+
+        # Now that bookmarks are physically on disk and flags are flipped, close
+        # the tabs that became fully synced (z_synced AND b_synced). Done here
+        # immediately rather than only via the 75s delayed pass.
+        if env.get("close_tabs_after_save") and not _manual_vetting_required(env):
+            try:
+                _cl = _do_close_synced_tabs_now()
+                _dbg(f"=== close pass: {_cl.get('closed')} closed / {_cl.get('total')} tabs ===")
+            except Exception as _e:
+                _dbg(f"close pass error: {type(_e).__name__}")
+
         # Post-sweep autonomous dedup cleanup
         try:
             consolidate_history()
@@ -1999,6 +2178,13 @@ def run_adb_sweep():
     except Exception as e:
         sweep_status["last_error"] = str(e)
     finally:
+        # Safety: if an error skipped the normal flush, drain the batch so mode
+        # never leaks into later non-sweep writes (reconcile flips b_synced).
+        try:
+            _leftover = _flush_bookmark_batch()
+            if _leftover: _dbg(f"=== finally flush: {len(_leftover)} leftover bookmarks ===")
+        except Exception:
+            pass
         try:
             pending = load_json(PENDING_BOOKMARKS_FILE(), [])
             sweep_status["bookmarks_pending"] = len(pending)
@@ -2611,12 +2797,17 @@ bulk_sync_status = {"running": False, "type": None, "total": 0, "done": 0, "succ
 
 def run_bulk_sync(sync_type=None):
     global bulk_sync_status
-    # Always reconcile first — prevents re-POSTing items Zotero already has,
-    # and re-queuing bookmarks Chrome already has.
-    try:
-        bulk_sync_status["reconciled"] = reconcile_all()
-    except Exception:
-        bulk_sync_status["reconciled"] = None
+    # Reconcile first — flips flags for items already present remotely so we
+    # don't re-POST/re-queue them. SKIP it for a bookmark-only sync: reconcile
+    # does a full (throttled, sometimes-hanging) Zotero API walk that's
+    # irrelevant to writing bookmarks, and it runs BEFORE the status update, so
+    # a hang there silently strands the whole sync. add_chrome_bookmark already
+    # dedups against the existing Bookmarks file. Bruno 2026-06-20.
+    if sync_type != 'bookmark':
+        try:
+            bulk_sync_status["reconciled"] = reconcile_all()
+        except Exception:
+            bulk_sync_status["reconciled"] = None
     """Retries Zotero/Bookmark sync for all entries marked as unsynced.
     Saves history incrementally (every 5 items) so the UI can show progress
     via the meta/status endpoints rather than seeing nothing until the end.
@@ -2634,6 +2825,12 @@ def run_bulk_sync(sync_type=None):
     })
     dirty = False
     SAVE_EVERY = 5
+    # When writing bookmarks directly (Chrome closed), buffer every write and
+    # flush ONCE — the per-item path rewrites the ~100MB Bookmarks file each
+    # call (~9.5s). Mirrors run_adb_sweep. Bruno 2026-06-20.
+    _bk_batch_on = (sync_type in (None, 'bookmark')) and not is_chrome_running()
+    if _bk_batch_on:
+        _begin_bookmark_batch()
     try:
         for i, (url, item) in enumerate(targets, 1):
             if bulk_sync_status.get("cancel"):
@@ -2647,7 +2844,10 @@ def run_bulk_sync(sync_type=None):
                     else:
                         bulk_sync_status["failed"] += 1
                 if (sync_type is None or sync_type == 'bookmark') and not item.get("b_synced"):
-                    if add_chrome_bookmark(url, item.get("title"), item.get("category")):
+                    if _bk_batch_on:
+                        # buffers (returns False); b_synced flipped after flush below
+                        add_chrome_bookmark(url, item.get("title"), item.get("category"))
+                    elif add_chrome_bookmark(url, item.get("title"), item.get("category")):
                         item["b_synced"] = True
                         dirty = True
                         bulk_sync_status["succeeded"] += 1
@@ -2658,9 +2858,21 @@ def run_bulk_sync(sync_type=None):
             if dirty and i % SAVE_EVERY == 0:
                 save_history(h)
                 dirty = False
+        # Flush the buffered bookmarks in ONE file write, then flip b_synced for
+        # the urls actually written.
+        if _bk_batch_on:
+            written = _flush_bookmark_batch()
+            for url, item in targets:
+                if url in written and not item.get("b_synced"):
+                    item["b_synced"] = True
+                    dirty = True
+                    bulk_sync_status["succeeded"] += 1
         if dirty:
             save_history(h)
     finally:
+        if _bk_batch_on:
+            try: _flush_bookmark_batch()   # safety: never leak batch mode
+            except Exception: pass
         bulk_sync_status["running"] = False
 
 @app.get("/api/v1/history/sync/status")
@@ -3016,7 +3228,18 @@ def _close_devtools_tab(tid, url, item, source):
     """Close one Android Chrome DevTools target with a durable audit trail."""
     env = get_env()
     safe = _safe_to_close(item)
-    backup_proof = _verify_close_backups(url, item) if safe else {"ok": False, "skipped": "safe_to_close_false"}
+    # Trust the z_synced/b_synced flags that _safe_to_close already requires —
+    # they are set only after verification at save time. The standalone Panop
+    # closes on flags alone; egon had drifted to re-deriving proof from the
+    # ~100MB Bookmarks file + a full Zotero API walk PER TAB, which made the
+    # close pass hang for tens of minutes. Flag-trust matches the proven-fast
+    # standalone while keeping the audit trail + category restriction. Bruno 2026-06-20.
+    backup_proof = (
+        {"ok": True, "source": "history_flags",
+         "zotero_flag": bool(item.get("z_synced")),
+         "bookmark_flag": bool(item.get("b_synced"))}
+        if safe else {"ok": False, "skipped": "safe_to_close_false"}
+    )
     entry = {
         "ts": datetime.now().isoformat(),
         "source": source,
@@ -3091,8 +3314,34 @@ def _classify_tab_candidate(url, page_meta, categories, env):
                 out["_classification_confidence"] = res.confidence
                 out["_classification_reason"] = (res.evidence or {}).get("reason", "")
                 return out
+        # in-process classifier reached (egon mode); its verdict (match or not)
+        # is authoritative — skip the HTTP shim below.
+        page_meta = page_meta if page_meta is not None else {}
+        page_meta["_classifier_inproc"] = True
     except Exception:
         pass
+
+    # PORTABILITY SEAM (standalone mode): when lib.classifier is not importable
+    # (the standalone Panop has no lib/ tree), reach the SAME shared engine over
+    # HTTP at the classify endpoint — "one high-quality engine for all surfaces"
+    # (Bruno 2026-06-17). In egon this block is skipped (in-process succeeded).
+    # Lets a single canonical main.py serve both deployments. Bruno 2026-06-20.
+    if not (page_meta or {}).get("_classifier_inproc"):
+        try:
+            _mr = requests.post("http://127.0.0.1:8000/api/v1/classify",
+                                json={"url": classify_url, "title": (page_meta or {}).get("title", "")},
+                                timeout=8).json()
+            if _mr.get("action") == "match" and _mr.get("category") and _mr["category"] != "reject":
+                _mc = _mr["category"]; _mcn = _mc.replace("_", " ").lower()
+                for cat in categories:
+                    if cat.get("name", "").lower() == _mcn or cat.get("id", "").lower() == _mc:
+                        out = dict(cat)
+                        out["_classification_source"] = "smart_classifier_http"
+                        out["_classification_confidence"] = _mr.get("confidence")
+                        out["_classification_reason"] = (_mr.get("evidence") or {}).get("reason", "")
+                        return out
+        except Exception:
+            pass
 
     url_lower = classify_url.lower()
     for cat in categories:
@@ -4081,9 +4330,19 @@ async def classify_link(req: _HReq):
 # Module-level side effect: importing it registers /api/v1/mind/* routes
 # on `app` and initializes state/mind.db. Per the additive pattern from
 # the 2026-05-27 reconcile rule — keep main.py lean, add to its tree.
-from external.panop_server import mind_endpoints  # noqa: F401,E402
+# Guarded so the SAME canonical main.py also runs as the standalone Panop
+# (Desktop/Panop), which has no egon package tree. In egon this import succeeds
+# and registers /api/v1/mind/*; in the standalone it is simply absent. Bruno 2026-06-20.
+try:
+    from external.panop_server import mind_endpoints  # noqa: F401,E402
+except Exception:
+    mind_endpoints = None
 
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
-    uvicorn.run("external.panop_server.main:app", host="127.0.0.1", port=8000)
+    # Pass the app OBJECT (not an import string) so this same file launches in
+    # both deployments — egon (run as a package) and standalone Panop (run as a
+    # bare main.py with no `external.panop_server` package). egon's normal start
+    # path doesn't use this block; it imports `app` via scripts/mind_service.py.
+    uvicorn.run(app, host="127.0.0.1", port=int(get_env().get("port", 8000) or 8000))
