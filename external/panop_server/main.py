@@ -1791,7 +1791,7 @@ def run_adb_sweep():
 
             for future in as_completed(futures):
                 _done_ctr[0] += 1
-                if _done_ctr[0] % 25 == 0:
+                if _done_ctr[0] <= 5 or _done_ctr[0] % 25 == 0:
                     _dbg(f"P2 {_done_ctr[0]}/{len(candidates)} matched={sweep_status.get('tabs_matched')}")
                 try:
                     result = future.result()
@@ -1882,7 +1882,9 @@ def run_adb_sweep():
                         _zbatch.append({"storage_url": storage_url, "title": title,
                                         "abstract": (metadata.get("abstract", "") if metadata else ""),
                                         "category_name": matched_category["name"], "doi": doi})
+                    _bk0 = _t.time()
                     b_ok = add_chrome_bookmark(storage_url, title, matched_category["name"])
+                    if _t.time() - _bk0 > 1: _dbg(f"SLOW bookmark {(_t.time()-_bk0):.1f}s {storage_url[:60]}")
 
                     # IMPORTANT: write to `h` (just-loaded, line 1131), NOT the
                     # outer `history` which was loaded once at sweep start and
@@ -1914,12 +1916,18 @@ def run_adb_sweep():
                             "reason": matched_category.get("_classification_reason"),
                         },
                     )
+                    _ac0 = _t.time()
                     _record_accountability_event("history_upsert", storage_url, h[storage_url], source="adb_sweep")
+                    if _t.time() - _ac0 > 1: _dbg(f"SLOW accountability {(_t.time()-_ac0):.1f}s")
                     # Science-News 2nd stage: a digest/roundup explodes into its
                     # contained articles/books, each classified + saved to its own
                     # destination (writes into `h`; persisted by save_history below).
                     # No-ops for a single news story (no primary links). Best-effort.
-                    if matched_category.get("id") == "science_news":
+                    # Science-News 2nd stage does per-item network (fetch digest +
+                    # classify + save each sub-link) — that serialised the sweep
+                    # under rate-limiting. OFF by default during the sweep; run it
+                    # as a separate pass. Bruno 2026-06-19.
+                    if matched_category.get("id") == "science_news" and env.get("second_stage_in_sweep", False):
                         try:
                             ss = second_stage_extract(storage_url, env, categories, history=h)
                             if ss.get("saved"):
