@@ -67,37 +67,92 @@ def _lan_ip() -> str:
 
 
 _PAGE = """<!doctype html><html><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0A1A22">
 <title>Egon Connect</title><style>
- body{background:#0B1F28;color:#F0E9D5;font:15px/1.45 -apple-system,Roboto,sans-serif;
-      margin:0;padding:14px}
- h1{color:#D4A24C;font-size:19px;margin:2px 0 10px}
- textarea{width:100%;box-sizing:border-box;height:110px;background:#102F3C;color:#F0E9D5;
-      border:1px solid #1F4858;border-radius:8px;padding:10px;font-size:15px}
- .row{display:flex;gap:8px;margin:10px 0}
- button{flex:1;border:none;border-radius:8px;padding:12px;font-weight:700;font-size:15px}
- #go{background:#D4A24C;color:#0E2630}#syn{background:#7BC5C7;color:#0E2630}
- #paste{background:#16404F;color:#F0E9D5}
- #insight{display:none;background:#143038;border:1px solid #7BC5C7;border-radius:8px;
-      padding:10px;margin:8px 0;font-size:14px;white-space:pre-wrap}
- .hit{background:#0E2630;border:1px solid #1F4858;border-radius:8px;padding:9px;margin:7px 0}
- .hit b{font-size:14px}.meta{color:#9CA3AF;font-size:12px}.why{color:#D4A24C}
- a{color:#7BC5C7;text-decoration:none}#st{color:#9CA3AF;font-size:13px;margin:4px 0}
- .open{display:inline-block;margin-top:6px;background:#16404F;border:1px solid #1F4858;
-      border-radius:6px;padding:5px 10px;color:#7BC5C7;font-weight:600}
- .open.app{background:#143038;border-color:#7BC5C7}.web{margin-left:10px;font-size:12px}
+ :root{
+  --bg0:#081519; --bg1:#0E2730; --surface:rgba(255,255,255,.045);
+  --surface2:rgba(255,255,255,.07); --line:rgba(123,197,201,.16);
+  --gold:#E6B65C; --teal:#7FCBCD; --text:#F2ECDB; --muted:#90A6AD;
+ }
+ *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+ body{margin:0;color:var(--text);
+  font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
+  background:
+    radial-gradient(120% 70% at 50% -10%, #134150 0%, rgba(19,65,80,0) 55%),
+    linear-gradient(180deg,var(--bg1) 0%,var(--bg0) 60%) fixed;
+  min-height:100vh;padding:env(safe-area-inset-top) 16px calc(env(safe-area-inset-bottom) + 24px)}
+ header{display:flex;align-items:center;gap:10px;padding:18px 2px 14px}
+ .mark{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-size:18px;
+  background:linear-gradient(135deg,var(--gold),#caa044);color:#0A1A22;
+  box-shadow:0 4px 14px rgba(230,182,92,.35)}
+ .brand{font-size:18px;font-weight:800;letter-spacing:.2px}
+ .brand small{display:block;font-size:11.5px;font-weight:500;color:var(--muted);letter-spacing:.1px;margin-top:1px}
+ .composer{background:var(--surface);border:1px solid var(--line);border-radius:16px;
+  padding:12px;backdrop-filter:blur(8px);box-shadow:0 8px 30px rgba(0,0,0,.25)}
+ textarea{width:100%;height:108px;resize:none;background:transparent;color:var(--text);
+  border:0;outline:none;font-size:15.5px;line-height:1.5;padding:2px}
+ textarea::placeholder{color:var(--muted)}
+ .actions{display:flex;gap:8px;margin-top:10px}
+ button{flex:1;border:none;border-radius:11px;padding:12px 10px;font-weight:700;font-size:14.5px;
+  cursor:pointer;transition:transform .08s ease,filter .15s ease;color:#08171c}
+ button:active{transform:scale(.96)}
+ #go{background:linear-gradient(135deg,var(--gold),#d6a548);box-shadow:0 4px 16px rgba(230,182,92,.3)}
+ #syn{background:linear-gradient(135deg,var(--teal),#5fb6b8);box-shadow:0 4px 16px rgba(127,203,205,.25)}
+ #paste{flex:0 0 auto;padding:12px 16px;background:var(--surface2);color:var(--text);
+  border:1px solid var(--line)}
+ #st{color:var(--muted);font-size:13px;margin:14px 2px 2px;min-height:16px;display:flex;align-items:center;gap:7px}
+ .dot{width:7px;height:7px;border-radius:50%;background:var(--teal);animation:pulse 1s infinite ease-in-out}
+ @keyframes pulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1.1)}}
+ #insight{display:none;background:linear-gradient(180deg,rgba(127,203,205,.12),rgba(127,203,205,.05));
+  border:1px solid rgba(127,203,205,.32);border-radius:14px;padding:14px 14px 14px 16px;margin:12px 0;
+  font-size:14.5px;line-height:1.55;white-space:pre-wrap;position:relative}
+ #insight::before{content:"🧠 synthesis";display:block;font-size:11px;font-weight:700;letter-spacing:.6px;
+  text-transform:uppercase;color:var(--teal);margin-bottom:6px}
+ .sec{display:flex;align-items:center;gap:8px;margin:18px 2px 8px;font-size:12px;font-weight:700;
+  letter-spacing:.7px;text-transform:uppercase}
+ .sec.arch{color:var(--gold)} .sec.mind{color:var(--teal)}
+ .sec::after{content:"";flex:1;height:1px;background:var(--line)}
+ .hit{display:flex;gap:11px;background:var(--surface);border:1px solid var(--line);border-radius:14px;
+  padding:12px;margin:9px 0;transition:transform .08s ease,background .15s ease}
+ .hit:active{transform:scale(.99);background:var(--surface2)}
+ .chip{flex:0 0 auto;width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
+  font-size:17px;background:var(--surface2)}
+ .hit .body{flex:1;min-width:0}
+ .hit .ttl{font-size:14.5px;font-weight:650;line-height:1.35;margin-bottom:3px}
+ .hit .src{font-size:11.5px;color:var(--muted)}
+ .pills{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+ .pill{font-size:11px;color:var(--gold);background:rgba(230,182,92,.12);
+  border:1px solid rgba(230,182,92,.22);border-radius:999px;padding:2px 8px;white-space:nowrap}
+ .links{display:flex;align-items:center;gap:12px;margin-top:9px}
+ .open{display:inline-block;background:rgba(127,203,205,.13);border:1px solid rgba(127,203,205,.3);
+  border-radius:9px;padding:6px 12px;color:var(--teal);font-weight:700;font-size:13px}
+ .open.app{background:linear-gradient(135deg,rgba(127,203,205,.22),rgba(127,203,205,.1))}
+ .web{font-size:12px;color:var(--muted)}
+ .empty{color:var(--muted);text-align:center;padding:30px 10px;font-size:14px}
+ a{color:var(--teal);text-decoration:none}
 </style></head><body>
-<h1>✨ Egon Connect</h1>
-<textarea id="t" placeholder="Paste what you're reading or writing…"></textarea>
-<div class="row"><button id="paste">📋 Paste</button>
-<button id="go">Connect</button><button id="syn">🧠 Synthesize</button></div>
+<header>
+ <div class="mark">✨</div>
+ <div class="brand">Egon Connect<small>what in your world connects to this?</small></div>
+</header>
+<div class="composer">
+ <textarea id="t" placeholder="Paste what you're reading or writing…"></textarea>
+ <div class="actions">
+  <button id="paste">Paste</button>
+  <button id="go">Connect</button>
+  <button id="syn">Synthesize</button>
+ </div>
+</div>
 <div id="st"></div><div id="insight"></div><div id="res"></div>
 <script>
 const K=new URLSearchParams(location.search).get('k')||'';
 const E={instapaper:'📰',zotero:'📚',paperpile:'📄',kindle:'📖',letterboxd:'🎬',
  youtube_music:'🎵',pocketcasts:'🎧',chrome_bookmarks:'🔖',chrome_tabs:'🗂️',
  notion_workspace:'🟦',tvtime:'📺','mind-memory':'🧠'};
+const $=id=>document.getElementById(id);
 const esc=s=>String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const setStatus=(t,busy)=>{$('st').innerHTML=(busy?'<span class="dot"></span>':'')+esc(t);};
 const ANDROID=/Android/i.test(navigator.userAgent);
 // Open a hit in its native phone app when we have an Android deep link
 // (Drive file → Drive, Notion note → Notion, …); otherwise open the web URL.
@@ -107,38 +162,48 @@ function links(c){
  if(!c.url) return '';
  const useApp=ANDROID&&c.app_url;
  const primary=useApp?c.app_url:c.url;
- const label=useApp?('Open in '+esc(c.app_label||'app')):'Open ↗';
- let html='<a class="open'+(useApp?' app':'')+'" href="'+esc(primary)+'">'+label+'</a>';
+ const label=useApp?('Open in '+esc(c.app_label||'app')):'open ↗';
+ let html='<div class="links"><a class="open'+(useApp?' app':'')+'" href="'+esc(primary)+'">'+label+'</a>';
  if(useApp) html+='<a class="web" href="'+esc(c.url)+'" target="_blank">web ↗</a>';
- return html;
+ return html+'</div>';
 }
-document.getElementById('paste').onclick=async()=>{try{
- document.getElementById('t').value=await navigator.clipboard.readText();}catch(e){
- document.getElementById('st').textContent='clipboard blocked — long-press and paste manually';}};
+$('paste').onclick=async()=>{try{
+ $('t').value=await navigator.clipboard.readText();$('t').focus();}catch(e){
+ setStatus('clipboard blocked — long-press the box and paste');}};
 async function call(path){
- const t=document.getElementById('t').value.trim();
- if(t.length<3){document.getElementById('st').textContent='paste some text first';return;}
- document.getElementById('st').textContent=path.includes('synth')?'🧠 thinking… (can take ~40s)':'connecting…';
+ const t=$('t').value.trim();
+ if(t.length<3){setStatus('paste some text first');return;}
+ $('insight').style.display='none';
+ setStatus(path.includes('synth')?'thinking… (can take ~40s)':'connecting…',true);
  try{
   const r=await fetch(path+'?k='+encodeURIComponent(K),{method:'POST',
     headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});
-  if(r.status===403){document.getElementById('st').textContent='wrong token in URL';return;}
+  if(r.status===403){setStatus('wrong token in the link');return;}
   render(await r.json());
- }catch(e){document.getElementById('st').textContent='Egon not reachable — same WiFi as the PC?';}}
+ }catch(e){setStatus('Egon not reachable — on the same WiFi as the PC?');}}
+function card(c){
+ const why=(c.why&&c.why.length)?'<div class="pills">'+c.why.slice(0,5).map(w=>
+   '<span class="pill">'+esc(w)+'</span>').join('')+'</div>':'';
+ return '<div class="hit"><div class="chip">'+(E[c.source]||'•')+'</div>'+
+  '<div class="body"><div class="ttl">'+esc((c.title||'').slice(0,110))+'</div>'+
+  '<div class="src">'+esc(c.source||'')+'</div>'+why+links(c)+'</div></div>';}
 function render(d){
- const syn=d.synthesis||{};const ins=document.getElementById('insight');
- if(syn.status==='ok'){ins.style.display='block';ins.textContent='🧠 '+syn.insight;}
+ const syn=d.synthesis||{};const ins=$('insight');
+ if(syn.status==='ok'){ins.style.display='block';ins.textContent=syn.insight;}
  const conns=d.connections||[];
- document.getElementById('st').textContent=(d.mode||'')+' · '+conns.length+' connections';
- document.getElementById('res').innerHTML=conns.map(c=>
-  '<div class="hit"><b>'+(E[c.source]||'•')+' '+esc((c.title||'').slice(0,90))+'</b>'+
-  '<div class="meta">'+esc(c.source)+(c.why&&c.why.length?' <span class="why">↳ '+
-  esc(c.why.slice(0,4).join(', '))+'</span>':'')+'</div>'+links(c)+'</div>').join('');}
-document.getElementById('go').onclick=()=>call('/m/connect');
-document.getElementById('syn').onclick=()=>call('/m/synthesize');
+ setStatus((conns.length||'no')+' connection'+(conns.length===1?'':'s')+(d.mode?' · '+d.mode:''));
+ const arch=conns.filter(c=>c.source!=='mind-memory');
+ const mind=conns.filter(c=>c.source==='mind-memory');
+ let html='';
+ if(arch.length){html+='<div class="sec arch">From your archives</div>'+arch.map(card).join('');}
+ if(mind.length){html+='<div class="sec mind">From your mind</div>'+mind.map(card).join('');}
+ if(!conns.length){html='<div class="empty">No connections yet — try more distinctive words.</div>';}
+ $('res').innerHTML=html;}
+$('go').onclick=()=>call('/m/connect');
+$('syn').onclick=()=>call('/m/synthesize');
 // Android app share-target: app opens /m?k=…&shared=<text> → prefill + auto-connect.
 const SH=new URLSearchParams(location.search).get('shared');
-if(SH&&SH.trim().length>2){document.getElementById('t').value=SH;call('/m/connect');}
+if(SH&&SH.trim().length>2){$('t').value=SH;call('/m/connect');}
 </script></body></html>"""
 
 
