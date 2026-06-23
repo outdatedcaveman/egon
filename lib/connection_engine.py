@@ -195,17 +195,22 @@ def _semantic_connect(text: str, terms: list[str], limit: int) -> list[dict] | N
     return out
 
 
-def connect(text: str, limit: int = 18) -> dict[str, Any]:
+def connect(text: str, limit: int = 18, semantic_search: bool = True) -> dict[str, Any]:
     """The button. Give it what you're writing; get ranked connections from
     your archives + the shared mind. Hybrid (RRF fusion) ranking when semantic
-    index is ready, lexical fallback otherwise; matched terms attached as 'why'."""
+    index is ready, lexical fallback otherwise; matched terms attached as 'why'.
+
+    semantic_search=False skips the (currently brute-force, ~50s) embedding pass
+    and returns the fast lexical-only result — used by the phone so it answers in
+    <1s instead of timing out. Flip back to True once the turbovec query path
+    lands (sub-second semantic). Bruno 2026-06-23."""
     text = (text or "").strip()
     if len(text) < 3:
         return {"status": "error", "error": "give me at least a few words"}
     terms = _salient_terms(text)
 
-    # 1. Fetch semantic connections if ready
-    semantic = _semantic_connect(text, terms, limit=limit + 30)
+    # 1. Fetch semantic connections if ready (skipped for the fast lexical path)
+    semantic = _semantic_connect(text, terms, limit=limit + 30) if semantic_search else None
     
     # 2. Fetch lexical connections (archives + memory)
     lexical_archives = _archive_hits(terms, limit=limit + 30)
