@@ -58,8 +58,12 @@ ADB_CANDIDATES = [
 ]
 LOG_DIR = ROOT / "logs"
 
-POLL_INTERVAL_S = 30          # check adb_wifi_enabled this often
+POLL_INTERVAL_S = 30          # re-assert adb_wifi_enabled at most this often
 PROTECTED_POLL_S = 6          # while a banking app is up, watch foreground closely
+FOREGROUND_POLL_S = 4         # how often to check the foreground app for a banking
+                              # app — must be SMALL so Nubank is caught within
+                              # seconds of opening, not up to POLL_INTERVAL_S
+                              # (the 30s lag made banking unusable). Bruno 2026-06-23
 REASSERT_INTERVAL_S = 300     # re-stamp screen_timeout/stayon every 5 min
 BACKOFF_INITIAL_S = 5
 BACKOFF_CAP_S = 60
@@ -334,6 +338,7 @@ def _run_loop(stop: threading.Event) -> None:
     _log("info", "keepalive_start_inprocess", pid=os.getpid())
     backoff = BACKOFF_INITIAL_S
     last_reassert = 0.0
+    last_wifi_assert = 0.0        # throttle the adb_wifi re-enable to POLL_INTERVAL_S
     banking_grace_until = 0.0     # while >now, stay in banking mode (no relock)
     BANKING_GRACE_S = 90
     target = _read_target()
@@ -414,16 +419,22 @@ def _run_loop(stop: threading.Event) -> None:
 
             _write_phone_status(True, target)
 
-            kv = _assert_keepalive(adb_path, target)
-            if kv.get("adb_wifi_enabled_after"):
-                _log("info", "adb_wifi_reenabled", **kv)
-
             now = time.time()
+            # Re-assert Wireless Debugging only every POLL_INTERVAL_S. The
+            # foreground check above runs every loop (FOREGROUND_POLL_S) so a
+            # banking app is caught within seconds; we don't need to hammer the
+            # adb_wifi setting that fast. Bruno 2026-06-23.
+            if now - last_wifi_assert > POLL_INTERVAL_S:
+                kv = _assert_keepalive(adb_path, target)
+                if kv.get("adb_wifi_enabled_after"):
+                    _log("info", "adb_wifi_reenabled", **kv)
+                last_wifi_assert = now
+
             if now - last_reassert > REASSERT_INTERVAL_S:
                 _reassert_persistent_flags(adb_path, target)
                 last_reassert = now
 
-            stop.wait(POLL_INTERVAL_S)
+            stop.wait(FOREGROUND_POLL_S)
         except Exception as e:
             _log("error", "loop_exception", error=str(e)[:200])
             stop.wait(POLL_INTERVAL_S)
