@@ -40,6 +40,17 @@ LOCKED_FILE = ROOT / "state" / "panop" / "locked_target.json"
 # read this so Egon ALWAYS TELLS Bruno when the phone needs a USB re-plug.
 # Bruno 2026-06-01.
 STATUS_FILE = ROOT / "state" / "panop" / "phone_status.json"
+CONFIG_FILE = ROOT / "egon-config.json"
+# Presence of this file = "banking mode": Egon stops re-enabling Wireless
+# Debugging so apps that refuse to launch while debugging is on (Nubank and
+# other banking apps) can open. Toggle it with scripts/phone_banking_mode.py
+# or from the Inbox banner. Bruno 2026-06-23.
+PAUSE_FILE = ROOT / "state" / "panop" / "phone_link_paused.json"
+# Banking apps run anti-fraud checks that block launch while ADB / Wireless
+# Debugging is on. When one of these is in the foreground, Egon backs off and
+# turns Wireless Debugging OFF so it can open, then resumes once it's gone.
+# Override/extend via egon-config.json {"phone_link":{"protected_apps":[…]}}.
+DEFAULT_PROTECTED_APPS = ["com.nu.production"]   # Nubank (Android package id)
 ADB_CANDIDATES = [
     ROOT / "state" / "panop" / "platform-tools" / "platform-tools" / "adb.exe",
     ROOT / "panop_output" / "platform-tools" / "platform-tools" / "adb.exe",
@@ -48,6 +59,7 @@ ADB_CANDIDATES = [
 LOG_DIR = ROOT / "logs"
 
 POLL_INTERVAL_S = 30          # check adb_wifi_enabled this often
+PROTECTED_POLL_S = 6          # while a banking app is up, watch foreground closely
 REASSERT_INTERVAL_S = 300     # re-stamp screen_timeout/stayon every 5 min
 BACKOFF_INITIAL_S = 5
 BACKOFF_CAP_S = 60
@@ -136,6 +148,55 @@ def _reassert_persistent_flags(adb_path: Path, target: str) -> None:
     pass
 
 
+# ── banking-mode guard ───────────────────────────────────────────────────────
+# Bruno 2026-06-23: the keepalive used to re-enable Wireless Debugging every 30s
+# unconditionally. Nubank (and banking apps generally) refuse to launch while
+# ADB / Wireless Debugging is on — so the moment Bruno turned it off to open
+# Nubank, Egon turned it back on and Nubank stayed blocked. The guard below
+# stops that fight: when a protected app is in the foreground (or banking mode
+# is set manually), Egon turns Wireless Debugging OFF and leaves it off until
+# the app is gone, instead of re-asserting it.
+
+def _load_phone_cfg() -> dict:
+    """Read phone-link settings from egon-config.json. Always returns a usable
+    dict; `protected_apps` defaults to Nubank, `paused` defaults to False."""
+    try:
+        cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        cfg = {}
+    pl = cfg.get("phone_link") or {}
+    apps = pl.get("protected_apps")
+    if not isinstance(apps, list) or not apps:
+        apps = list(DEFAULT_PROTECTED_APPS)
+    apps = [str(a).strip() for a in apps if str(a).strip()]
+    return {"protected_apps": apps, "paused": bool(pl.get("paused"))}
+
+
+def _manual_paused(cfg: dict) -> bool:
+    """Banking mode set deliberately — via the config flag or the pause file.
+    Never auto-cleared; the user decides when to resume."""
+    return bool(cfg.get("paused")) or PAUSE_FILE.exists()
+
+
+def _foreground_package(adb_path: Path, target: str) -> str:
+    """Best-effort: the package of the app currently in the foreground, or ''.
+    Reads the resumed activity (then the focused window as a fallback)."""
+    rc, out = _adb(adb_path, "-s", target, "shell", "dumpsys", "activity",
+                   "activities", timeout=6)
+    m = re.search(r"mResumedActivity[^\n]*?\b([a-zA-Z][a-zA-Z0-9_.]+)/", out or "")
+    if m:
+        return m.group(1)
+    rc, out = _adb(adb_path, "-s", target, "shell", "dumpsys", "window",
+                   "windows", timeout=6)
+    m = re.search(r"mCurrentFocus=[^\n]*?\b([a-zA-Z][a-zA-Z0-9_.]+)/", out or "")
+    return m.group(1) if m else ""
+
+
+def _set_adb_wifi(adb_path: Path, target: str, on: bool) -> None:
+    _adb(adb_path, "-s", target, "shell", "settings", "put", "global",
+         "adb_wifi_enabled", "1" if on else "0", timeout=6)
+
+
 # ── auto-relock over USB ─────────────────────────────────────────────────────
 # Bruno 2026-06-01: the wireless lock (`adb tcpip 5555`) is LOST on every phone
 # reboot and whenever Developer Options is toggled — and Bruno has hit this
@@ -221,25 +282,38 @@ def _relock_via_usb(adb_path: Path) -> str | None:
 
 
 def _write_phone_status(reachable: bool, target: str | None,
-                        usb_seen: bool = False) -> None:
+                        usb_seen: bool = False, paused: bool = False,
+                        paused_reason: str = "") -> None:
     """Persist a human-facing status the UI + tray notifier read. `needs_action`
     is True when the link is down AND we couldn't auto-heal (no usable USB
-    device) — i.e. Bruno must plug in / enable USB debugging."""
-    needs_action = (not reachable) and (not usb_seen)
-    if reachable:
-        msg = "Phone connected — Inbox drain can reach it."
-    elif usb_seen:
-        msg = "Phone plugged in over USB — re-establishing the wireless link…"
+    device) — i.e. Bruno must plug in / enable USB debugging. When `paused`
+    (banking mode), the link being down is intentional, so `needs_action` stays
+    False and the message explains why."""
+    if paused:
+        needs_action = False
+        msg = ("Phone link paused (banking mode) — Egon has stopped re-enabling "
+               "Wireless Debugging so apps like Nubank can open"
+               + (f" ({paused_reason})" if paused_reason else "")
+               + ". The link resumes automatically once the banking app closes; "
+               "turn banking mode off (or delete the pause flag) to resume now.")
     else:
-        msg = ("Phone disconnected. Plug it into the PC via USB and make sure "
-               "USB debugging is ON (Developer Options) — Egon will then "
-               "reconnect automatically. (tcpip mode is lost on every reboot; "
-               "this is the one manual step.)")
+        needs_action = (not reachable) and (not usb_seen)
+        if reachable:
+            msg = "Phone connected — Inbox drain can reach it."
+        elif usb_seen:
+            msg = "Phone plugged in over USB — re-establishing the wireless link…"
+        else:
+            msg = ("Phone disconnected. Plug it into the PC via USB and make sure "
+                   "USB debugging is ON (Developer Options) — Egon will then "
+                   "reconnect automatically. (tcpip mode is lost on every reboot; "
+                   "this is the one manual step.)")
     try:
         STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
         STATUS_FILE.write_text(json.dumps({
             "reachable": reachable,
             "needs_action": needs_action,
+            "paused": paused,
+            "paused_reason": paused_reason,
             "target": target,
             "message": msg,
             "updated": datetime.now().isoformat(timespec="seconds"),
@@ -260,10 +334,38 @@ def _run_loop(stop: threading.Event) -> None:
     _log("info", "keepalive_start_inprocess", pid=os.getpid())
     backoff = BACKOFF_INITIAL_S
     last_reassert = 0.0
+    banking_grace_until = 0.0     # while >now, stay in banking mode (no relock)
+    BANKING_GRACE_S = 90
     target = _read_target()
 
     while not stop.is_set():
         try:
+            cfg = _load_phone_cfg()
+            manual = _manual_paused(cfg)
+            in_grace = time.time() < banking_grace_until
+            if manual or in_grace:
+                # Banking mode: do NOT relock and do NOT re-enable Wireless
+                # Debugging — that's exactly what blocks Nubank et al. Keep it
+                # OFF while reachable, and auto-resume (only for the foreground
+                # auto-trigger, never a manual pause) once the app is gone.
+                target = _read_target() or target
+                reachable = bool(target) and _is_reachable(adb_path, target)
+                reason = "manual banking mode" if manual else "banking app open"
+                if reachable:
+                    _set_adb_wifi(adb_path, target, False)
+                    if not manual:
+                        fg = _foreground_package(adb_path, target)
+                        if fg and fg not in set(cfg["protected_apps"]):
+                            banking_grace_until = 0.0   # app gone → resume
+                            _log("info", "banking_mode_auto_resume", fg=fg)
+                        else:
+                            banking_grace_until = time.time() + BANKING_GRACE_S
+                            reason = f"{fg or 'banking app'} in foreground"
+                _write_phone_status(reachable, target, paused=True,
+                                    paused_reason=reason)
+                stop.wait(PROTECTED_POLL_S if in_grace else POLL_INTERVAL_S)
+                continue
+
             target = _read_target() or target
             if not target:
                 # No locked target yet — try to establish one automatically if
@@ -295,6 +397,21 @@ def _run_loop(stop: threading.Event) -> None:
                 backoff = min(BACKOFF_CAP_S, backoff * 2)
                 continue
             backoff = BACKOFF_INITIAL_S    # reset on success
+
+            # Banking guard: if a protected app (Nubank, …) is in the
+            # foreground, enter banking mode instead of re-enabling debugging —
+            # otherwise the next line would re-block it. The top-of-loop branch
+            # takes over from here until the app closes. Bruno 2026-06-23.
+            fg = _foreground_package(adb_path, target)
+            if fg and fg in set(cfg["protected_apps"]):
+                _set_adb_wifi(adb_path, target, False)
+                banking_grace_until = time.time() + BANKING_GRACE_S
+                _log("info", "banking_mode_auto", fg=fg)
+                _write_phone_status(True, target, paused=True,
+                                    paused_reason=f"{fg} in foreground")
+                stop.wait(PROTECTED_POLL_S)
+                continue
+
             _write_phone_status(True, target)
 
             kv = _assert_keepalive(adb_path, target)
