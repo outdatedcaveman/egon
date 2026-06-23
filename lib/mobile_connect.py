@@ -37,20 +37,38 @@ MOBILE_PORT = 8765
 
 
 def get_token() -> str:
-    """Read (or create once) the mobile token in egon-config.json."""
+    """Read (or create once) the mobile token in egon-config.json.
+
+    The stored value may be DPAPI-encrypted at rest (``__dpapi__:`` prefix, added
+    for secrets hygiene). We MUST decrypt it before returning, otherwise the
+    server authenticates against the opaque blob while the phone app sends the
+    original plaintext token baked in at build time -> every request 403s. New
+    tokens are stored encrypted but returned plaintext. Bruno 2026-06-23."""
     cfg = {}
     try:
         cfg = json.loads(CFG.read_text(encoding="utf-8"))
     except Exception:
         pass
     tok = ((cfg.get("connect_mobile") or {}).get("token") or "").strip()
-    if not tok:
-        tok = secrets.token_urlsafe(18)
-        cfg.setdefault("connect_mobile", {})["token"] = tok
+    if tok:
         try:
-            CFG.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+            from lib.secrets import decrypt_val
+            return decrypt_val(tok)
         except Exception:
-            pass
+            return tok
+    # First run — generate, persist (encrypted if DPAPI is available), return plaintext.
+    tok = secrets.token_urlsafe(18)
+    stored = tok
+    try:
+        from lib.secrets import encrypt_val
+        stored = encrypt_val(tok)
+    except Exception:
+        pass
+    cfg.setdefault("connect_mobile", {})["token"] = stored
+    try:
+        CFG.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except Exception:
+        pass
     return tok
 
 
