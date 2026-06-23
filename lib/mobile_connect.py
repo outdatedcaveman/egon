@@ -245,7 +245,10 @@ def build_app():
             return JSONResponse({"error": "forbidden"}, status_code=403)
         body = await req.json()
         from lib.connection_engine import connect
-        return connect(str(body.get("text") or ""), limit=14)
+        # Fast lexical-only path so the phone answers in <1s instead of timing
+        # out on the ~50s brute-force semantic pass. Restore semantic_search=True
+        # once turbovec makes the embedding query sub-second. Bruno 2026-06-23.
+        return connect(str(body.get("text") or ""), limit=14, semantic_search=False)
 
     @app.post("/m/synthesize")
     async def m_synth(req: Request):
