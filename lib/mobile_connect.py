@@ -83,6 +83,9 @@ _PAGE = """<!doctype html><html><head>
  .hit{background:#0E2630;border:1px solid #1F4858;border-radius:8px;padding:9px;margin:7px 0}
  .hit b{font-size:14px}.meta{color:#9CA3AF;font-size:12px}.why{color:#D4A24C}
  a{color:#7BC5C7;text-decoration:none}#st{color:#9CA3AF;font-size:13px;margin:4px 0}
+ .open{display:inline-block;margin-top:6px;background:#16404F;border:1px solid #1F4858;
+      border-radius:6px;padding:5px 10px;color:#7BC5C7;font-weight:600}
+ .open.app{background:#143038;border-color:#7BC5C7}.web{margin-left:10px;font-size:12px}
 </style></head><body>
 <h1>✨ Egon Connect</h1>
 <textarea id="t" placeholder="Paste what you're reading or writing…"></textarea>
@@ -95,6 +98,20 @@ const E={instapaper:'📰',zotero:'📚',paperpile:'📄',kindle:'📖',letterbo
  youtube_music:'🎵',pocketcasts:'🎧',chrome_bookmarks:'🔖',chrome_tabs:'🗂️',
  notion_workspace:'🟦',tvtime:'📺','mind-memory':'🧠'};
 const esc=s=>String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ANDROID=/Android/i.test(navigator.userAgent);
+// Open a hit in its native phone app when we have an Android deep link
+// (Drive file → Drive, Notion note → Notion, …); otherwise open the web URL.
+// The intent:// link carries a browser fallback, so an uninstalled app still
+// lands on the web page. Off Android (iOS/desktop) we always use the web URL.
+function links(c){
+ if(!c.url) return '';
+ const useApp=ANDROID&&c.app_url;
+ const primary=useApp?c.app_url:c.url;
+ const label=useApp?('Open in '+esc(c.app_label||'app')):'Open ↗';
+ let html='<a class="open'+(useApp?' app':'')+'" href="'+esc(primary)+'">'+label+'</a>';
+ if(useApp) html+='<a class="web" href="'+esc(c.url)+'" target="_blank">web ↗</a>';
+ return html;
+}
 document.getElementById('paste').onclick=async()=>{try{
  document.getElementById('t').value=await navigator.clipboard.readText();}catch(e){
  document.getElementById('st').textContent='clipboard blocked — long-press and paste manually';}};
@@ -115,9 +132,8 @@ function render(d){
  document.getElementById('st').textContent=(d.mode||'')+' · '+conns.length+' connections';
  document.getElementById('res').innerHTML=conns.map(c=>
   '<div class="hit"><b>'+(E[c.source]||'•')+' '+esc((c.title||'').slice(0,90))+'</b>'+
-  (c.url?' <a href="'+esc(c.url)+'" target="_blank">open ↗</a>':'')+
   '<div class="meta">'+esc(c.source)+(c.why&&c.why.length?' <span class="why">↳ '+
-  esc(c.why.slice(0,4).join(', '))+'</span>':'')+'</div></div>').join('');}
+  esc(c.why.slice(0,4).join(', '))+'</span>':'')+'</div>'+links(c)+'</div>').join('');}
 document.getElementById('go').onclick=()=>call('/m/connect');
 document.getElementById('syn').onclick=()=>call('/m/synthesize');
 // Android app share-target: app opens /m?k=…&shared=<text> → prefill + auto-connect.

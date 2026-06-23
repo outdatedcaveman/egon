@@ -56,6 +56,17 @@ foi era ser estar tem têm há já ainda até desde entre
 """.split())
 
 
+def _enrich(connections: list[dict]) -> list[dict]:
+    """Attach native-app deep links (`app_url`/`app_label`) so the phone can
+    open each hit in Notion/Drive/YouTube/… instead of the browser. Best-effort:
+    if the helper is unavailable for any reason, the web `url` still works."""
+    try:
+        from lib.deep_links import enrich
+        return enrich(connections)
+    except Exception:
+        return connections
+
+
 def _salient_terms(text: str, max_terms: int = 24) -> list[str]:
     """Pull the terms that carry the meaning of the input. Frequency-weighted,
     stopwords dropped, longer terms favoured (they're rarer and more topical)."""
@@ -129,7 +140,7 @@ def _archive_hits(terms: list[str], limit: int = 18) -> list[dict[str, Any]]:
             continue
         title = cross_search.pretty_title(item)
         url = cross_search.pretty_url(item)
-        dedup_key = (url or "").strip().lower() or title.strip().lower()
+        dedup_key = (url or "").strip().lower() or (title or "").strip().lower()
         if dedup_key in seen:
             continue
         seen.add(dedup_key)
@@ -210,7 +221,7 @@ def connect(text: str, limit: int = 18) -> dict[str, Any]:
         for rank, h in enumerate(semantic, 1):
             url = h.get("url")
             title = h.get("title")
-            dkey = (url or "").strip().lower() or title.strip().lower()
+            dkey = (url or "").strip().lower() or (title or "").strip().lower()
             if dkey not in unique_items:
                 unique_items[dkey] = {
                     "source": h.get("source"),
@@ -228,7 +239,7 @@ def connect(text: str, limit: int = 18) -> dict[str, Any]:
         for rank, h in enumerate(lexical, 1):
             url = h.get("url")
             title = h.get("title")
-            dkey = (url or "").strip().lower() or title.strip().lower()
+            dkey = (url or "").strip().lower() or (title or "").strip().lower()
             if dkey in unique_items:
                 item = unique_items[dkey]
                 item["lexical_rank"] = rank
@@ -283,7 +294,7 @@ def connect(text: str, limit: int = 18) -> dict[str, Any]:
             "mode": "hybrid",
             "terms": terms[:12],
             "count": len(diversified),
-            "connections": diversified[:limit + 8],
+            "connections": _enrich(diversified[:limit + 8]),
         }
 
     # Lexical fallback (index still building, or no model).
@@ -297,5 +308,5 @@ def connect(text: str, limit: int = 18) -> dict[str, Any]:
         "mode": "lexical",
         "terms": terms[:12],
         "count": len(connections),
-        "connections": connections[:limit + 8],
+        "connections": _enrich(connections[:limit + 8]),
     }
