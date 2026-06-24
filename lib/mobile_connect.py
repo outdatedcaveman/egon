@@ -149,20 +149,32 @@ _PAGE = """<!doctype html><html><head>
  .web{font-size:12px;color:var(--muted)}
  .empty{color:var(--muted);text-align:center;padding:30px 10px;font-size:14px}
  a{color:var(--teal);text-decoration:none}
+ .capture{width:100%;border:none;border-radius:13px;padding:14px;margin-bottom:12px;
+  font-weight:800;font-size:15.5px;color:#08171c;
+  background:linear-gradient(135deg,var(--gold),#d6a548);box-shadow:0 4px 16px rgba(230,182,92,.3)}
+ .share{font-size:12px;color:var(--muted)}
+ .drainbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:18px;
+  padding:11px 13px;background:var(--surface);border:1px solid var(--line);border-radius:12px;
+  font-size:12.5px;color:var(--muted)}
+ .drainbar b{color:var(--text)}
+ .drainbar button{flex:0 0 auto;padding:8px 12px;border-radius:9px;border:1px solid var(--line);
+  background:var(--surface2);color:var(--text);font-weight:700;font-size:12.5px}
 </style></head><body>
 <header>
  <div class="mark">✨</div>
  <div class="brand">Egon Connect<small>what in your world connects to this?</small></div>
 </header>
+<button id="cap" class="capture" style="display:none">📸 Capture this screen</button>
 <div class="composer">
- <textarea id="t" placeholder="Paste what you're reading or writing…"></textarea>
+ <textarea id="t" placeholder="Type, paste, or capture — then Search…"></textarea>
  <div class="actions">
   <button id="paste">Paste</button>
-  <button id="go">Connect</button>
+  <button id="go">Search</button>
   <button id="syn">Synthesize</button>
  </div>
 </div>
 <div id="st"></div><div id="insight"></div><div id="res"></div>
+<div id="drainbar" class="drainbar" style="display:none"></div>
 <script>
 const K=new URLSearchParams(location.search).get('k')||'';
 const E={instapaper:'📰',zotero:'📚',paperpile:'📄',kindle:'📖',letterboxd:'🎬',
@@ -177,12 +189,15 @@ const ANDROID=/Android/i.test(navigator.userAgent);
 // The intent:// link carries a browser fallback, so an uninstalled app still
 // lands on the web page. Off Android (iOS/desktop) we always use the web URL.
 function links(c){
- if(!c.url) return '';
- const useApp=ANDROID&&c.app_url;
- const primary=useApp?c.app_url:c.url;
- const label=useApp?('Open in '+esc(c.app_label||'app')):'open ↗';
- let html='<div class="links"><a class="open'+(useApp?' app':'')+'" href="'+esc(primary)+'">'+label+'</a>';
- if(useApp) html+='<a class="web" href="'+esc(c.url)+'" target="_blank">web ↗</a>';
+ let html='<div class="links">';
+ if(c.url){
+  const useApp=ANDROID&&c.app_url;
+  const primary=useApp?c.app_url:c.url;
+  const label=useApp?('Open in '+esc(c.app_label||'app')):'open ↗';
+  html+='<a class="open'+(useApp?' app':'')+'" href="'+esc(primary)+'">'+label+'</a>';
+  if(useApp) html+='<a class="web" href="'+esc(c.url)+'" target="_blank">web ↗</a>';
+ }
+ html+='<a class="share" href="javascript:void 0" data-u="'+esc(c.url||'')+'" data-t="'+esc(c.title||'')+'">share</a>';
  return html+'</div>';
 }
 $('paste').onclick=async()=>{try{
@@ -219,6 +234,40 @@ function render(d){
  $('res').innerHTML=html;}
 $('go').onclick=()=>call('/m/connect');
 $('syn').onclick=()=>call('/m/synthesize');
+
+// Native bridge (injected by the Android app's WebView as `Android`): lets the
+// page read the screen and toggle USB debugging. Absent on iOS/desktop.
+const BR=(typeof Android!=='undefined')?Android:null;
+
+// CAPTURE: read the screen behind the panel via the accessibility service, fill
+// the box, and search. Distinct from Search (which uses whatever's in the box).
+if(BR&&BR.captureScreen){
+ $('cap').style.display='block';
+ $('cap').onclick=()=>{
+  let txt='';try{txt=BR.captureScreen()||'';}catch(e){}
+  if(txt.trim().length<3){setStatus('nothing readable on screen — type or paste instead');return;}
+  $('t').value=txt;call('/m/connect');
+ };
+}
+// SHARE each result (native share sheet).
+$('res').addEventListener('click',ev=>{
+ const a=ev.target.closest('.share');if(!a)return;ev.preventDefault();
+ const data={title:a.dataset.t||'Egon',text:a.dataset.t||'',url:a.dataset.u||''};
+ if(navigator.share){navigator.share(data).catch(()=>{});}
+ else if(a.dataset.u){window.open(a.dataset.u,'_blank');}
+});
+// USB-debug toggle (tab-sync). The app holds WRITE_SECURE_SETTINGS so it flips
+// both ways with no deadlock: ON to let egon sync/close tabs, OFF for banking.
+function renderDrain(){
+ if(!BR||!BR.setUsbDebug)return;
+ let on=false;try{on=BR.usbDebugOn();}catch(e){}
+ $('drainbar').style.display='flex';
+ $('drainbar').innerHTML='<span>Tab-sync debugging: <b>'+(on?'ON':'OFF — banking safe')+'</b></span>'+
+  '<button id="draintog">'+(on?'Turn OFF':'Turn ON')+'</button>';
+ $('draintog').onclick=()=>{try{BR.setUsbDebug(!on);}catch(e){}setTimeout(renderDrain,900);};
+}
+renderDrain();
+
 // Android app share-target: app opens /m?k=…&shared=<text> → prefill + auto-connect.
 const SH=new URLSearchParams(location.search).get('shared');
 if(SH&&SH.trim().length>2){$('t').value=SH;call('/m/connect');}
