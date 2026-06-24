@@ -92,6 +92,34 @@ def _find_adb() -> Path | None:
     return None
 
 
+# ── cross-process singleton ──────────────────────────────────────────────────
+# Bruno 2026-06-24: this service now runs in BOTH the always-on egon_core (so
+# the phone link + Capture grant are managed even when the desktop app is shut)
+# and the desktop app. Two concurrent adb keepalive loops are exactly what
+# crashed the PC on Chrome-open (2026-06-15/-17). A kernel named-mutex lets both
+# hosts start the loop safely: whoever claims it runs; the other retries every
+# poll and takes over only if the owner exits. Idempotent per process.
+_KEEPALIVE_MUTEX = "Egon-PhoneKeepalive-2026-06"
+_singleton_owned = False
+
+
+def _own_keepalive_singleton() -> bool:
+    global _singleton_owned
+    if _singleton_owned:
+        return True
+    try:
+        from lib.single_instance_mutex import claim_or_exit
+        if claim_or_exit(_KEEPALIVE_MUTEX):
+            _singleton_owned = True
+            return True
+        return False
+    except Exception:
+        # Guard import broke — preserve the historical single-host behaviour
+        # (the desktop app ran the loop) rather than leaving the phone unmanaged.
+        _singleton_owned = True
+        return True
+
+
 def _read_target() -> str | None:
     try:
         d = json.loads(LOCKED_FILE.read_text(encoding="utf-8"))
@@ -211,6 +239,21 @@ def _set_adb_wifi(adb_path: Path, target: str, on: bool) -> None:
 # bank app treats an active accessibility service as a fraud/overlay signal.
 A11Y_SERVICE = ("org.brunosaramago.egonconnect/"
                 "org.brunosaramago.egonconnect.EgonA11yService")
+
+
+def _ensure_overlay(adb_path: Path, target: str) -> None:
+    """Keep the floating-bubble overlay grant (SYSTEM_ALERT_WINDOW) — and the
+    'restricted settings' unblock that lets the a11y grant stick — allowed.
+    Both are appops that an APK reinstall resets to 'default', which silently
+    kills the bubble. Unlike a11y this does NOT block banking apps, so it's kept
+    on at all times. Idempotent: only writes when not already 'allow'."""
+    for op in ("SYSTEM_ALERT_WINDOW", "ACCESS_RESTRICTED_SETTINGS"):
+        _, cur = _adb(adb_path, "-s", target, "shell", "appops", "get",
+                      "org.brunosaramago.egonconnect", op, timeout=6)
+        if "allow" not in (cur or "").lower():
+            _adb(adb_path, "-s", target, "shell", "appops", "set",
+                 "org.brunosaramago.egonconnect", op, "allow", timeout=6)
+            _log("info", "appop_reallowed", op=op)
 
 
 def _ensure_a11y(adb_path: Path, target: str, on: bool) -> None:
@@ -367,6 +410,16 @@ def _write_phone_status(reachable: bool, target: str | None,
 
 
 def _run_loop(stop: threading.Event) -> None:
+    # Defer to whichever host owns the keepalive singleton; retry every poll so
+    # we take over if that host (e.g. the desktop app) exits. Prevents a second
+    # adb loop from running alongside egon_core's.
+    while not stop.is_set():
+        if _own_keepalive_singleton():
+            break
+        stop.wait(POLL_INTERVAL_S)
+    if stop.is_set():
+        return
+
     adb_path = _find_adb()
     if not adb_path:
         _log("error", "adb_not_found",
@@ -473,6 +526,8 @@ def _run_loop(stop: threading.Event) -> None:
                 # Restore the Connect "Capture" accessibility grant if a reinstall
                 # wiped it — only here (the all-clear path), never in banking mode.
                 _ensure_a11y(adb_path, target, True)
+                # Keep the bubble overlay grant alive too (reinstall-safe).
+                _ensure_overlay(adb_path, target)
                 last_wifi_assert = now
 
             if now - last_reassert > REASSERT_INTERVAL_S:

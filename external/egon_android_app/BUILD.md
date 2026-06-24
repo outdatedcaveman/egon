@@ -57,3 +57,25 @@ Gotchas:
   @string). No R.java required (Java doesn't reference resources).
 - A11y enablement survives `install -r`; SYSTEM_ALERT_WINDOW + restricted-
   settings appops also persist, but reassert them after install to be safe.
+
+## v1.3 — durable bubble + self-healing grants (2026-06-24)
+The bubble kept vanishing: a plain background Service is reaped by Android once
+the app is cached, and MainActivity is `singleTask` so re-tapping the icon hits
+`onNewIntent` (not `onCreate`, the only place the bubble was started). Fixes:
+- **BubbleService is now a FOREGROUND service** (`foregroundServiceType=specialUse`
+  on API 34 — needs `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_SPECIAL_USE`
+  perms and a `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` `<property>` on the `<service>`).
+  IMPORTANCE_MIN ongoing notification. Survives backgrounding; verified
+  `isForeground=true types=0x40000000` persists after HOME.
+- `onStartCommand` returns **START_STICKY**; MainActivity re-starts the service
+  in **onResume** so reopening Egon always revives the bubble.
+- **Grants self-heal from the PC** now: `egon_app/services/phone_keepalive_service.py`
+  (running always-on inside egon_core) re-asserts the a11y grant + SYSTEM_ALERT_WINDOW
+  / ACCESS_RESTRICTED_SETTINGS appops whenever the phone is connected, so an
+  `install`/reinstall that wipes them is repaired within one poll. a11y is turned
+  OFF in banking mode; the overlay appop is kept on (it doesn't block banking).
+
+### Build it
+A runnable `build.sh` now sits beside this file (was prose-only): from the raw
+toolchain root `C:\Users\bruno\egon_android` run `bash build.sh` →
+`out/EgonConnect.apk`, then `adb -s <target> install -r out/EgonConnect.apk`.

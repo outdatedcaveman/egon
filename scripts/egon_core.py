@@ -191,9 +191,10 @@ def check_mind(u: Unit) -> None:
     try:
         # mind_service is idempotent (own mutex + ready checks); detached so it
         # outlives the core if the core itself is restarted.
+        env = {**SPAWN_ENV, "EGON_MIND_SERVICE_FORCE": "1"}
         subprocess.Popen(
             [str(PYW), str(ROOT / "scripts" / "mind_service.py")],
-            cwd=str(ROOT), env=SPAWN_ENV,
+            cwd=str(ROOT), env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008),
         )
@@ -485,21 +486,34 @@ _mirror_running = False
 def check_mirror(u: Unit) -> None:
     global _mirror_last, _mirror_running
     state_file = ROOT / "state" / "mirror_runner.json"
+    catchup_file = ROOT / "state" / "notion_catchup_active.json"
+
+    # Read catchup state
+    catchup_active = False
+    try:
+        if catchup_file.exists():
+            import json as _json
+            catchup_active = _json.loads(catchup_file.read_text(encoding="utf-8")).get("active", False)
+    except Exception:
+        pass
+
     try:
         import json as _json
         cur = _json.loads(state_file.read_text(encoding="utf-8")).get(
             "notion_cursor", {}) if state_file.exists() else {}
         u.ok = True
-        u.detail = "notion: " + ", ".join(
+        u.detail = ("catchup active" if catchup_active else "notion") + ": " + ", ".join(
             f"{k}={v}" for k, v in list(cur.items())[:4]) if cur else "idle"
     except Exception:
         u.ok = True
         u.detail = "idle"
     allowed, why = _heavy_allowed()
-    if not allowed:
+    if not allowed and not catchup_active:
         u.detail += f" ({why})"
         return
-    if _mirror_running or time.time() - _mirror_last < MIRROR_EVERY_S:
+    if _mirror_running:
+        return
+    if not catchup_active and time.time() - _mirror_last < MIRROR_EVERY_S:
         return
     _mirror_last = time.time()
     _mirror_running = True
@@ -507,21 +521,57 @@ def check_mirror(u: Unit) -> None:
     def _run():
         global _mirror_running
         try:
-            # Bruno's manual Notion content: refresh page BODIES first (cached
-            # by last_edited_time, ~60 pages/run) so the Obsidian mirror
-            # carries full text, not stubs. #66, 2026-06-12.
-            from lib import notion_body
-            bres = notion_body.refresh(batch=NOTION_BODY_BATCH)
-            if bres.get("fetched"):
-                log("info", "notion_bodies", **{k: bres[k] for k in
-                    ("fetched", "cached_total") if k in bres})
-        except Exception as e:
-            log("warn", "notion_bodies_failed", error=str(e)[:120])
-        try:
+            # Only refresh bodies if not in catchup mode to save time
+            if not catchup_active:
+                try:
+                    from lib import notion_body
+                    bres = notion_body.refresh(batch=NOTION_BODY_BATCH)
+                    if bres.get("fetched"):
+                        log("info", "notion_bodies", **{k: bres[k] for k in
+                            ("fetched", "cached_total") if k in bres})
+                except Exception as e:
+                    log("warn", "notion_bodies_failed", error=str(e)[:120])
+
             from lib import mirror_runner
-            res = mirror_runner.run_notion_increment(batch=MIRROR_BATCH)
-            log("info", "mirror_increment", pushed=res.get("pushed"),
-                status=res.get("status"))
+            import json as _json
+
+            # Check catchup flag again inside thread
+            active = False
+            try:
+                if catchup_file.exists():
+                    active = _json.loads(catchup_file.read_text(encoding="utf-8")).get("active", False)
+            except Exception:
+                pass
+
+            if active:
+                log("info", "notion_catchup_started")
+                while True:
+                    t0 = time.time()
+                    res = mirror_runner.run_notion_increment(batch=200)
+                    pushed = res.get("pushed", 0)
+                    log("info", "notion_catchup_batch", pushed=pushed, status=res.get("status"), secs=round(time.time() - t0, 1))
+
+                    if pushed == 0:
+                        log("info", "notion_catchup_completed")
+                        try:
+                            catchup_file.write_text(_json.dumps({"active": False}), encoding="utf-8")
+                        except Exception:
+                            pass
+                        break
+
+                    # Check if catchup was deactivated externally
+                    try:
+                        if catchup_file.exists() and not _json.loads(catchup_file.read_text(encoding="utf-8")).get("active", False):
+                            log("info", "notion_catchup_paused_externally")
+                            break
+                    except Exception:
+                        pass
+
+                    time.sleep(2.0)
+            else:
+                res = mirror_runner.run_notion_increment(batch=MIRROR_BATCH)
+                log("info", "mirror_increment", pushed=res.get("pushed"),
+                    status=res.get("status"))
         except Exception as e:
             log("warn", "mirror_failed", error=str(e)[:160])
         finally:
@@ -545,6 +595,20 @@ def main() -> int:
         return 0
 
     log("info", "core_start")
+
+    # Always-on phone keepalive: keep the wireless-debug link alive AND self-heal
+    # the Connect "Capture" accessibility grant (wiped on every APK reinstall),
+    # even when the desktop app is closed. The service guards itself with a
+    # cross-process mutex, so if the desktop app is also open only ONE adb loop
+    # runs (two loops crashed the PC — see single-instance note above). Bruno 2026-06-24.
+    try:
+        from egon_app.services.phone_keepalive_service import PhoneKeepaliveService
+        _keepalive = PhoneKeepaliveService()
+        _keepalive.start()
+        log("info", "phone_keepalive_started_incore")
+    except Exception as e:
+        log("warn", "phone_keepalive_start_failed", error=str(e)[:160])
+
     units = {"mind": Unit("mind"), "headroom": Unit("headroom"),
              "ollama": Unit("ollama"),
              "connect_index": Unit("connect_index"),
