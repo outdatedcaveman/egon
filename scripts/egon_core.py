@@ -145,15 +145,18 @@ def _heavy_allowed() -> tuple[bool, str]:
     Bruno was actively using Inbox. Defaults to manual opt-in.
     """
     # HARD disk guard: whole-vault hydration/embedding grows the index by many GB.
-    # Never run it when the index volume is low on space, or it would fill the
-    # disk and wedge the machine. Checks the index dir's drive. Bruno 2026-06-24.
+    # Never run it when free space is low, or it would fill the disk and wedge the
+    # machine. Check the SYSTEM drive (C:) — even when the index lives on Google
+    # Drive, Drive streams through a local cache on C:, so C: is the real
+    # constraint. Take the min with the index drive too, for a true second disk.
+    # Bruno 2026-06-24.
     try:
         from lib.egon_paths import CONNECT_INDEX_DIR as _idx_dir
+        free = min(_free_gb(ROOT), _free_gb(Path(_idx_dir)) if Path(_idx_dir).exists() else 999.0)
     except Exception:
-        _idx_dir = ROOT
-    free = _free_gb(_idx_dir if Path(_idx_dir).exists() else ROOT)
+        free = _free_gb(ROOT)
     if free < MIN_FREE_GB:
-        return False, f"paused: low disk ({free:.1f}GB free < {MIN_FREE_GB}GB) — move the index to Drive"
+        return False, f"paused: low disk ({free:.1f}GB free < {MIN_FREE_GB}GB)"
     if HEAVY_MODE in ("1", "true", "yes", "always"):
         return True, "heavy mode always"
     if HEAVY_MODE in ("off", "0", "false", "no", "manual", ""):
