@@ -22,12 +22,12 @@ from PySide6.QtWidgets import (
     QScrollArea, QFrame,
 )
 
-_BG = "#0E2630"
-_BORDER = "#1F4858"
-_ACCENT = "#7BC5C7"
-_TEXT = "#F0E9D5"
-_MUTED = "#9CA3AF"
-_GOLD = "#D4A24C"
+_BG = "#16181c"
+_BORDER = "#22252a"
+_ACCENT = "#ff453a"
+_TEXT = "#f5f5f7"
+_MUTED = "#76767f"
+_GOLD = "#ff9f0a"
 
 _SRC_ICON = {
     "instapaper": "📰", "zotero": "📚", "paperpile": "📄", "kindle": "📖",
@@ -49,9 +49,27 @@ class _Worker(QThread):
         self._text = text
 
     def run(self):
+        # Prefer the always-warm mind service: its semantic index is already
+        # loaded, so the desktop Connect is as fast as the phone (~1-3s) instead
+        # of paying a cold ~3min in-process load. Semantic-only (lexical_search
+        # off) — the turbovec index spans every source; the lexical scan added
+        # ~30s. Falls back to in-process if the service is unreachable. 2026-06-24.
+        import json as _json
+        import urllib.request as _u
+        try:
+            payload = _json.dumps({"text": self._text, "limit": 18,
+                                   "lexical_search": False}).encode("utf-8")
+            req = _u.Request("http://127.0.0.1:8000/api/v1/mind/connect",
+                             data=payload, headers={"Content-Type": "application/json"})
+            with _u.urlopen(req, timeout=30) as r:
+                res = _json.loads(r.read().decode("utf-8"))
+            if isinstance(res, dict) and res.get("status") == "ok":
+                self.done.emit(res, ""); return
+        except Exception:
+            pass   # service down / not ready → fall back to in-process
         try:
             from lib.connection_engine import connect
-            self.done.emit(connect(self._text, limit=18), "")
+            self.done.emit(connect(self._text, limit=18, lexical_search=False), "")
         except Exception as e:
             self.done.emit({}, f"{type(e).__name__}: {e}")
 
@@ -74,7 +92,7 @@ def _hit_row(hit: dict) -> QFrame:
     if url:
         b = QPushButton("Open")
         b.setStyleSheet(
-            f"background:{_ACCENT}; color:#0E2630; border:none; border-radius:4px; "
+            f"background:{_ACCENT}; color:#16181c; border:none; border-radius:4px; "
             f"padding:3px 12px; font-weight:600;")
         b.clicked.connect(lambda _=False, u=url: webbrowser.open(u, new=2))
         top.addWidget(b)
@@ -109,7 +127,7 @@ class ConnectPage(QWidget):
         self._input = QPlainTextEdit()
         self._input.setPlaceholderText("Start typing or paste a paragraph…  (Ctrl+Enter to connect)")
         self._input.setStyleSheet(
-            f"QPlainTextEdit {{ background:#102F3C; color:{_TEXT}; "
+            f"QPlainTextEdit {{ background:#0c0d0f; color:{_TEXT}; "
             f"border:1px solid {_BORDER}; border-radius:6px; padding:8px; "
             f"font-size:13px; }}")
         self._input.setFixedHeight(120)
@@ -118,13 +136,13 @@ class ConnectPage(QWidget):
         row = QHBoxLayout()
         self._btn = QPushButton("✨ Connect")
         self._btn.setStyleSheet(
-            f"QPushButton {{ background:{_GOLD}; color:#0E2630; border:none; "
+            f"QPushButton {{ background:{_GOLD}; color:#16181c; border:none; "
             f"border-radius:6px; padding:8px 22px; font-weight:700; font-size:13px; }}")
         self._btn.clicked.connect(self._go)
         row.addWidget(self._btn)
         paste = QPushButton("Paste & Connect")
         paste.setStyleSheet(
-            f"QPushButton {{ background:#16404F; color:{_TEXT}; border:1px solid {_BORDER}; "
+            f"QPushButton {{ background:#212328; color:{_TEXT}; border:1px solid {_BORDER}; "
             f"border-radius:6px; padding:8px 16px; }}")
         paste.clicked.connect(self._paste_and_go)
         row.addWidget(paste)

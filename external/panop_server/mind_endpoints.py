@@ -29,6 +29,7 @@ import json
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
 
 from fastapi import Request
@@ -40,6 +41,11 @@ from external.panop_server.main import app  # late-bound; main.py imports us at 
 _ROOT = Path(__file__).resolve().parent.parent.parent
 _DB_PATH = _ROOT / "state" / "mind.db"
 _DB_LOCK = threading.RLock()
+_HEALTH_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mind-health")
+_HEALTH_CACHE: dict[str, dict] = {}
+_HEALTH_CACHE_LOCK = threading.RLock()
+_HEALTH_CACHE_PATH = _ROOT / "state" / "mind_health_cache.json"
+_HEALTH_REFRESHING: set[str] = set()
 
 SCHEMA_VERSION = 5
 
@@ -143,11 +149,46 @@ _SCHEMA = [
         parent_prompt TEXT NOT NULL,
         agent_name TEXT NOT NULL,
         sub_task_desc TEXT NOT NULL,
-        status TEXT NOT NULL CHECK(status IN ('pending', 'assigned', 'completed', 'failed')),
+        status TEXT NOT NULL CHECK(status IN (
+            'pending', 'assigned', 'completed', 'failed',
+            'paused', 'needs_clarification', 'cancelled'
+        )),
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
     )""",
     "CREATE INDEX IF NOT EXISTS idx_orchestrator_tasks_agent ON orchestrator_tasks (agent_name, status)",
+    """CREATE TABLE IF NOT EXISTS agent_cooldowns (
+        agent_name TEXT PRIMARY KEY,
+        cooldown_until INTEGER NOT NULL,
+        reason TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS orchestrator_task_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id INTEGER,
+        agent_name TEXT,
+        event_type TEXT NOT NULL,
+        content TEXT,
+        payload_json TEXT,
+        created_at INTEGER NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_orch_events_task ON orchestrator_task_events (task_id, id)",
+    "CREATE INDEX IF NOT EXISTS idx_orch_events_agent ON orchestrator_task_events (agent_name, id)",
+    """CREATE TABLE IF NOT EXISTS orchestrator_task_controls (
+        task_id INTEGER PRIMARY KEY,
+        action TEXT NOT NULL,
+        note TEXT,
+        replacement_desc TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        acknowledged_at INTEGER
+    )""",
+    """CREATE TABLE IF NOT EXISTS orchestrator_agent_state (
+        agent_name TEXT PRIMARY KEY,
+        current_task_id INTEGER,
+        status TEXT NOT NULL,
+        detail TEXT,
+        last_seen_at INTEGER NOT NULL
+    )""",
 ]
 
 
@@ -300,6 +341,11 @@ async def mind_orchestrator_dispatch(req: Request):
             trigger_hermes_runner()
         except Exception as e:
             print(f"[mind_endpoints] Failed to trigger hermes runner: {e}", flush=True)
+        try:
+            from lib.agent_wake_bridge import wake_pending_agents
+            wake_pending_agents()
+        except Exception as e:
+            print(f"[mind_endpoints] Failed to trigger agent wake bridge: {e}", flush=True)
             
         return {"status": "ok", "tasks": tasks}
     except Exception as e:
@@ -309,9 +355,278 @@ async def mind_orchestrator_dispatch(req: Request):
 @app.get("/api/v1/mind/orchestrator/status")
 def mind_orchestrator_status():
     try:
-        from lib.orchestration_engine import get_tasks_status
+        from lib.orchestration_engine import (
+            get_agent_routing_status,
+            get_agents_cooldowns,
+            get_tasks_status,
+        )
         tasks = get_tasks_status()
-        return {"status": "ok", "tasks": tasks}
+        cooldowns = get_agents_cooldowns()
+        routing = get_agent_routing_status()
+        return {"status": "ok", "tasks": tasks, "cooldowns": cooldowns, "routing": routing}
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.get("/api/v1/mind/orchestrator/service/status")
+def mind_orchestrator_service_status():
+    try:
+        from lib.orchestrator_service import ensure_orchestrator_service, orchestrator_service_status
+
+        ensure_orchestrator_service()
+        return orchestrator_service_status()
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.get("/api/v1/mind/orchestrator/scheduler/status")
+def mind_orchestrator_scheduler_status():
+    try:
+        from lib.orchestration_engine import get_scheduler_status
+        return get_scheduler_status()
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.get("/api/v1/mind/orchestrator/mission-control")
+def mind_orchestrator_mission_control(limit_events: int = 80):
+    try:
+        from lib.orchestration_engine import get_mission_control_status
+        return get_mission_control_status(limit_events=limit_events)
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.get("/api/v1/mind/orchestrator/provider-hooks/status")
+def mind_orchestrator_provider_hooks_status():
+    try:
+        from lib.provider_hooks import provider_hooks_status
+        return provider_hooks_status()
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.get("/api/v1/mind/orchestrator/autonomy/status")
+def mind_orchestrator_autonomy_status():
+    try:
+        from lib.orchestrator_service import autonomy_status, ensure_orchestrator_service
+
+        ensure_orchestrator_service()
+        return autonomy_status()
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.post("/api/v1/mind/orchestrator/autonomy/config")
+async def mind_orchestrator_autonomy_config(req: Request):
+    try:
+        body = await req.json()
+        from lib.orchestrator_service import ensure_orchestrator_service, update_autonomy_state
+
+        ensure_orchestrator_service()
+        return update_autonomy_state(**(body or {}))
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.post("/api/v1/mind/orchestrator/provider-hooks/scan")
+def mind_orchestrator_provider_hooks_scan():
+    try:
+        from lib.provider_hooks import scan_provider_hooks
+        return scan_provider_hooks()
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.get("/api/v1/mind/orchestrator/wake/status")
+def mind_orchestrator_wake_status():
+    try:
+        from lib.agent_wake_bridge import wake_status
+        return wake_status()
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.post("/api/v1/mind/orchestrator/wake/scan")
+def mind_orchestrator_wake_scan():
+    try:
+        from lib.agent_wake_bridge import wake_pending_agents
+        return wake_pending_agents()
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.get("/api/v1/mind/orchestrator/events")
+def mind_orchestrator_events(task_id: int | None = None, since_id: int = 0, limit: int = 200):
+    try:
+        from lib.orchestration_engine import get_task_events
+        return {"status": "ok", "events": get_task_events(task_id=task_id, since_id=since_id, limit=limit)}
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.get("/api/v1/mind/orchestrator/tasks/{task_id}/events")
+def mind_orchestrator_task_events(task_id: int, since_id: int = 0, limit: int = 200):
+    try:
+        from lib.orchestration_engine import get_task_events
+        return {"status": "ok", "task_id": task_id, "events": get_task_events(task_id=task_id, since_id=since_id, limit=limit)}
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.get("/api/v1/mind/orchestrator/tasks/{task_id}/control")
+def mind_orchestrator_task_control(task_id: int):
+    try:
+        from lib.orchestration_engine import get_task_control
+        return {"status": "ok", "task_id": task_id, "control": get_task_control(task_id)}
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.post("/api/v1/mind/orchestrator/tasks/{task_id}/control")
+async def mind_orchestrator_set_task_control(task_id: int, req: Request):
+    try:
+        body = await req.json()
+        action = (body.get("action") or "").strip()
+        note = (body.get("note") or body.get("clarification") or "").strip()
+        replacement_desc = body.get("replacement_desc") or body.get("prompt")
+        agent_name = (body.get("agent_name") or body.get("agent") or "").strip() or None
+        from lib.orchestration_engine import set_task_control
+        result = set_task_control(task_id, action, note=note, replacement_desc=replacement_desc, agent_name=agent_name)
+        try:
+            from lib.hermes_runner import trigger_hermes_runner
+            trigger_hermes_runner()
+        except Exception:
+            pass
+        try:
+            from lib.agent_wake_bridge import wake_pending_agents
+            wake_pending_agents()
+        except Exception:
+            pass
+        return result
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.post("/api/v1/mind/orchestrator/tasks/{task_id}/control/ack")
+async def mind_orchestrator_ack_task_control(task_id: int, req: Request):
+    try:
+        body = await req.json()
+        agent_name = (body.get("agent_name") or body.get("agent") or "").strip() or None
+        from lib.orchestration_engine import acknowledge_task_control
+        return acknowledge_task_control(task_id, agent_name)
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.post("/api/v1/mind/orchestrator/tasks/{task_id}/events")
+async def mind_orchestrator_append_task_event(task_id: int, req: Request):
+    try:
+        body = await req.json()
+        agent_name = (body.get("agent_name") or body.get("agent") or "").strip()
+        event_type = (body.get("event_type") or body.get("kind") or "progress").strip()
+        content = str(body.get("content") or body.get("message") or "")
+        payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+        from lib.orchestration_engine import append_task_event
+        return append_task_event(task_id, agent_name, event_type, content, payload)
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.post("/api/v1/mind/agents/heartbeat")
+async def mind_agent_heartbeat(req: Request):
+    try:
+        body = await req.json()
+        agent_name = (body.get("agent_name") or body.get("agent") or "").strip()
+        task_id = body.get("task_id")
+        status = (body.get("status") or "active").strip()
+        detail = str(body.get("detail") or body.get("message") or "")
+        if not agent_name:
+            return {"status": "error", "error": "agent_name required"}
+        from lib.orchestration_engine import record_agent_heartbeat
+        return record_agent_heartbeat(agent_name, int(task_id) if task_id is not None else None, status, detail)
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.post("/api/v1/mind/agents/cooldown")
+async def mind_agent_cooldown(req: Request):
+    try:
+        body = await req.json()
+        agent_name = (body.get("agent_name") or "").strip()
+        cooldown_seconds = int(body.get("cooldown_seconds", 1800))
+        reason = (body.get("reason") or "quota exceeded").strip()
+        if not agent_name:
+            return {"status": "error", "error": "agent_name required"}
+
+        from lib.orchestration_engine import set_agent_cooldown
+        cooldown = set_agent_cooldown(agent_name, cooldown_seconds, reason)
+        try:
+            from lib.hermes_runner import trigger_hermes_runner
+            trigger_hermes_runner()
+        except Exception:
+            pass
+        try:
+            from lib.agent_wake_bridge import wake_pending_agents
+            wake_pending_agents()
+        except Exception:
+            pass
+        return {"status": "ok", **cooldown}
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.post("/api/v1/mind/agents/cooldown/clear")
+async def mind_agent_cooldown_clear(req: Request):
+    try:
+        body = await req.json()
+        agent_name = (body.get("agent_name") or "").strip()
+        if not agent_name:
+            return {"status": "error", "error": "agent_name required"}
+
+        from lib.orchestration_engine import clear_agent_cooldown
+        clear_agent_cooldown(agent_name)
+        try:
+            from lib.hermes_runner import trigger_hermes_runner
+            trigger_hermes_runner()
+        except Exception:
+            pass
+        try:
+            from lib.agent_wake_bridge import wake_pending_agents
+            wake_pending_agents()
+        except Exception:
+            pass
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.post("/api/v1/mind/agents/failure")
+async def mind_agent_failure(req: Request):
+    try:
+        body = await req.json()
+        agent_name = (body.get("agent_name") or body.get("agent") or "").strip()
+        detail = str(body.get("detail") or body.get("error") or "")
+        cooldown_seconds = int(body.get("cooldown_seconds") or 1800)
+        if not agent_name:
+            return {"status": "error", "error": "agent_name required"}
+        if not detail:
+            return {"status": "error", "error": "detail required"}
+
+        from lib.orchestration_engine import report_agent_failure
+        result = report_agent_failure(agent_name, detail, cooldown_seconds)
+        if result.get("status") == "cooldown":
+            try:
+                from lib.hermes_runner import trigger_hermes_runner
+                trigger_hermes_runner()
+            except Exception:
+                pass
+            try:
+                from lib.agent_wake_bridge import wake_pending_agents
+                wake_pending_agents()
+            except Exception:
+                pass
+        return result
     except Exception as e:
         return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
@@ -648,6 +963,14 @@ async def mind_memory_review(mid: int, req: Request):
         return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
+@app.get("/api/v1/mind/logo.png")
+def get_logo():
+    logo_path = Path(__file__).resolve().parent.parent.parent / "theme" / "logo.png"
+    if logo_path.exists():
+        return FileResponse(logo_path, media_type="image/png")
+    return {"status": "error", "error": "logo not found"}
+
+
 
 @app.get("/api/v1/mind/context")
 def mind_context(project: str | None = None,
@@ -744,12 +1067,13 @@ def mind_context_v2(project: str | None = None,
                     limit_memory: int = 8,
                     include_graph: bool = True,
                     include_audit: bool = True,
-                    agent: str | None = None):
+                    agent: str | None = None,
+                    session_id: int | None = None):
     """Context Broker v2: compact shared-mind capsule for prompt injection."""
     try:
         from lib.mind_context_broker import build_context_capsule
 
-        return build_context_capsule(
+        out = build_context_capsule(
             project=project,
             query=query,
             budget_chars=budget_chars,
@@ -759,6 +1083,31 @@ def mind_context_v2(project: str | None = None,
             include_audit=include_audit,
             agent=agent,
         )
+        if session_id is not None and out.get("status") == "ok":
+            try:
+                payload = {
+                    "project": project,
+                    "query": query,
+                    "broker_version": out.get("version", "context-broker-v2"),
+                    "activity_count": len(((out.get("sections") or {}).get("recent_activity")) or []),
+                    "memory_count": len(((out.get("sections") or {}).get("durable_memory")) or []),
+                    "structural_count": len(((out.get("sections") or {}).get("structural_insights")) or []),
+                    "approx_tokens": (out.get("budget") or {}).get("approx_tokens"),
+                    "source": "context_v2_endpoint",
+                }
+                with _DB_LOCK:
+                    conn = _connect()
+                    try:
+                        conn.execute(
+                            """INSERT INTO activity (session_id, ts, kind, payload_json)
+                               VALUES (?, ?, 'mind_context', ?)""",
+                            (int(session_id), _now(), json.dumps(payload, ensure_ascii=False)),
+                        )
+                    finally:
+                        conn.close()
+            except Exception:
+                pass
+        return out
     except Exception as e:
         return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
@@ -772,11 +1121,21 @@ async def mind_connect(req: Request):
     tokens. Bruno 2026-06-06 — the "click a button while writing" surface.
     Served by both the standalone mind service and Egon's in-process Panop."""
     try:
+        import asyncio
         body = await req.json()
         from lib.connection_engine import connect as _connect_engine
-        return _connect_engine(
-            text=str(body.get("text") or ""),
-            limit=int(body.get("limit") or 18),
+        # Off-load to a worker thread: the blocking search must not freeze the
+        # event loop, else /api/v1/mind/stats stalls and the supervisor restarts
+        # this service mid-warmup (the flapping that made search cold). The
+        # caller picks the engine: semantic_search (turbovec, ~1s, spans every
+        # source) and lexical_search (full-corpus scan, ~30s) — the desktop/phone
+        # pass lexical_search=False for a sub-second result. Bruno 2026-06-24.
+        return await asyncio.to_thread(
+            _connect_engine,
+            str(body.get("text") or ""),
+            int(body.get("limit") or 18),
+            bool(body.get("semantic_search", True)),
+            bool(body.get("lexical_search", True)),
         )
     except Exception as e:
         return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
@@ -940,7 +1299,8 @@ async def mind_file_lease(req: Request):
         body = await req.json()
         raw_path = body.get("path")
         sid = body.get("session_id")
-        duration = int(body.get("duration_seconds") or 60)
+        duration = int(body.get("duration_seconds") or body.get("ttl_seconds") or body.get("duration") or 60)
+        duration = max(60, duration)
         if not raw_path or sid is None:
             return {"status": "error", "error": "path and session_id required"}
         
@@ -1167,17 +1527,140 @@ def mind_audit(project: str | None = None,
         return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
+def _cached_health_result(cache_key: str, compute, timeout_s: float = 8.0,
+                          max_age_s: int = 300) -> dict:
+    now = int(time.time())
+    cached = _get_health_cache(cache_key, now, max_age_s)
+    if cached:
+        return cached
+
+    def _store_done(future, key: str = cache_key) -> None:
+        try:
+            result = future.result()
+            if not isinstance(result, dict):
+                result = {"status": "error", "error": f"unexpected result type {type(result).__name__}"}
+            _set_health_cache(key, result)
+        except Exception as e:
+            _set_health_cache(key, {
+                "status": "error",
+                "error": f"{type(e).__name__}: {str(e)[:200]}",
+            })
+        finally:
+            with _HEALTH_CACHE_LOCK:
+                _HEALTH_REFRESHING.discard(key)
+
+    with _HEALTH_CACHE_LOCK:
+        already_refreshing = cache_key in _HEALTH_REFRESHING
+        if not already_refreshing:
+            _HEALTH_REFRESHING.add(cache_key)
+    if already_refreshing:
+        stale = _get_health_cache(cache_key, now, max_age_s=None)
+        if stale:
+            stale.setdefault("cache", {})
+            stale["cache"].update({"refreshing": True, "stale": True})
+            return stale
+        return {
+            "status": "refreshing",
+            "cache": {"hit": False, "refreshing": True},
+        }
+
+    future = _HEALTH_EXECUTOR.submit(compute)
+    future.add_done_callback(_store_done)
+    try:
+        result = future.result(timeout=timeout_s)
+        if not isinstance(result, dict):
+            result = {"status": "error", "error": f"unexpected result type {type(result).__name__}"}
+        _set_health_cache(cache_key, result)
+        with _HEALTH_CACHE_LOCK:
+            _HEALTH_REFRESHING.discard(cache_key)
+        out = dict(result)
+        out["cache"] = {"hit": False, "age_seconds": 0}
+        return out
+    except TimeoutError:
+        stale = _get_health_cache(cache_key, now, max_age_s=None)
+        if stale:
+            stale.setdefault("cache", {})
+            stale["cache"].update({"hit": True, "stale": True, "refresh": "timeout"})
+            return stale
+        return {
+            "status": "refreshing",
+            "message": f"{cache_key} refresh is still running",
+            "cache": {"hit": False, "refreshing": True, "refresh": "timeout"},
+        }
+
+
+def _get_health_cache(cache_key: str, now: int | None = None,
+                      max_age_s: int | None = 300) -> dict | None:
+    now = now or int(time.time())
+    with _HEALTH_CACHE_LOCK:
+        cached = _HEALTH_CACHE.get(cache_key)
+        if not cached:
+            cached = _load_health_cache_from_disk().get(cache_key)
+            if cached:
+                _HEALTH_CACHE[cache_key] = cached
+        if not cached:
+            return None
+        age = now - int(cached.get("_cached_at", 0))
+        if max_age_s is not None and age > max_age_s:
+            return None
+        out = dict(cached.get("result") or {})
+        out.setdefault("status", "ok")
+        out["cache"] = {
+            "hit": True,
+            "age_seconds": age,
+            "persistent": bool(cached.get("persistent")),
+        }
+        return out
+
+
+def _set_health_cache(cache_key: str, result: dict) -> None:
+    entry = {"_cached_at": int(time.time()), "result": result, "persistent": True}
+    with _HEALTH_CACHE_LOCK:
+        _HEALTH_CACHE[cache_key] = entry
+        all_cache = _load_health_cache_from_disk()
+        all_cache[cache_key] = entry
+        _write_health_cache_to_disk(all_cache)
+
+
+def _load_health_cache_from_disk() -> dict:
+    try:
+        if _HEALTH_CACHE_PATH.exists():
+            body = json.loads(_HEALTH_CACHE_PATH.read_text(encoding="utf-8"))
+            if isinstance(body, dict):
+                return body
+    except Exception:
+        pass
+    return {}
+
+
+def _write_health_cache_to_disk(cache: dict) -> None:
+    try:
+        _HEALTH_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _HEALTH_CACHE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(cache, ensure_ascii=True, indent=2), encoding="utf-8")
+        tmp.replace(_HEALTH_CACHE_PATH)
+    except Exception:
+        pass
+
+
 @app.get("/api/v1/mind/scorecard")
 def mind_scorecard(project: str | None = None,
                    since_hours: int = 168,
-                   capsule_budget_chars: int = 3500):
+                   capsule_budget_chars: int = 3500,
+                   refresh: bool = False):
     """Quantified meta-harness health and token-ROI scorecard."""
     try:
         from lib.mind_scorecard import build_mind_scorecard
-        return build_mind_scorecard(
-            project=project,
-            since_hours=since_hours,
-            capsule_budget_chars=capsule_budget_chars,
+        cache_key = f"scorecard:{project or ''}:{int(since_hours)}:{int(capsule_budget_chars)}"
+        return _cached_health_result(
+            cache_key,
+            lambda: build_mind_scorecard(
+                project=project,
+                since_hours=since_hours,
+                capsule_budget_chars=capsule_budget_chars,
+            ),
+            timeout_s=8.0,
+            max_age_s=0 if refresh else 300,
         )
     except Exception as e:
         return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
@@ -1185,11 +1668,18 @@ def mind_scorecard(project: str | None = None,
 
 @app.get("/api/v1/mind/enforcement/status")
 def mind_enforcement_status(project: str | None = "egon",
-                            since_hours: int = 168):
+                            since_hours: int = 168,
+                            refresh: bool = False):
     """Check agent config and runtime coverage for unified-mind enforcement."""
     try:
         from lib.mind_enforcement import enforcement_status
-        return enforcement_status(project=project, since_hours=since_hours)
+        cache_key = f"enforcement:{project or ''}:{int(since_hours)}"
+        return _cached_health_result(
+            cache_key,
+            lambda: enforcement_status(project=project, since_hours=since_hours),
+            timeout_s=12.0,
+            max_age_s=0 if refresh else 300,
+        )
     except Exception as e:
         return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
@@ -1334,5 +1824,3 @@ async def post_classifier_review(req: Request):
         return {"status": "ok"}
     except Exception as e:
         return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
-
-
