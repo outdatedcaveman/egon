@@ -127,6 +127,11 @@ def _idle_seconds() -> float:
 
 
 MIN_FREE_GB = float(os.environ.get("EGON_CORE_MIN_FREE_GB", "6"))
+# Min available system RAM before heavy corpus work (embedding/build) may start.
+# This machine has only 8GB; an unguarded build that stacks the whole vector
+# matrix in RAM would OOM and freeze the PC. Bruno 2026-06-24 (failure-mode
+# protection: never wedge the machine).
+MIN_FREE_RAM_GB = float(os.environ.get("EGON_CORE_MIN_FREE_RAM_GB", "2.0"))
 
 
 def _free_gb(path: Path) -> float:
@@ -135,6 +140,29 @@ def _free_gb(path: Path) -> float:
         return shutil.disk_usage(str(path)).free / (1024 ** 3)
     except Exception:
         return 999.0
+
+
+def _free_ram_gb() -> float:
+    """Available physical RAM in GB (Windows GlobalMemoryStatusEx)."""
+    try:
+        import ctypes
+
+        class _MS(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong),
+                        ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong),
+                        ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        ms = _MS(); ms.dwLength = ctypes.sizeof(_MS)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms)):
+            return ms.ullAvailPhys / (1024 ** 3)
+    except Exception:
+        pass
+    return 999.0
 
 
 def _heavy_allowed() -> tuple[bool, str]:
@@ -157,6 +185,9 @@ def _heavy_allowed() -> tuple[bool, str]:
         free = _free_gb(ROOT)
     if free < MIN_FREE_GB:
         return False, f"paused: low disk ({free:.1f}GB free < {MIN_FREE_GB}GB)"
+    ram = _free_ram_gb()
+    if ram < MIN_FREE_RAM_GB:
+        return False, f"paused: low RAM ({ram:.1f}GB avail < {MIN_FREE_RAM_GB}GB) — would OOM"
     if HEAVY_MODE in ("1", "true", "yes", "always"):
         return True, "heavy mode always"
     if HEAVY_MODE in ("off", "0", "false", "no", "manual", ""):
