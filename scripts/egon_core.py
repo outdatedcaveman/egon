@@ -70,7 +70,13 @@ HEALTH = ROOT / "state" / "core_health.json"
 CHECK_EVERY_S = 30
 INDEX_EVERY_S = 6 * 3600
 RESTART_BACKOFF_S = 120          # per-unit: at most one restart per 2 min
-HEAVY_MODE = os.environ.get("EGON_CORE_HEAVY_MODE", "manual").strip().lower()
+# Default "idle": the hands-off KMS work (hydrate every document's full text,
+# embed it, refresh the index, mirrors) runs ONLY after the PC has been idle for
+# HEAVY_IDLE_AFTER_S — so it never competes with active use (the freeze that made
+# this "manual" came from heavy work running WHILE Bruno used the PC; idle mode
+# can't do that). Bruno greenlit idle-aware whole-vault embedding 2026-06-24.
+# Set EGON_CORE_HEAVY_MODE=off to pause, =always to ignore the idle gate.
+HEAVY_MODE = os.environ.get("EGON_CORE_HEAVY_MODE", "idle").strip().lower()
 HEAVY_IDLE_AFTER_S = int(os.environ.get("EGON_CORE_HEAVY_IDLE_AFTER_S", "1800"))
 
 MIND_STATS = "http://127.0.0.1:8000/api/v1/mind/stats"
@@ -261,6 +267,48 @@ def check_ollama(u: Unit) -> None:
 
 _index_building = False
 _index_last = 0.0
+_hydrating = False
+
+
+def check_hydration(u: "Unit") -> None:
+    """Continuously extract full text from indexed documents while the PC is
+    idle, so every doc's CONTENT (not just its filename) becomes searchable.
+    Runs a bounded batch per cycle in a background thread, bailing the instant
+    the user returns; the 6-hourly index rebuild embeds the accumulated
+    extracts. This is the engine of the whole-vault embedding goal. 2026-06-24."""
+    global _hydrating
+    allowed, why = _heavy_allowed()
+    if not allowed:
+        u.ok = True
+        u.detail = f"idle-wait ({why})"
+        return
+    if _hydrating:
+        u.ok = True
+        u.detail = "hydrating…"
+        return
+    u.ok = True
+    _hydrating = True
+
+    def _run():
+        global _hydrating
+        try:
+            from lib import auto_hydrate_crawler as _ah
+            res = _ah.run_crawler(
+                max_extracts=300, max_bytes=int(1.5e9),
+                # bail the moment the user touches the machine (idle resets)
+                stop_check=lambda: _idle_seconds() < 90,
+            )
+            if res.get("status") == "ok" and res.get("newly_extracted"):
+                log("info", "mass_hydration", **{
+                    k: res[k] for k in ("newly_extracted", "candidates",
+                                        "cloud_deferred", "already_current",
+                                        "errors", "seconds") if k in res})
+        except Exception as e:
+            log("warn", "mass_hydration_failed", error=str(e)[:160])
+        finally:
+            _hydrating = False
+
+    threading.Thread(target=_run, daemon=True, name="core-hydrate").start()
 
 
 def check_index(u: Unit) -> None:
@@ -625,6 +673,7 @@ def main() -> int:
     units = {"mind": Unit("mind"), "headroom": Unit("headroom"),
              "ollama": Unit("ollama"),
              "connect_index": Unit("connect_index"),
+             "hydration": Unit("hydration"),
              "daily_digest": Unit("daily_digest"),
              "snapshots": Unit("snapshots"),
              "mirror": Unit("mirror")}
@@ -634,6 +683,7 @@ def main() -> int:
             check_headroom(units["headroom"])
             check_ollama(units["ollama"])
             check_index(units["connect_index"])
+            check_hydration(units["hydration"])
             check_digest(units["daily_digest"])
             check_snapshots(units["snapshots"])
             check_mirror(units["mirror"])

@@ -1,9 +1,10 @@
-"""Auto-hydration crawler for local Google Drive PDFs.
+"""Budgeted automatic text extraction for indexed local files.
 
-Tier 2 files integration (docs/FILES_INTEGRATION.md). Scans state/files_index.jsonl,
-filters for Google Drive PDFs, checks if they are locally available (fully hydrated)
-using Windows file attributes, and extracts their content (first 10 pages) into
-state/file_extracts/ for semantic search indexing.
+Tier 2 files integration (docs/FILES_INTEGRATION.md). Scans
+state/files_index.jsonl, extracts text for supported formats that are already
+safe to read locally, and writes state/file_extracts/<uid>.txt for semantic
+search indexing. Cloud-backed Drive files are only opened when Windows marks
+them locally available, so this crawler does not force-download placeholders.
 """
 from __future__ import annotations
 
@@ -13,17 +14,24 @@ import os
 import time
 from pathlib import Path
 
-from lib.hydration_worker import _extract, uid_for, EXTRACT_DIR
+from lib.hydration_worker import EXTRACT_DIR, SUPPORTED_EXTS, _extract, uid_for
 
 ROOT = Path(__file__).resolve().parent.parent
 FILES_INDEX_PATH = ROOT / "state" / "files_index.jsonl"
-MAX_EXTRACTS_PER_RUN = 30
+MAX_EXTRACTS_PER_RUN = 50
+MAX_BYTES_PER_RUN = int(250e6)
 
 FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000
+_CLOUD_MARKERS = ("google drive", "my drive", "egonvault")
+
+
+def is_cloud_backed_path(path: str) -> bool:
+    low = path.replace("\\", "/").lower()
+    return any(marker in low for marker in _CLOUD_MARKERS)
 
 
 def is_locally_available(path: str) -> bool:
-    """Check if the cloud-backed file is fully available locally on Windows."""
+    """Check if a cloud-backed file is fully available locally on Windows."""
     if os.name != "nt":
         return True
     try:
@@ -35,8 +43,24 @@ def is_locally_available(path: str) -> bool:
         return False
 
 
-def run_crawler() -> dict:
-    """Crawls files index and extracts text for hydrated Drive PDFs."""
+def _extract_is_current(path: Path, extract_path: Path) -> bool:
+    if not extract_path.exists():
+        return False
+    try:
+        return extract_path.stat().st_mtime >= path.stat().st_mtime
+    except Exception:
+        return False
+
+
+def run_crawler(max_extracts: int = MAX_EXTRACTS_PER_RUN,
+                max_bytes: int = MAX_BYTES_PER_RUN,
+                stop_check=None) -> dict:
+    """Extract supported indexed files within a per-run byte/extract budget.
+
+    max_extracts/max_bytes override the default per-run caps so an idle-aware
+    driver can pull bigger batches when the PC is deeply idle. stop_check() — if
+    given — is polled between files; returning True ends the batch early (used to
+    bail the moment the user touches the machine). Bruno 2026-06-24."""
     if not FILES_INDEX_PATH.exists():
         return {"status": "error", "error": "files_index.jsonl not found"}
 
@@ -45,65 +69,87 @@ def run_crawler() -> dict:
 
     processed = 0
     scanned = 0
+    candidates = 0
+    cloud_deferred = 0
+    over_budget = 0
+    current = 0
+    no_text = 0
     errors = 0
+    spent = 0
+    scanned_drive_pdfs = 0
 
     try:
         with FILES_INDEX_PATH.open(encoding="utf-8") as f:
             for line in f:
-                if processed >= MAX_EXTRACTS_PER_RUN:
+                if processed >= max_extracts:
+                    break
+                if stop_check is not None and stop_check():
                     break
                 try:
                     it = json.loads(line)
                 except Exception:
                     continue
 
-                path_str = it.get("path")
-                if not path_str or not path_str.endswith(".pdf"):
+                path_str = it.get("path") or ""
+                ext = (it.get("ext") or Path(path_str).suffix).lower()
+                if not path_str or ext not in SUPPORTED_EXTS:
                     continue
 
-                # Filter to Google Drive / My Drive paths
-                if "Google Drive" not in path_str and "My Drive" not in path_str:
+                scanned += 1
+                if ext == ".pdf" and is_cloud_backed_path(path_str):
+                    scanned_drive_pdfs += 1
+
+                if is_cloud_backed_path(path_str) and not is_locally_available(path_str):
+                    cloud_deferred += 1
                     continue
 
                 p = Path(path_str)
-                scanned += 1
+                if not p.exists():
+                    continue
 
-                # Avoid triggering downloads: check if locally present
-                if not is_locally_available(path_str):
+                try:
+                    size = p.stat().st_size
+                except OSError:
+                    errors += 1
+                    continue
+                if spent + size > max_bytes:
+                    over_budget += 1
                     continue
 
                 digest = uid_for(path_str)
                 extract_path = EXTRACT_DIR / f"{digest}.txt"
+                if _extract_is_current(p, extract_path):
+                    current += 1
+                    continue
 
-                # Extract if missing or outdated
-                needs_extraction = False
-                if not extract_path.exists():
-                    needs_extraction = True
-                else:
-                    try:
-                        if p.stat().st_mtime > extract_path.stat().st_mtime:
-                            needs_extraction = True
-                    except Exception:
-                        pass
-
-                if needs_extraction:
-                    try:
-                        text = _extract(p)
-                        if text and text.strip():
-                            extract_path.write_text(text, encoding="utf-8")
-                            processed += 1
-                    except Exception:
-                        errors += 1
+                candidates += 1
+                try:
+                    text = _extract(p)
+                    spent += size
+                    if text and text.strip():
+                        extract_path.write_text(text, encoding="utf-8")
+                        processed += 1
+                    else:
+                        no_text += 1
+                except Exception:
+                    errors += 1
 
     except Exception as e:
         return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
     return {
         "status": "ok",
-        "scanned_drive_pdfs": scanned,
+        "scanned_indexed_files": scanned,
+        "scanned_drive_pdfs": scanned_drive_pdfs,
+        "candidates": candidates,
         "newly_extracted": processed,
+        "already_current": current,
+        "cloud_deferred": cloud_deferred,
+        "deferred_over_budget": over_budget,
+        "no_text": no_text,
         "errors": errors,
-        "seconds": round(time.time() - t0, 2)
+        "bytes_read_mb": round(spent / 1e6, 1),
+        "seconds": round(time.time() - t0, 2),
     }
 
 
