@@ -49,6 +49,23 @@ META_PATH = INDEX_DIR / "meta.json"
 MODEL_NAME = "all-MiniLM-L6-v2"
 _MAX_TEXT = 480           # chars fed to the encoder per item (title+snippet)
 
+
+def _index_model() -> dict:
+    """The model the CURRENT index was built with, read from INDEX_DIR/model.json.
+    Couples the model to the index so swapping the index dir automatically
+    switches the embedding model AND its query-instruction prefix (bge-style
+    asymmetric retrieval). Falls back to the historical MiniLM default (no prefix)
+    when the file is absent, so the old index keeps working unchanged."""
+    try:
+        p = INDEX_DIR / "model.json"
+        if p.exists():
+            d = json.loads(p.read_text(encoding="utf-8"))
+            return {"name": d.get("name") or MODEL_NAME,
+                    "query_prefix": d.get("query_prefix") or ""}
+    except Exception:
+        pass
+    return {"name": MODEL_NAME, "query_prefix": ""}
+
 _model = None
 _model_lock = threading.Lock()
 _build_lock = threading.Lock()
@@ -70,7 +87,7 @@ def _load_model():
             return _model
         try:
             from sentence_transformers import SentenceTransformer
-            _model = SentenceTransformer(MODEL_NAME)
+            _model = SentenceTransformer(_index_model()["name"])
         except Exception:
             _model = None
         return _model
@@ -87,10 +104,16 @@ def warm_model_async() -> None:
                      name="semantic-index-model-warmup").start()
 
 
-def _embed(texts: list[str]) -> np.ndarray | None:
+def _embed(texts: list[str], is_query: bool = False) -> np.ndarray | None:
     m = _load_model()
     if m is None:
         return None
+    if is_query:
+        # bge-style models retrieve better when the QUERY (not the passages) is
+        # prefixed with an instruction; no-op for MiniLM (empty prefix).
+        pfx = _index_model().get("query_prefix") or ""
+        if pfx:
+            texts = [pfx + t for t in texts]
     v = m.encode(texts, batch_size=64, normalize_embeddings=True,
                  show_progress_bar=False, convert_to_numpy=True)
     return v.astype(np.float32)
@@ -464,7 +487,7 @@ def search(query: str, top_k: int = 40, min_score: float = 0.18) -> list[dict]:
     meta = _load_meta()
     if not meta:
         return []
-    qv = _embed([query[:_MAX_TEXT]])
+    qv = _embed([query[:_MAX_TEXT]], is_query=True)
     if qv is None:
         return []
 

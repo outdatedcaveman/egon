@@ -323,6 +323,60 @@ def check_ollama(u: Unit) -> None:
 _index_building = False
 _index_last = 0.0
 _hydrating = False
+_reembed_proc = None
+# Presence of this file = "run the bge-base re-embed in idle windows". Removed
+# (or auto-cleared on completion+swap) to stop. Lets a one-time, heavy, multi-
+# hour model upgrade run hands-off + abortable without a daemon. Bruno 2026-06-24.
+REEMBED_TRIGGER = ROOT / "state" / "reembed_active.json"
+
+
+def check_reembed(u: "Unit") -> None:
+    """Drive the streaming bge-base re-embed (lib/reembed) in idle windows, as an
+    ISOLATED subprocess so its ~500MB model RSS is freed every cycle (never
+    bloats this supervisor on the 8GB box). Builds into a STAGING dir — the live
+    index is untouched until a deliberate swap. Resumable + RAM/idle-guarded."""
+    global _reembed_proc
+    if not REEMBED_TRIGGER.exists():
+        u.ok = True
+        u.detail = "off"
+        return
+    try:
+        from lib import reembed
+        st = reembed.status()
+    except Exception as e:
+        u.ok = True
+        u.detail = f"err {str(e)[:60]}"
+        return
+    prog = f"[{st.get('done', 0)}/{st.get('total', '?')}]"
+    if st.get("state") == "complete":
+        u.ok = True
+        u.detail = f"COMPLETE ({st.get('items')} items) — ready to swap"
+        return
+    if _reembed_proc is not None and _reembed_proc.poll() is None:
+        u.ok = True
+        u.detail = f"embedding… {prog}"
+        return
+    allowed, why = _heavy_allowed()
+    if not allowed:
+        u.ok = True
+        u.detail = f"idle-wait ({why}) {prog}"
+        return
+    # Launch a bounded, self-terminating batch. idle_abort_s bails the moment the
+    # user returns; max_seconds caps the run; the model RSS dies with the process.
+    code = ("import sys; sys.path.insert(0, r'{root}'); from lib import reembed; "
+            "print(reembed.reembed(max_seconds=1200, ram_floor_gb=2.0, "
+            "idle_abort_s=90))").format(root=str(ROOT))
+    try:
+        _reembed_proc = subprocess.Popen(
+            [str(PYW), "-c", code], cwd=str(ROOT), env=SPAWN_ENV,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008))
+        u.ok = True
+        u.detail = f"launched batch {prog}"
+        log("info", "reembed_batch_launched", **{k: st.get(k) for k in ("done", "total")})
+    except Exception as e:
+        u.ok = True
+        u.detail = f"launch failed: {str(e)[:60]}"
 
 
 def check_hydration(u: "Unit") -> None:
@@ -729,6 +783,7 @@ def main() -> int:
              "ollama": Unit("ollama"),
              "connect_index": Unit("connect_index"),
              "hydration": Unit("hydration"),
+             "reembed": Unit("reembed"),
              "daily_digest": Unit("daily_digest"),
              "snapshots": Unit("snapshots"),
              "mirror": Unit("mirror")}
@@ -739,6 +794,7 @@ def main() -> int:
             check_ollama(units["ollama"])
             check_index(units["connect_index"])
             check_hydration(units["hydration"])
+            check_reembed(units["reembed"])
             check_digest(units["daily_digest"])
             check_snapshots(units["snapshots"])
             check_mirror(units["mirror"])
