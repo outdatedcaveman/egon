@@ -201,6 +201,46 @@ def _set_adb_wifi(adb_path: Path, target: str, on: bool) -> None:
          "adb_wifi_enabled", "1" if on else "0", timeout=6)
 
 
+# ── accessibility grant (Connect "Capture" button) ───────────────────────────
+# Bruno 2026-06-24: the Egon Connect app's Capture button reads the screen via
+# EgonA11yService. EVERY APK reinstall wipes the accessibility grant, so Capture
+# kept returning "nothing readable" until it was re-enabled by hand. Egon already
+# holds the adb link here, so it re-grants the service automatically whenever the
+# phone is connected and NOT in banking mode — Capture self-heals, zero manual
+# steps. In banking mode it is turned OFF alongside Wireless Debugging, in case a
+# bank app treats an active accessibility service as a fraud/overlay signal.
+A11Y_SERVICE = ("org.brunosaramago.egonconnect/"
+                "org.brunosaramago.egonconnect.EgonA11yService")
+
+
+def _ensure_a11y(adb_path: Path, target: str, on: bool) -> None:
+    """Add/remove Egon's accessibility service in enabled_accessibility_services
+    WITHOUT clobbering any other enabled service. No-op if already in the wanted
+    state, so the a11y service isn't needlessly bounced every poll."""
+    _, cur = _adb(adb_path, "-s", target, "shell", "settings", "get", "secure",
+                  "enabled_accessibility_services", timeout=6)
+    cur = (cur or "").strip()
+    parts = [p for p in cur.split(":") if p and p != "null"]
+    present = A11Y_SERVICE in parts
+    if on and not present:
+        parts.append(A11Y_SERVICE)
+        new = ":".join(parts)
+        _adb(adb_path, "-s", target, "shell", "settings", "put", "secure",
+             "enabled_accessibility_services", new, timeout=6)
+        _adb(adb_path, "-s", target, "shell", "settings", "put", "secure",
+             "accessibility_enabled", "1", timeout=6)
+        _log("info", "a11y_reenabled", reason="capture_self_heal")
+    elif not on and present:
+        parts = [p for p in parts if p != A11Y_SERVICE]
+        new = ":".join(parts) if parts else "null"
+        _adb(adb_path, "-s", target, "shell", "settings", "put", "secure",
+             "enabled_accessibility_services", new, timeout=6)
+        if not parts:
+            _adb(adb_path, "-s", target, "shell", "settings", "put", "secure",
+                 "accessibility_enabled", "0", timeout=6)
+        _log("info", "a11y_disabled", reason="banking_mode")
+
+
 # ── auto-relock over USB ─────────────────────────────────────────────────────
 # Bruno 2026-06-01: the wireless lock (`adb tcpip 5555`) is LOST on every phone
 # reboot and whenever Developer Options is toggled — and Bruno has hit this
@@ -358,6 +398,7 @@ def _run_loop(stop: threading.Event) -> None:
                 reason = "manual banking mode" if manual else "banking app open"
                 if reachable:
                     _set_adb_wifi(adb_path, target, False)
+                    _ensure_a11y(adb_path, target, False)  # banking-safe
                     if not manual:
                         fg = _foreground_package(adb_path, target)
                         if fg and fg not in set(cfg["protected_apps"]):
@@ -410,6 +451,7 @@ def _run_loop(stop: threading.Event) -> None:
             fg = _foreground_package(adb_path, target)
             if fg and fg in set(cfg["protected_apps"]):
                 _set_adb_wifi(adb_path, target, False)
+                _ensure_a11y(adb_path, target, False)  # banking-safe
                 banking_grace_until = time.time() + BANKING_GRACE_S
                 _log("info", "banking_mode_auto", fg=fg)
                 _write_phone_status(True, target, paused=True,
@@ -428,6 +470,9 @@ def _run_loop(stop: threading.Event) -> None:
                 kv = _assert_keepalive(adb_path, target)
                 if kv.get("adb_wifi_enabled_after"):
                     _log("info", "adb_wifi_reenabled", **kv)
+                # Restore the Connect "Capture" accessibility grant if a reinstall
+                # wiped it — only here (the all-clear path), never in banking mode.
+                _ensure_a11y(adb_path, target, True)
                 last_wifi_assert = now
 
             if now - last_reassert > REASSERT_INTERVAL_S:

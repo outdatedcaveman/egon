@@ -167,7 +167,11 @@ def _semantic_connect(text: str, terms: list[str], limit: int) -> list[dict] | N
         from lib import semantic_index as si
     except Exception:
         return None
-    si.ensure_built_async()           # keep the index fresh in the background
+    # NOTE: do NOT trigger an index (re)build from the query path. build()
+    # rewrites ~1.7GB to disk (vectors+meta+turbo) and calls _invalidate() even
+    # when nothing changed — that nukes the warm meta+turbo cache mid-search and
+    # forced EVERY query to reload ~500MB (20-40s). egon_core already rebuilds
+    # the index every 6h; queries just read the warm cache (turbovec ~0.4s).
     if not si.is_ready():
         return None
     hits = si.search(text, top_k=limit + 14)

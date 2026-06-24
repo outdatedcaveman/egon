@@ -278,6 +278,21 @@ if(SH&&SH.trim().length>2){$('t').value=SH;call('/m/connect');}
 def build_app():
     """The tiny LAN-facing FastAPI app. Three routes, all token-guarded."""
     token = get_token()
+    # Speed: use the locally-cached embedding model (skip the slow HF Hub online
+    # check that dominated the ~57s cold start), and pre-warm the model +
+    # turbovec index in the background so the FIRST phone search is already fast
+    # (~0.4s) instead of paying the cold start. Bruno 2026-06-23.
+    import os as _os
+    _os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    _os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    def _warm():
+        try:
+            from lib.connection_engine import connect
+            connect("warmup", limit=1)
+        except Exception:
+            pass
+    import threading as _th
+    _th.Thread(target=_warm, name="connect-warmup", daemon=True).start()
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     def _authed(req: Request) -> bool:
@@ -295,10 +310,10 @@ def build_app():
             return JSONResponse({"error": "forbidden"}, status_code=403)
         body = await req.json()
         from lib.connection_engine import connect
-        # Fast lexical-only path so the phone answers in <1s instead of timing
-        # out on the ~50s brute-force semantic pass. Restore semantic_search=True
-        # once turbovec makes the embedding query sub-second. Bruno 2026-06-23.
-        return connect(str(body.get("text") or ""), limit=14, semantic_search=False)
+        # Full semantic search over the WHOLE index (Drive, Letterboxd, YouTube,
+        # Zotero, …) — fast now that turbovec is installed (~0.4s warm). The
+        # embedding model is pre-warmed at startup (see build_app). Bruno 2026-06-23.
+        return connect(str(body.get("text") or ""), limit=14, semantic_search=True)
 
     @app.post("/m/synthesize")
     async def m_synth(req: Request):
