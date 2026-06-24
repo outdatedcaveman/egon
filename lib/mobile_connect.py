@@ -244,7 +244,14 @@ const BR=(typeof Android!=='undefined')?Android:null;
 // the box, and search. Distinct from Search (which uses whatever's in the box).
 if(BR&&BR.captureScreen){
  $('cap').style.display='block';
- $('cap').onclick=()=>{
+ $('cap').onclick=async()=>{
+  // Ask the panel to re-read the app CURRENTLY behind it (drops panel focus
+  // briefly so a11y can see it), then read the refreshed text. Works even if the
+  // content underneath changed since the panel opened. requestCapture is absent
+  // on older builds — the open-time snapshot still serves as a fallback.
+  setStatus('capturing…');
+  try{ if(BR.requestCapture) BR.requestCapture(); }catch(e){}
+  await new Promise(r=>setTimeout(r, BR.requestCapture?320:0));
   let txt='';try{txt=BR.captureScreen()||'';}catch(e){}
   if(txt.trim().length<3){setStatus('nothing readable on screen — type or paste instead');return;}
   $('t').value=txt;call('/m/connect');
@@ -309,11 +316,20 @@ def build_app():
         if not _authed(req):
             return JSONResponse({"error": "forbidden"}, status_code=403)
         body = await req.json()
+        import asyncio
         from lib.connection_engine import connect
         # Full semantic search over the WHOLE index (Drive, Letterboxd, YouTube,
-        # Zotero, …) — fast now that turbovec is installed (~0.4s warm). The
-        # embedding model is pre-warmed at startup (see build_app). Bruno 2026-06-23.
-        return connect(str(body.get("text") or ""), limit=14, semantic_search=True)
+        # Zotero, …) via turbovec (~1s warm). Run it in a WORKER THREAD: the
+        # search is blocking, and running it inline froze the event loop so
+        # /api/v1/mind/stats stopped answering — egon_core's health probe then
+        # timed out and RESTARTED mind_service mid-search, so the warm model/
+        # turbo cache never survived and every query was cold (14-57s flapping).
+        # Off-loading keeps the loop responsive → no restart → cache persists.
+        # turbovec is thread-safe (verified). Bruno 2026-06-24.
+        # semantic_search=True, lexical_search=False: the turbovec index already
+        # spans every source in ~1s; the lexical archive scan added ~30s.
+        return await asyncio.to_thread(
+            connect, str(body.get("text") or ""), 14, True, False)
 
     @app.post("/m/synthesize")
     async def m_synth(req: Request):
@@ -321,12 +337,17 @@ def build_app():
             return JSONResponse({"error": "forbidden"}, status_code=403)
         body = await req.json()
         text = str(body.get("text") or "")
-        from lib.connection_engine import connect
-        res = connect(text, limit=12)
-        if res.get("status") == "ok":
-            from lib.synthesis import synthesize
-            res["synthesis"] = synthesize(text, res.get("connections") or [])
-        return res
+        import asyncio
+        def _work():
+            from lib.connection_engine import connect
+            res = connect(text, limit=12)
+            if res.get("status") == "ok":
+                from lib.synthesis import synthesize
+                res["synthesis"] = synthesize(text, res.get("connections") or [])
+            return res
+        # Worker thread: keep the event loop free during the blocking search +
+        # synthesis (see m_connect note on the flapping). Bruno 2026-06-24.
+        return await asyncio.to_thread(_work)
 
     return app
 

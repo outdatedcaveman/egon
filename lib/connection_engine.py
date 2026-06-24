@@ -199,7 +199,8 @@ def _semantic_connect(text: str, terms: list[str], limit: int) -> list[dict] | N
     return out
 
 
-def connect(text: str, limit: int = 18, semantic_search: bool = True) -> dict[str, Any]:
+def connect(text: str, limit: int = 18, semantic_search: bool = True,
+            lexical_search: bool = True) -> dict[str, Any]:
     """The button. Give it what you're writing; get ranked connections from
     your archives + the shared mind. Hybrid (RRF fusion) ranking when semantic
     index is ready, lexical fallback otherwise; matched terms attached as 'why'.
@@ -216,8 +217,13 @@ def connect(text: str, limit: int = 18, semantic_search: bool = True) -> dict[st
     # 1. Fetch semantic connections if ready (skipped for the fast lexical path)
     semantic = _semantic_connect(text, terms, limit=limit + 30) if semantic_search else None
     
-    # 2. Fetch lexical connections (archives + memory)
-    lexical_archives = _archive_hits(terms, limit=limit + 30)
+    # 2. Fetch lexical connections (archives + memory). The archive scan
+    # (cross_search) tokenizes the WHOLE corpus (~774k items) per query → ~30s,
+    # which dominates the latency. The phone passes lexical_search=False to skip
+    # it: the semantic turbovec index already spans every source (Drive,
+    # Letterboxd, YouTube, Zotero, …) in ~1s, so the phone stays fast and still
+    # draws from the entire database. Memory hits (sqlite) stay — they're cheap.
+    lexical_archives = _archive_hits(terms, limit=limit + 30) if lexical_search else []
     lexical_memories = _memory_hits(terms, limit=20)
     lexical = sorted(lexical_archives + lexical_memories, key=lambda h: h["score"], reverse=True)
 

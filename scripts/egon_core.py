@@ -178,12 +178,25 @@ def check_mind(u: Unit) -> None:
     ok, body = _http_ok(MIND_STATS, timeout=8.0)
     ok = ok and '"status":"ok"' in body.replace(" ", "")
     ms = int((time.time() - t0) * 1000)
-    confirmed_down = u.probe(ok)
+    # A TIMEOUT means the process is ALIVE but busy — the connect index warm-up
+    # (MiniLM load + a 330MB meta.json parse + 1.7GB index) holds the GIL for
+    # ~3 min, so the stats probe times out even though mind is fine. Restarting
+    # it then KILLS the warm-up before it finishes, so the cache never persists
+    # and every phone search is cold (30-55s flapping). Only a refused/aborted
+    # connection (process actually gone) counts toward a restart; a timeout does
+    # not. Bruno 2026-06-24.
+    busy = (not ok) and ("timeout" in body.lower())
+    if busy:
+        u.fails = 0
+        confirmed_down = False
+    else:
+        confirmed_down = u.probe(ok)
     u.ok = ok or not confirmed_down   # busy-but-alive still counts as ok
     u.detail = (f"serving ({ms}ms)" if ok
+                else f"busy ({ms}ms)" if busy
                 else f"slow/failed probe {u.fails}/{u.FAILS_REQUIRED}: {body}")
     if ms > 2000 or not ok:
-        log("info", "mind_probe_slow", ms=ms, ok=ok, fails=u.fails)
+        log("info", "mind_probe_slow", ms=ms, ok=ok, busy=busy, fails=u.fails)
     if not confirmed_down or not u.can_restart():
         return
     u.mark_restart()

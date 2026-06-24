@@ -37,8 +37,17 @@ _FIELD_WEIGHTS = {
 }
 
 
+# Parsed-snapshot cache keyed by (file path, mtime). The snapshots are large
+# JSON (the whole archive corpus); re-reading + json.loads-ing all of them on
+# EVERY search cost ~28s and made the phone Connect search slow even with the
+# semantic index warm. Cache keeps them parsed in RAM and only re-reads a source
+# when its snapshot file actually changes. Bruno 2026-06-24.
+_SNAP_CACHE: dict[str, tuple[tuple[str, float], dict]] = {}
+
+
 def _latest_snapshot_for(source: str) -> dict | None:
-    """Most-recent snapshot file for `source`. Prefer local, fall back to vault."""
+    """Most-recent snapshot file for `source`. Prefer local, fall back to vault.
+    Cached by (path, mtime) so a warm process doesn't re-parse the corpus."""
     for root in (LOCAL_ROOT, VAULT_ROOT):
         d = root / source
         if not d.exists():
@@ -46,10 +55,16 @@ def _latest_snapshot_for(source: str) -> dict | None:
         files = sorted(d.glob("*.json"), reverse=True)
         for f in files:
             try:
+                key = (str(f), f.stat().st_mtime)
+                cached = _SNAP_CACHE.get(source)
+                if cached is not None and cached[0] == key:
+                    return cached[1]
                 snap = json.loads(f.read_text(encoding="utf-8"))
                 if snap.get("status") == "ok" and snap.get("items"):
-                    return {"source": source, "synced_at": snap.get("synced_at"),
-                            "items": snap["items"]}
+                    result = {"source": source, "synced_at": snap.get("synced_at"),
+                              "items": snap["items"]}
+                    _SNAP_CACHE[source] = (key, result)
+                    return result
             except Exception:
                 continue
     return None
