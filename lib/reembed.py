@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import os
 import time
 from pathlib import Path
 
@@ -26,12 +27,46 @@ import numpy as np
 
 from lib import egon_paths
 
-# The upgrade target. bge-base-en-v1.5: 768-dim, strong MTEB, CPU-runnable here
-# (~60 items/s). Queries get an instruction prefix (asymmetric retrieval);
-# passages are embedded plain — see semantic_index for the query side.
-MODEL_NAME = "BAAI/bge-base-en-v1.5"
-DIM = 768
-BATCH = 32
+# Pluggable embedder. model2vec "potion-retrieval-32M" is the chosen backbone:
+# static embeddings, ~7500 items/s on this CPU (125x bge-base), tiny RAM, so the
+# whole vault re-embeds in minutes with zero OOM risk — the right tool for an
+# 8GB machine. bge-base kept as a heavier-but-higher-ceiling alternative.
+# Override with EGON_EMBED_MODEL. Bruno 2026-06-24.
+MODELS = {
+    "potion-retrieval-32M": {"type": "static",
+        "name": "minishlab/potion-retrieval-32M", "dim": 512,
+        "query_prefix": "", "batch": 2000},
+    "bge-base": {"type": "st", "name": "BAAI/bge-base-en-v1.5", "dim": 768,
+        "query_prefix": "Represent this sentence for searching relevant passages: ",
+        "batch": 32},
+}
+ACTIVE = os.environ.get("EGON_EMBED_MODEL", "potion-retrieval-32M")
+_CFG = MODELS.get(ACTIVE, MODELS["potion-retrieval-32M"])
+MODEL_NAME = _CFG["name"]
+DIM = _CFG["dim"]
+BATCH = _CFG["batch"]
+
+
+def _make_encoder():
+    """Return an encode(texts)->float32 (N,DIM) normalized fn for the active
+    model. Static (model2vec) and sentence-transformers share one interface."""
+    if _CFG["type"] == "static":
+        from model2vec import StaticModel
+        sm = StaticModel.from_pretrained(MODEL_NAME)
+
+        def enc(texts):
+            v = sm.encode(list(texts)).astype(np.float32)
+            nrm = np.linalg.norm(v, axis=1, keepdims=True)
+            nrm[nrm == 0] = 1.0
+            return v / nrm
+        return enc
+    from sentence_transformers import SentenceTransformer
+    st = SentenceTransformer(MODEL_NAME)
+
+    def enc(texts):
+        return st.encode(list(texts), normalize_embeddings=True,
+                         batch_size=BATCH, show_progress_bar=False).astype(np.float32)
+    return enc
 
 LIVE_DIR = Path(str(egon_paths.CONNECT_INDEX_DIR))
 STAGING_DIR = Path(str(egon_paths.CONNECT_INDEX_DIR) + "_staging")
@@ -132,8 +167,7 @@ def reembed(stop_check=None, ram_floor_gb: float = 2.0,
         return _finalize(n)
 
     # Phase 2: stream-embed from `done` to N, writing straight into the memmap.
-    from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer(MODEL_NAME)
+    encode = _make_encoder()
     vecs = np.lib.format.open_memmap(VEC_FILE, mode="r+")
     t0 = time.time()
     batch_idx, batch_txt = [], []
@@ -142,8 +176,7 @@ def reembed(stop_check=None, ram_floor_gb: float = 2.0,
         nonlocal done
         if not batch_txt:
             return
-        emb = model.encode(batch_txt, normalize_embeddings=True,
-                           batch_size=BATCH, show_progress_bar=False)
+        emb = encode(batch_txt)
         for k, row in enumerate(batch_idx):
             vecs[row] = emb[k].astype(np.float32)
         done = batch_idx[-1] + 1
@@ -188,8 +221,8 @@ def _finalize(n: int) -> dict:
     # Couple the model to the index: semantic_index reads this on load to use the
     # right encoder + query instruction. bge-v1.5 wants the instruction on QUERIES.
     (STAGING_DIR / "model.json").write_text(json.dumps({
-        "name": MODEL_NAME, "dim": DIM,
-        "query_prefix": "Represent this sentence for searching relevant passages: "}))
+        "name": MODEL_NAME, "dim": DIM, "type": _CFG["type"],
+        "query_prefix": _CFG["query_prefix"]}))
     COMPLETE_FILE.write_text(json.dumps({
         "model": MODEL_NAME, "dim": DIM, "items": n,
         "at": time.strftime("%Y-%m-%dT%H:%M:%S")}))

@@ -61,10 +61,11 @@ def _index_model() -> dict:
         if p.exists():
             d = json.loads(p.read_text(encoding="utf-8"))
             return {"name": d.get("name") or MODEL_NAME,
+                    "type": d.get("type") or "st",
                     "query_prefix": d.get("query_prefix") or ""}
     except Exception:
         pass
-    return {"name": MODEL_NAME, "query_prefix": ""}
+    return {"name": MODEL_NAME, "type": "st", "query_prefix": ""}
 
 _model = None
 _model_lock = threading.Lock()
@@ -86,8 +87,13 @@ def _load_model():
         if _model is not None:
             return _model
         try:
-            from sentence_transformers import SentenceTransformer
-            _model = SentenceTransformer(_index_model()["name"])
+            mi = _index_model()
+            if mi.get("type") == "static":
+                from model2vec import StaticModel
+                _model = StaticModel.from_pretrained(mi["name"])
+            else:
+                from sentence_transformers import SentenceTransformer
+                _model = SentenceTransformer(mi["name"])
         except Exception:
             _model = None
         return _model
@@ -108,12 +114,19 @@ def _embed(texts: list[str], is_query: bool = False) -> np.ndarray | None:
     m = _load_model()
     if m is None:
         return None
+    mi = _index_model()
     if is_query:
         # bge-style models retrieve better when the QUERY (not the passages) is
-        # prefixed with an instruction; no-op for MiniLM (empty prefix).
-        pfx = _index_model().get("query_prefix") or ""
+        # prefixed with an instruction; no-op for MiniLM/model2vec (empty prefix).
+        pfx = mi.get("query_prefix") or ""
         if pfx:
             texts = [pfx + t for t in texts]
+    if mi.get("type") == "static":
+        # model2vec StaticModel: numpy out, no encode kwargs; normalize for cosine.
+        v = np.asarray(m.encode(list(texts)), dtype=np.float32)
+        nrm = np.linalg.norm(v, axis=1, keepdims=True)
+        nrm[nrm == 0] = 1.0
+        return v / nrm
     v = m.encode(texts, batch_size=64, normalize_embeddings=True,
                  show_progress_bar=False, convert_to_numpy=True)
     return v.astype(np.float32)
