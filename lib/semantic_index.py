@@ -36,7 +36,13 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "state" / "mind.db"
-INDEX_DIR = ROOT / "state" / "connect_index"
+# Index location is configurable (EGON_CONNECT_INDEX_DIR) so the multi-GB
+# vectors/meta/turbo can live on a Drive-synced folder instead of the system
+# drive. Defaults to the local state dir. Bruno 2026-06-24.
+try:
+    from lib.egon_paths import CONNECT_INDEX_DIR as INDEX_DIR
+except Exception:
+    INDEX_DIR = ROOT / "state" / "connect_index"
 VEC_PATH = INDEX_DIR / "vectors.npy"
 META_PATH = INDEX_DIR / "meta.json"
 
@@ -68,6 +74,17 @@ def _load_model():
         except Exception:
             _model = None
         return _model
+
+
+def model_loaded() -> bool:
+    """True once the local embedding model is already resident in this process."""
+    return _model is not None
+
+
+def warm_model_async() -> None:
+    """Load the embedding model off the request path."""
+    threading.Thread(target=_load_model, daemon=True,
+                     name="semantic-index-model-warmup").start()
 
 
 def _embed(texts: list[str]) -> np.ndarray | None:
@@ -231,16 +248,17 @@ def _file_items() -> list[dict]:
                 name = it.get("name") or ""
                 if not name:
                     continue
-                parents = " ".join(
-                    pathlib.PurePath(it.get("path", "")).parts[-3:-1])
-                stem = pathlib.PurePath(name).stem.replace("_", " ")
+                file_path = it.get("path", "")
+                pure = pathlib.PurePath(file_path)
+                parents = " ".join(pure.parts[-4:-1])
+                stem = pure.stem.replace("_", " ").replace("-", " ")
+                ext = (it.get("ext") or pure.suffix).lower()
                 digest = hashlib.md5(
-                    it.get("path", "").encode("utf-8", "ignore")).hexdigest()
-                url = "file:///" + it.get("path", "").replace("\\", "/")
+                    file_path.encode("utf-8", "ignore")).hexdigest()
+                url = "file:///" + file_path.replace("\\", "/")
                 parent_uid = "file:" + digest
-                
-                # Base metadata text (stem + parent folders)
-                meta_text = stem + " " + parents
+
+                meta_text = " ".join(part for part in (name, stem, parents, ext) if part)
                 
                 # Check for extracted text
                 xp = ROOT / "state" / "file_extracts" / f"{digest}.txt"
@@ -253,16 +271,15 @@ def _file_items() -> list[dict]:
                         pass
                 
                 if file_text:
-                    full_text = meta_text + " " + file_text
-                    chunks = chunk_text(full_text, max_chars=900, overlap_chars=150)
+                    chunks = chunk_text(file_text, max_chars=900, overlap_chars=150)
                     for idx, chunk in enumerate(chunks):
                         out.append({
                             "uid": f"{parent_uid}:c{idx}",
                             "source": "files",
                             "title": f"{name[:170]} (Part {idx + 1})",
                             "url": url,
-                            "snippet": chunk,
-                            "text": chunk
+                            "snippet": chunk[:900],
+                            "text": (meta_text + "\n" + chunk).strip()
                         })
                 else:
                     out.append({

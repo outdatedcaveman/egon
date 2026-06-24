@@ -60,6 +60,16 @@ SHARED_STATE = SHARED_ROOT / "state"
 # --- Local + vault state -------------------------------------------------
 STATE_DIR = _env_path("EGON_STATE_DIR", EGON_ROOT / "state")
 
+# The semantic Connect index (vectors + meta + turbo) and the per-file text
+# extracts are the big, ever-growing artifacts of whole-vault embedding — they
+# head toward many GB. They can be relocated off the system drive to a
+# Drive-synced folder (e.g. G:/.../egon/connect_index) to free local space;
+# the search engine loads them into RAM at warm-up, so cold storage is fine for
+# the hot path. Override with EGON_CONNECT_INDEX_DIR / EGON_FILE_EXTRACTS_DIR.
+# Bruno 2026-06-24.
+CONNECT_INDEX_DIR = _env_path("EGON_CONNECT_INDEX_DIR", STATE_DIR / "connect_index")
+FILE_EXTRACTS_DIR = _env_path("EGON_FILE_EXTRACTS_DIR", STATE_DIR / "file_extracts")
+
 # Optional cloud/Drive mirror. When the directory is absent, Egon's snapshot
 # logic simply uses the newest available local file, so nothing breaks.
 VAULT_ROOT = _env_path("EGON_VAULT_ROOT", HOME / "EgonVault")

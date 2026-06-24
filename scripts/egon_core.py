@@ -126,6 +126,17 @@ def _idle_seconds() -> float:
         return 0.0
 
 
+MIN_FREE_GB = float(os.environ.get("EGON_CORE_MIN_FREE_GB", "6"))
+
+
+def _free_gb(path: Path) -> float:
+    try:
+        import shutil
+        return shutil.disk_usage(str(path)).free / (1024 ** 3)
+    except Exception:
+        return 999.0
+
+
 def _heavy_allowed() -> tuple[bool, str]:
     """Gate CPU/network-heavy background work.
 
@@ -133,6 +144,16 @@ def _heavy_allowed() -> tuple[bool, str]:
     but it cannot run just because Egon is alive: it was freezing the PC while
     Bruno was actively using Inbox. Defaults to manual opt-in.
     """
+    # HARD disk guard: whole-vault hydration/embedding grows the index by many GB.
+    # Never run it when the index volume is low on space, or it would fill the
+    # disk and wedge the machine. Checks the index dir's drive. Bruno 2026-06-24.
+    try:
+        from lib.egon_paths import CONNECT_INDEX_DIR as _idx_dir
+    except Exception:
+        _idx_dir = ROOT
+    free = _free_gb(_idx_dir if Path(_idx_dir).exists() else ROOT)
+    if free < MIN_FREE_GB:
+        return False, f"paused: low disk ({free:.1f}GB free < {MIN_FREE_GB}GB) — move the index to Drive"
     if HEAVY_MODE in ("1", "true", "yes", "always"):
         return True, "heavy mode always"
     if HEAVY_MODE in ("off", "0", "false", "no", "manual", ""):

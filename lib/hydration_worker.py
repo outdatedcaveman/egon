@@ -21,19 +21,30 @@ Runs with the egon_core connect_index cycle (6h), before the index rebuild.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
+import re
 import time
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 QUEUE = ROOT / "state" / "hydration_queue.json"
-EXTRACT_DIR = ROOT / "state" / "file_extracts"
+# Configurable so extracts can live on a Drive-synced folder (they grow to GBs).
+try:
+    from lib.egon_paths import FILE_EXTRACTS_DIR as EXTRACT_DIR
+except Exception:
+    EXTRACT_DIR = ROOT / "state" / "file_extracts"
 
 _MAX_PAGES = 12          # first pages carry title/abstract/intro — enough
 _MAX_CHARS = 20_000      # per extract
 _RUN_BUDGET_BYTES = int(200e6)
-_TEXT_EXTS = {".md", ".txt", ".tex", ".org", ".csv", ".rtf"}
+_TEXT_EXTS = {
+    ".md", ".txt", ".tex", ".org", ".csv", ".rtf", ".json", ".jsonl",
+    ".yaml", ".yml", ".xml", ".html", ".htm", ".log",
+}
+SUPPORTED_EXTS = _TEXT_EXTS | {".pdf", ".docx", ".pptx", ".epub", ".odt"}
 
 
 def uid_for(path: str) -> str:
@@ -55,19 +66,60 @@ def _extract_pdf(path: Path) -> str:
     return "\n".join(parts)[:_MAX_CHARS]
 
 
+def _clean_markup(text: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _extract_zip_members(path: Path, member_prefixes: tuple[str, ...]) -> str:
+    parts: list[str] = []
+    with zipfile.ZipFile(path) as z:
+        for name in z.namelist():
+            low = name.lower()
+            if not any(low.startswith(prefix) for prefix in member_prefixes):
+                continue
+            if not low.endswith((".xml", ".html", ".htm", ".xhtml", ".txt")):
+                continue
+            try:
+                raw = z.read(name).decode("utf-8", "replace")
+            except Exception:
+                continue
+            cleaned = _clean_markup(raw)
+            if cleaned:
+                parts.append(cleaned)
+            if sum(len(part) for part in parts) > _MAX_CHARS:
+                break
+    return "\n".join(parts)[:_MAX_CHARS]
+
+
 def _extract(path: Path) -> str:
     ext = path.suffix.lower()
     if ext == ".pdf":
         return _extract_pdf(path)
     if ext in _TEXT_EXTS:
-        return path.read_text(encoding="utf-8", errors="replace")[:_MAX_CHARS]
+        raw = path.read_text(encoding="utf-8", errors="replace")[:_MAX_CHARS]
+        if ext in {".html", ".htm", ".xml"}:
+            return _clean_markup(raw)[:_MAX_CHARS]
+        return raw
     if ext == ".docx":
         try:
-            import zipfile
-            import re as _re
-            with zipfile.ZipFile(path) as z:
-                xml = z.read("word/document.xml").decode("utf-8", "replace")
-            return _re.sub(r"<[^>]+>", " ", xml)[:_MAX_CHARS]
+            return _extract_zip_members(path, ("word/",))
+        except Exception:
+            return ""
+    if ext == ".pptx":
+        try:
+            return _extract_zip_members(path, ("ppt/slides/", "ppt/notesslides/"))
+        except Exception:
+            return ""
+    if ext == ".epub":
+        try:
+            return _extract_zip_members(path, ("ops/", "oebps/", "text/", "xhtml/", "html/"))
+        except Exception:
+            return ""
+    if ext == ".odt":
+        try:
+            return _extract_zip_members(path, ("content.xml",))
         except Exception:
             return ""
     return ""
