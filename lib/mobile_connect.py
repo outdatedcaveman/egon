@@ -111,14 +111,15 @@ _PAGE = """<!doctype html><html><head>
  textarea{width:100%;height:108px;resize:none;background:transparent;color:var(--text);
   border:0;outline:none;font-size:15.5px;line-height:1.5;padding:2px}
  textarea::placeholder{color:var(--muted)}
- .actions{display:flex;gap:8px;margin-top:10px}
+ .actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
  button{flex:1;border:none;border-radius:11px;padding:12px 10px;font-weight:700;font-size:14.5px;
   cursor:pointer;transition:transform .08s ease,filter .15s ease;color:#08171c}
  button:active{transform:scale(.96)}
  #go{background:linear-gradient(135deg,var(--gold),#d6a548);box-shadow:0 4px 16px rgba(230,182,92,.3)}
  #syn{background:linear-gradient(135deg,var(--teal),#5fb6b8);box-shadow:0 4px 16px rgba(127,203,205,.25)}
- #paste{flex:0 0 auto;padding:12px 16px;background:var(--surface2);color:var(--text);
+ #paste,#cap{flex:1 1 70px;padding:12px 12px;background:var(--surface2);color:var(--text);
   border:1px solid var(--line)}
+ #go,#syn{flex:1 1 70px}
  #st{color:var(--muted);font-size:13px;margin:14px 2px 2px;min-height:16px;display:flex;align-items:center;gap:7px}
  .dot{width:7px;height:7px;border-radius:50%;background:var(--teal);animation:pulse 1s infinite ease-in-out}
  @keyframes pulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1.1)}}
@@ -164,10 +165,10 @@ _PAGE = """<!doctype html><html><head>
  <div class="mark">✨</div>
  <div class="brand">Egon Connect<small>what in your world connects to this?</small></div>
 </header>
-<button id="cap" class="capture" style="display:none">📸 Capture this screen</button>
 <div class="composer">
  <textarea id="t" placeholder="Type, paste, or capture — then Search…"></textarea>
  <div class="actions">
+  <button id="cap" style="display:none">📸 Capture</button>
   <button id="paste">Paste</button>
   <button id="go">Search</button>
   <button id="syn">Synthesize</button>
