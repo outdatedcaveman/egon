@@ -174,9 +174,19 @@ def _semantic_connect(text: str, terms: list[str], limit: int) -> list[dict] | N
     # the index every 6h; queries just read the warm cache (turbovec ~0.4s).
     if not si.is_ready():
         return None
-    hits = si.search(text, top_k=limit + 14)
+    # Stage 1: fast/broad model2vec retrieval — pull a WIDE candidate pool.
+    # Stage 2: a cross-encoder reranker re-reads each candidate against the query
+    # and reorders by true relevance, fixing static-embedding nuance misses
+    # ("film noir CINEMATOGRAPHY", not just "film noir"). The reranker degrades to
+    # a no-op when RAM is tight, so this path is always safe. Bruno 2026-06-24.
+    hits = si.search(text, top_k=60)
     if not hits:
         return []
+    try:
+        from lib import reranker
+        hits = reranker.rerank(text, hits, top_k=limit + 14)
+    except Exception:
+        hits = hits[:limit + 14]
     tset = set(terms)
     per_source = {}
     out = []
