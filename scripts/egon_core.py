@@ -127,11 +127,12 @@ def _idle_seconds() -> float:
 
 
 MIN_FREE_GB = float(os.environ.get("EGON_CORE_MIN_FREE_GB", "6"))
-# Min available system RAM before heavy corpus work (embedding/build) may start.
-# This machine has only 8GB; an unguarded build that stacks the whole vector
-# matrix in RAM would OOM and freeze the PC. Bruno 2026-06-24 (failure-mode
-# protection: never wedge the machine).
-MIN_FREE_RAM_GB = float(os.environ.get("EGON_CORE_MIN_FREE_RAM_GB", "2.0"))
+# Min available system RAM before heavy corpus work may start. Tuned to this
+# 8GB machine that maxes out ~1GB free even idle: model2vec is light and the
+# 23GB pagefile absorbs spikes (the full re-embed already completed this way), so
+# 1.0GB lets the autonomous work actually run while still refusing to start when
+# RAM is critically low. Bruno 2026-06-24 ("we'll have to adjust and work with it").
+MIN_FREE_RAM_GB = float(os.environ.get("EGON_CORE_MIN_FREE_RAM_GB", "1.0"))
 
 
 def _free_gb(path: Path) -> float:
@@ -403,7 +404,7 @@ def check_reembed(u: "Unit") -> None:
     # Launch a bounded, self-terminating batch. idle_abort_s bails the moment the
     # user returns; max_seconds caps the run; the model RSS dies with the process.
     code = ("import sys; sys.path.insert(0, r'{root}'); from lib import reembed; "
-            "print(reembed.reembed(max_seconds=1200, ram_floor_gb=2.0, "
+            "print(reembed.reembed(max_seconds=1800, ram_floor_gb=0.8, "
             "idle_abort_s=90))").format(root=str(ROOT))
     try:
         _reembed_proc = subprocess.Popen(
