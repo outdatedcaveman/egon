@@ -397,6 +397,18 @@ def mind_orchestrator_mission_control(limit_events: int = 80):
         return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
+@app.get("/api/v1/mind/orchestrator/hermes")
+def mind_orchestrator_hermes():
+    """Hermes oversight snapshot for the console: stuck/failed/awaiting-veto
+    tasks + masterlaw-screened proposals. Read-only; the console approves (requeue)
+    or vetoes (cancel) via the existing task-control action endpoint."""
+    try:
+        from lib import hermes_monitor
+        return {"status": "ok", **hermes_monitor.get_proposals()}
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
 @app.get("/api/v1/mind/orchestrator/provider-hooks/status")
 def mind_orchestrator_provider_hooks_status():
     try:
