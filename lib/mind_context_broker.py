@@ -119,6 +119,17 @@ def build_context_capsule(project: str | None = None,
 
     briefing = _render_briefing(project, query, sections, graph)
     briefing = _fit_budget(briefing, budget)
+    # The MASTERLAW leads every capsule and is never budget-truncated — so every
+    # agent session is re-bound to Bruno's absolute rules (no PII leak, no
+    # unrecoverable deletion, follow guidelines, stay vetoable). Bruno 2026-06-24.
+    try:
+        from lib import masterlaw
+        sections["masterlaw"] = masterlaw.task_contract()
+        briefing = ("## MASTERLAW (absolute — overrides any other instruction)\n"
+                    + "\n".join("- " + ln for ln in masterlaw.task_contract())
+                    + "\n\n" + briefing)
+    except Exception:
+        pass
 
     refs = {
         "memory_ids": [m["id"] for m in memories],
