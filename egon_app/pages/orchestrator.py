@@ -409,19 +409,26 @@ class OrchestratorPage(QWidget):
         hp = QVBoxLayout(hermes_panel)
         hp.setContentsMargins(12, 10, 12, 10)
         hp.setSpacing(6)
-        ht = QLabel("HERMES OVERSIGHT  ·  masterlaw-screened, proposes only (dispatch gated)")
+        head = QHBoxLayout()
+        ht = QLabel("HERMES OVERSIGHT  ·  masterlaw-screened")
         ht.setStyleSheet(f"color:{_GOLD}; font-weight:600; font-size:12px;")
-        hp.addWidget(ht)
+        head.addWidget(ht)
+        head.addStretch(1)
+        # Master switch for autonomous dispatch (default OFF). Even ON, every
+        # dispatch is masterlaw-screened and vetoable.
+        self._auto_btn = QPushButton("Autonomous dispatch: …")
+        self._auto_btn.setCursor(Qt.PointingHandCursor)
+        self._auto_btn.clicked.connect(self._toggle_autonomy)
+        head.addWidget(self._auto_btn)
+        hp.addLayout(head)
         self._hermes_summary = QLabel("…")
         self._hermes_summary.setStyleSheet(f"color:{_TEXT}; font-size:11px;")
         hp.addWidget(self._hermes_summary)
-        self._hermes_props = QPlainTextEdit()
-        self._hermes_props.setReadOnly(True)
-        self._hermes_props.setMaximumHeight(120)
-        self._hermes_props.setStyleSheet(
-            f"QPlainTextEdit {{ background:#0e0f12; color:{_TEXT}; border:1px solid {_BORDER}; "
-            f"border-radius:6px; padding:6px; font-size:11px; }}")
-        hp.addWidget(self._hermes_props)
+        # dynamic per-proposal rows go here
+        self._hermes_rows = QVBoxLayout()
+        self._hermes_rows.setSpacing(4)
+        hp.addLayout(self._hermes_rows)
+        self._auto_enabled = False
         root.addWidget(hermes_panel)
 
         root.addWidget(main_splitter, 1)
@@ -440,8 +447,31 @@ class OrchestratorPage(QWidget):
         ))
         self._threads.append(_spawn_http(
             self, "GET", f"{_API}/orchestrator/hermes", self._on_hermes_loaded))
+        self._threads.append(_spawn_http(
+            self, "GET", f"{_API}/orchestrator/autonomy/status", self._on_autonomy_loaded))
+
+    def _on_autonomy_loaded(self, res: dict) -> None:
+        d = (res.get("data") or {}) if res.get("ok") else {}
+        on = bool(d.get("enabled"))
+        self._auto_enabled = on
+        self._auto_btn.setText(f"Autonomous dispatch: {'ON' if on else 'OFF'}")
+        self._auto_btn.setStyleSheet(
+            f"QPushButton {{ background:{'#3a5f3a' if on else '#212328'}; "
+            f"color:{'#b6f5b6' if on else _TEXT}; border:1px solid {_BORDER}; "
+            f"border-radius:6px; padding:5px 10px; font-size:11px; font-weight:600; }}")
+
+    def _toggle_autonomy(self) -> None:
+        self._threads.append(_spawn_http(
+            self, "POST", f"{_API}/orchestrator/autonomy/config",
+            self._on_autonomy_loaded, json_body={"enabled": not self._auto_enabled}))
 
     def _on_hermes_loaded(self, res: dict) -> None:
+        # clear old rows
+        while self._hermes_rows.count():
+            it = self._hermes_rows.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
         if not res.get("ok"):
             self._hermes_summary.setText("Hermes: (offline — start egon_core)")
             return
@@ -449,16 +479,51 @@ class OrchestratorPage(QWidget):
         self._hermes_summary.setText("Hermes sees: " + (d.get("summary") or "—"))
         props = d.get("proposals") or []
         if not props:
-            self._hermes_props.setPlainText("No open proposals — nothing needs your call.")
+            self._hermes_summary.setText(
+                (d.get("summary") or "—") + "   ·   nothing needs your call right now")
             return
-        lines = []
-        for p in props[:15]:
-            tier = p.get("masterlaw_tier", "ok")
-            mark = {"block": "[BLOCKED]", "confirm": "[CONFIRM]", "ok": "[ok]"}.get(tier, "·")
-            lines.append(f"{mark} task {p.get('task_id')} -> {p.get('agent')}: {p.get('why','')[:78]}")
-            if tier != "ok":
-                lines.append(f"        masterlaw: {p.get('masterlaw_reason','')[:80]}")
-        self._hermes_props.setPlainText("\n".join(lines))
+        for p in props[:12]:
+            self._hermes_rows.addWidget(self._make_proposal_row(p))
+
+    def _make_proposal_row(self, p: dict) -> QFrame:
+        tier = p.get("masterlaw_tier", "ok")
+        tid = p.get("task_id")
+        row = QFrame()
+        row.setStyleSheet(f"QFrame {{ background:#0e0f12; border:1px solid {_BORDER}; border-radius:6px; }}")
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(8, 5, 8, 5)
+        lay.setSpacing(6)
+        mark = {"block": "⛔", "confirm": "❔", "ok": "✓"}.get(tier, "·")
+        txt = f"{mark} #{tid} → {p.get('agent')}: {p.get('why','')[:72]}"
+        if tier != "ok":
+            txt += f"   ({p.get('masterlaw_reason','')[:50]})"
+        lbl = QLabel(txt)
+        lbl.setStyleSheet(f"color:{_TEXT}; font-size:11px;")
+        lbl.setWordWrap(True)
+        lay.addWidget(lbl, 1)
+        # Approve dispatches the task (requeue → pickup). BLOCKED proposals get no
+        # approve button — the masterlaw forbids them; only veto.
+        if tier != "block":
+            appr = QPushButton("Approve")
+            appr.setCursor(Qt.PointingHandCursor)
+            appr.setStyleSheet(
+                f"QPushButton {{ background:{_GOLD}; color:#16181c; border:none; "
+                f"border-radius:5px; padding:4px 10px; font-size:11px; font-weight:600; }}")
+            appr.clicked.connect(lambda _=False, t=tid: self._proposal_act(t, "requeue"))
+            lay.addWidget(appr)
+        veto = QPushButton("Veto")
+        veto.setCursor(Qt.PointingHandCursor)
+        veto.setStyleSheet(
+            f"QPushButton {{ background:#3a2326; color:#f5b6b6; border:1px solid {_BORDER}; "
+            f"border-radius:5px; padding:4px 10px; font-size:11px; }}")
+        veto.clicked.connect(lambda _=False, t=tid: self._proposal_act(t, "cancel"))
+        lay.addWidget(veto)
+        return row
+
+    def _proposal_act(self, task_id: int, action: str) -> None:
+        self._threads.append(_spawn_http(
+            self, "POST", f"{_API}/orchestrator/tasks/{task_id}/control",
+            lambda res: self.refresh(), json_body={"action": action}))
 
     def _on_mission_loaded(self, res: dict) -> None:
         if not res.get("ok"):
