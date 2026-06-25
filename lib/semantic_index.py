@@ -70,6 +70,7 @@ def _index_model() -> dict:
     return {"name": MODEL_NAME, "type": "st", "query_prefix": ""}
 
 _model = None
+_model_key = None        # (name, type) the cached model was built for
 _model_lock = threading.Lock()
 _build_lock = threading.Lock()
 _building = False
@@ -82,20 +83,25 @@ _meta_mtime: float = 0.0
 
 # ── model ────────────────────────────────────────────────────────────────────
 def _load_model():
-    global _model
-    if _model is not None:
+    # Reload when the index's model changes (the model.json name/type differs from
+    # what's cached) — so an autonomous index swap to a different embedder
+    # (potion->student) takes effect without restarting the service.
+    global _model, _model_key
+    mi = _index_model()
+    key = (mi.get("name"), mi.get("type"))
+    if _model is not None and _model_key == key:
         return _model
     with _model_lock:
-        if _model is not None:
+        if _model is not None and _model_key == key:
             return _model
         try:
-            mi = _index_model()
             if mi.get("type") == "static":
                 from model2vec import StaticModel
                 _model = StaticModel.from_pretrained(mi["name"])
             else:
                 from sentence_transformers import SentenceTransformer
                 _model = SentenceTransformer(mi["name"])
+            _model_key = key
         except Exception:
             _model = None
         return _model

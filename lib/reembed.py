@@ -33,6 +33,12 @@ from lib import egon_paths
 # 8GB machine. bge-base kept as a heavier-but-higher-ceiling alternative.
 # Override with EGON_EMBED_MODEL. Bruno 2026-06-24.
 MODELS = {
+    # Bespoke student distilled from the bge-base teacher (lib/distill_student.py).
+    # Quality ~ potion but 256-dim (half the index footprint — leaner on 8GB),
+    # and it's OURS (re-distillable on Bruno's own corpus). The default.
+    "egon-student-v1": {"type": "static",
+        "name": str(egon_paths.STATE_DIR / "egon_student_v1"), "dim": 256,
+        "query_prefix": "", "batch": 2000},
     "potion-retrieval-32M": {"type": "static",
         "name": "minishlab/potion-retrieval-32M", "dim": 512,
         "query_prefix": "", "batch": 2000},
@@ -40,7 +46,9 @@ MODELS = {
         "query_prefix": "Represent this sentence for searching relevant passages: ",
         "batch": 32},
 }
-ACTIVE = os.environ.get("EGON_EMBED_MODEL", "potion-retrieval-32M")
+_default_model = "egon-student-v1" if (egon_paths.STATE_DIR / "egon_student_v1").exists() \
+    else "potion-retrieval-32M"
+ACTIVE = os.environ.get("EGON_EMBED_MODEL", _default_model)
 _CFG = MODELS.get(ACTIVE, MODELS["potion-retrieval-32M"])
 MODEL_NAME = _CFG["name"]
 DIM = _CFG["dim"]
