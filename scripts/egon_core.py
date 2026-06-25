@@ -419,6 +419,22 @@ def check_reembed(u: "Unit") -> None:
         u.detail = f"launch failed: {str(e)[:60]}"
 
 
+def check_hermes(u: "Unit") -> None:
+    """Lean always-on oversight (Hermes monitor): each cycle it scans orchestrator
+    task health, agent quota cooldowns, and cross-AI opportunities, and SURFACES
+    masterlaw-screened proposals to state/hermes_proposals.json for Bruno's
+    console. Read-only DB + small JSON write — no model, no quota, negligible
+    RAM/CPU. It PROPOSES only; autonomous dispatch stays gated. Bruno 2026-06-24."""
+    try:
+        from lib import hermes_monitor
+        res = hermes_monitor.run_once()
+        u.ok = True
+        u.detail = res.get("summary", "scanned")
+    except Exception as e:
+        u.ok = True
+        u.detail = f"err {str(e)[:60]}"
+
+
 def check_hydration(u: "Unit") -> None:
     """Continuously extract full text from indexed documents while the PC is
     idle, so every doc's CONTENT (not just its filename) becomes searchable.
@@ -824,6 +840,7 @@ def main() -> int:
              "connect_index": Unit("connect_index"),
              "hydration": Unit("hydration"),
              "reembed": Unit("reembed"),
+             "hermes": Unit("hermes"),
              "daily_digest": Unit("daily_digest"),
              "snapshots": Unit("snapshots"),
              "mirror": Unit("mirror")}
@@ -835,6 +852,7 @@ def main() -> int:
             check_index(units["connect_index"])
             check_hydration(units["hydration"])
             check_reembed(units["reembed"])
+            check_hermes(units["hermes"])
             check_digest(units["daily_digest"])
             check_snapshots(units["snapshots"])
             check_mirror(units["mirror"])
