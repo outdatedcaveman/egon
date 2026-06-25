@@ -77,7 +77,7 @@ RESTART_BACKOFF_S = 120          # per-unit: at most one restart per 2 min
 # can't do that). Bruno greenlit idle-aware whole-vault embedding 2026-06-24.
 # Set EGON_CORE_HEAVY_MODE=off to pause, =always to ignore the idle gate.
 HEAVY_MODE = os.environ.get("EGON_CORE_HEAVY_MODE", "idle").strip().lower()
-HEAVY_IDLE_AFTER_S = int(os.environ.get("EGON_CORE_HEAVY_IDLE_AFTER_S", "1800"))
+HEAVY_IDLE_AFTER_S = int(os.environ.get("EGON_CORE_HEAVY_IDLE_AFTER_S", "900"))
 
 MIND_STATS = "http://127.0.0.1:8000/api/v1/mind/stats"
 HEADROOM_HEALTH = "http://127.0.0.1:8787/health"
