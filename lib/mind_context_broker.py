@@ -10,6 +10,7 @@ import json
 import re
 import sqlite3
 import time
+import os
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,30 @@ DB_PATH = ROOT / "state" / "mind.db"
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_./:-]{3,}")
 DEFAULT_BUDGET_CHARS = 6000
+
+
+def _vault_matches(query: str | None, limit: int = 6) -> list[dict[str, Any]]:
+    """Top reranked hits from Bruno's WHOLE vault (Zotero, bookmarks, Letterboxd,
+    documents, …) for the agent's query — via the model2vec + cross-encoder
+    engine. This is what lets every AI session draw on the entire knowledge base,
+    not just the mind DB. Semantic-only (fast) + graceful empty on any failure."""
+    if not (query or "").strip():
+        return []
+    try:
+        from lib.connection_engine import connect
+        res = connect(str(query), limit=limit, semantic_search=True,
+                      lexical_search=False)
+        out = []
+        for c in (res.get("connections") or [])[:limit]:
+            out.append({
+                "source": c.get("source"),
+                "title": (c.get("title") or "")[:140],
+                "snippet": (c.get("snippet") or "")[:200],
+                "url": c.get("url"),
+            })
+        return out
+    except Exception:
+        return []
 
 
 def build_context_capsule(project: str | None = None,
@@ -38,7 +63,24 @@ def build_context_capsule(project: str | None = None,
     query_tokens = _tokens(query)
     project_norm = (project or "").strip().lower()
 
-    memories = _ranked_memory(project_norm, query_tokens, limit=max(1, limit_memory), query=query)
+    # Session-start context must be reliably fast. Semantic ranking is used
+    # only after the embedding model is already warm; lexical ranking remains
+    # the bounded cold-start path.
+    use_semantic = (
+        not bool(agent)
+        and query
+        and (si.model_loaded() or os.environ.get("EGON_CONTEXT_ALLOW_COLD_SEMANTIC") == "1")
+    )
+    memories = _ranked_memory(
+        project_norm,
+        query_tokens,
+        limit=max(1, limit_memory),
+        query=query,
+        use_semantic=use_semantic,
+    )
+    # Whole-vault retrieval (model2vec + reranker) — only when the engine is warm
+    # so session-start stays fast. Gives agents Bruno's entire knowledge base.
+    vault = _vault_matches(query, limit=6) if use_semantic else []
     activity = _recent_activity(project_norm, limit=max(1, limit_activity))
     sessions = _active_sessions(project_norm)
     audit = _audit(project_norm, enabled=include_audit)
@@ -46,6 +88,7 @@ def build_context_capsule(project: str | None = None,
 
     sections = {
         "what_matters_now": _what_matters_now(memories, activity, audit, graph),
+        "vault_matches": vault,
         "durable_memory": memories,
         "recent_activity": activity,
         "active_sessions": sessions,
@@ -59,6 +102,13 @@ def build_context_capsule(project: str | None = None,
     }
 
     if agent:
+        sections["orchestrator_control_contract"] = [
+            "If a delegated_task is present, treat it as the active task from Bruno's orchestrator.",
+            "Before starting, append a task event with event_type='started'.",
+            "While working, append progress/output/decision events so the Orchestrator UI can show written working responses in near real time.",
+            "Poll the task control endpoint/tool before long steps; honor pause, stop/cancel, clarify, edit, and requeue controls.",
+            "When finished, update the task status and write durable shared memory summarizing what changed, verification, and remaining risk.",
+        ]
         try:
             from lib.orchestration_engine import get_pending_task
             delegated = get_pending_task(agent)
@@ -72,6 +122,7 @@ def build_context_capsule(project: str | None = None,
 
     refs = {
         "memory_ids": [m["id"] for m in memories],
+        "vault_match_urls": [v["url"] for v in vault if v.get("url")],
         "activity_ids": [a["id"] for a in activity],
         "active_session_ids": [s["id"] for s in sessions],
         "audit_codes": sorted({w["code"] for w in audit.get("warnings", [])}),
@@ -131,13 +182,19 @@ def _clip(text: Any, limit: int = 360) -> str:
     return s[: max(0, limit - 1)].rstrip() + "..."
 
 
-def _ranked_memory(project: str, tokens: set[str], limit: int, query: str | None = None) -> list[dict[str, Any]]:
+def _ranked_memory(
+    project: str,
+    tokens: set[str],
+    limit: int,
+    query: str | None = None,
+    use_semantic: bool = True,
+) -> list[dict[str, Any]]:
     rows: list[sqlite3.Row]
     
     # Semantic search matches
     semantic_ids = []
     semantic_scores = {}
-    if query:
+    if query and use_semantic:
         try:
             if si.is_ready():
                 hits = si.search(query, top_k=limit * 2)
@@ -465,6 +522,14 @@ def _render_briefing(project: str | None,
         lines.append("Ranked durable memory:")
         for m in sections["durable_memory"]:
             lines.append(f"- memory {m['id']} [{m['kind']}, score {m['score']}]: {m['content']}")
+
+    if sections.get("vault_matches"):
+        lines.append("")
+        lines.append("Relevant from your vault (full-corpus, reranked):")
+        for v in sections["vault_matches"]:
+            tail = f" — {v['snippet']}" if v.get("snippet") else ""
+            url = f" <{v['url']}>" if v.get("url") else ""
+            lines.append(f"- [{v.get('source')}] {v.get('title')}{url}{tail}")
 
     if sections["recent_activity"]:
         lines.append("")
