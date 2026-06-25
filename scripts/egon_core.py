@@ -419,6 +419,65 @@ def check_reembed(u: "Unit") -> None:
         u.detail = f"launch failed: {str(e)[:60]}"
 
 
+_concept_proc = None
+_concept_last = 0.0
+CONCEPT_COOLDOWN_S = int(os.environ.get("EGON_CONCEPT_COOLDOWN_S", str(24 * 3600)))
+
+
+def check_concept_graph(u: "Unit") -> None:
+    """Rebuild the higher-order Concept Graph (lib/concept_graph) when the live
+    embedding index is newer than the last graph — idle-gated, in an ISOLATED
+    subprocess (its meta-title load briefly needs ~1GB, freed when the process
+    dies). This is the data behind the Categorical Mind / CatColab graphic home:
+    concepts clustered from the whole embedded vault + their morphisms. Local,
+    no quota. Bruno 2026-06-25."""
+    global _concept_proc, _concept_last
+    meta = ROOT / "state" / "connect_index" / "meta.json"
+    cg = ROOT / "state" / "concept_graph.json"
+    # Drive-backed index: prefer the env path the engine itself uses.
+    try:
+        from lib.egon_paths import CONNECT_INDEX_DIR
+        meta = CONNECT_INDEX_DIR / "meta.json"
+    except Exception:
+        pass
+    cg_age = cg.stat().st_mtime if cg.exists() else 0
+    idx_age = meta.stat().st_mtime if meta.exists() else 0
+    stale = (not cg.exists()) or (idx_age > cg_age)
+    if not stale:
+        u.ok = True
+        u.detail = f"fresh ({int((time.time()-cg_age)/3600)}h old)"
+        return
+    if _concept_proc is not None and _concept_proc.poll() is None:
+        u.ok = True
+        u.detail = "clustering concepts…"
+        return
+    since = time.time() - _concept_last
+    if _concept_last and since < CONCEPT_COOLDOWN_S:
+        u.ok = True
+        u.detail = f"cooldown ({int((CONCEPT_COOLDOWN_S - since)/3600)}h)"
+        return
+    allowed, why = _heavy_allowed()
+    if not allowed:
+        u.ok = True
+        u.detail = f"idle-wait ({why})"
+        return
+    code = ("import sys; sys.path.insert(0, r'{root}'); from lib import concept_graph; "
+            "r = concept_graph.build_concept_graph(k=200); "
+            "print(r.get('n_concepts'), r.get('n_items'))").format(root=str(ROOT))
+    try:
+        _concept_proc = subprocess.Popen(
+            [str(PYW), "-c", code], cwd=str(ROOT), env=SPAWN_ENV,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008))
+        _concept_last = time.time()
+        u.ok = True
+        u.detail = "rebuild launched"
+        log("info", "concept_graph_rebuild_launched")
+    except Exception as e:
+        u.ok = True
+        u.detail = f"launch failed: {str(e)[:60]}"
+
+
 def check_hermes(u: "Unit") -> None:
     """Lean always-on oversight (Hermes monitor): each cycle it scans orchestrator
     task health, agent quota cooldowns, and cross-AI opportunities, and SURFACES
@@ -841,6 +900,7 @@ def main() -> int:
              "hydration": Unit("hydration"),
              "reembed": Unit("reembed"),
              "hermes": Unit("hermes"),
+             "concept_graph": Unit("concept_graph"),
              "daily_digest": Unit("daily_digest"),
              "snapshots": Unit("snapshots"),
              "mirror": Unit("mirror")}
@@ -853,6 +913,7 @@ def main() -> int:
             check_hydration(units["hydration"])
             check_reembed(units["reembed"])
             check_hermes(units["hermes"])
+            check_concept_graph(units["concept_graph"])
             check_digest(units["daily_digest"])
             check_snapshots(units["snapshots"])
             check_mirror(units["mirror"])

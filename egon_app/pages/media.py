@@ -158,21 +158,73 @@ def _pocketcasts_history() -> list[dict]:
         return []
 
 
+def _kindle_books() -> list[dict]:
+    """Kindle books with cover art."""
+    try:
+        from lib.adapters import kindle
+        out = []
+        for b in kindle.items(5000):
+            asin = b.get("asin") or ""
+            url = f"https://www.amazon.com/dp/{asin}" if asin and not str(asin).startswith("pdoc_") else ""
+            out.append({
+                "title":  b.get("title", ""),
+                "subtitle": b.get("author", ""),
+                "year":   b.get("acquired", "")[:4] if b.get("acquired") else "",
+                "image":  b.get("cover") or "",
+                "url":    url,
+                "meta":   [b.get("kind", "")] if b.get("kind") else [],
+            })
+        return out
+    except Exception:
+        return []
+
+
 def _tvtime_shows() -> list[dict]:
     """TV Time shows — from the local adapter snapshot first, falling back
     to the Chrome extension harvest endpoint on Panop."""
+    try:
+        from lib.adapters import tmdb
+        tmdb_cache = tmdb._load_cache() if tmdb.configured() else {}
+    except Exception:
+        tmdb_cache = {}
+
     try:
         from lib.adapters import tvtime
         local_items = tvtime.items(500)
         if local_items:
             out = []
             for s in local_items:
+                poster = s.get("poster") or s.get("image") or ""
+                tvdb_id = s.get("tvdb_id") or ""
+                if not tvdb_id and s.get("id"):
+                    parts = s["id"].split("-")
+                    if len(parts) > 1:
+                        tvdb_id = parts[-1]
+                    else:
+                        parts = s["id"].split(":")
+                        if len(parts) > 1:
+                            tvdb_id = parts[-1]
+                if tvdb_id and f"tvdb|{tvdb_id}" in tmdb_cache:
+                    poster = tmdb_cache[f"tvdb|{tvdb_id}"].get("poster") or poster
+
+                meta = []
+                eps = s.get("watched_episodes")
+                if eps:
+                    meta.append(f"{eps} eps")
+                last_w = s.get("last_watched")
+                if last_w:
+                    meta.append(f"watched {last_w}")
+                rating = s.get("rating")
+                if rating:
+                    meta.append(f"rating {rating}")
+
                 out.append({
                     "title":  s.get("title", ""),
                     "year":   s.get("year", ""),
-                    "image":  s.get("poster") or s.get("image") or "",
+                    "image":  poster,
                     "url":    s.get("url", ""),
                     "subtitle": s.get("status", ""),
+                    "meta":   meta,
                 })
             return out
     except Exception:
@@ -185,12 +237,29 @@ def _tvtime_shows() -> list[dict]:
         d = r.json() or {}
         out = []
         for s in d.get("items") or []:
+            poster = s.get("poster") or s.get("image") or ""
+            tvdb_id = s.get("tvdb_id") or ""
+            if tvdb_id and f"tvdb|{tvdb_id}" in tmdb_cache:
+                poster = tmdb_cache[f"tvdb|{tvdb_id}"].get("poster") or poster
+
+            meta = []
+            eps = s.get("watched_episodes")
+            if eps:
+                meta.append(f"{eps} eps")
+            last_w = s.get("last_watched")
+            if last_w:
+                meta.append(f"watched {last_w}")
+            rating = s.get("rating")
+            if rating:
+                meta.append(f"rating {rating}")
+
             out.append({
                 "title":  s.get("title", ""),
                 "year":   s.get("year", ""),
-                "image":  s.get("poster") or s.get("image") or "",
+                "image":  poster,
                 "url":    s.get("url", ""),
                 "subtitle": s.get("status", ""),
+                "meta":   meta,
             })
         return out
     except Exception:
@@ -359,11 +428,11 @@ def _films_stats(rows: list[dict]) -> str:
     rated = [float(r["rating"]) for r in rows if r.get("rating")]
     liked = sum(1 for r in rows if r.get("liked"))
     years = [r["year"] for r in rows if r.get("year")]
-    parts = [f"<b style='color:#F0E9D5;'>{len(rows):,}</b> films"]
+    parts = [f"<b style='color:#f5f5f7;'>{len(rows):,}</b> films"]
     if rated:
         parts.append(f"avg ★ {sum(rated)/len(rated):.1f}")
     if liked:
-        parts.append(f"<span style='color:#D67A6A;'>♥ {liked}</span>")
+        parts.append(f"<span style='color:#ff453a;'>♥ {liked}</span>")
     if years:
         parts.append(f"{min(years)}–{max(years)}")
     return "  ·  ".join(parts)
@@ -374,7 +443,7 @@ def _yt_music_stats(rows: list[dict]) -> str:
         return ""
     from collections import Counter
     artists = Counter(r.get("subtitle", "") for r in rows if r.get("subtitle"))
-    parts = [f"<b style='color:#F0E9D5;'>{len(rows):,}</b> liked tracks"]
+    parts = [f"<b style='color:#f5f5f7;'>{len(rows):,}</b> liked tracks"]
     top = artists.most_common(3)
     if top:
         parts.append("top: " + ", ".join(f"{a} ({n})" for a, n in top if a))
@@ -386,7 +455,7 @@ def _yt_video_stats(rows: list[dict]) -> str:
         return ""
     from collections import Counter
     ch = Counter(r.get("subtitle", "") for r in rows if r.get("subtitle"))
-    parts = [f"<b style='color:#F0E9D5;'>{len(rows):,}</b> liked videos"]
+    parts = [f"<b style='color:#f5f5f7;'>{len(rows):,}</b> liked videos"]
     top = ch.most_common(3)
     if top:
         parts.append("top channels: " + ", ".join(f"{c} ({n})" for c, n in top if c))
@@ -394,7 +463,7 @@ def _yt_video_stats(rows: list[dict]) -> str:
 
 
 def _pc_subs_stats(rows: list[dict]) -> str:
-    return f"<b style='color:#F0E9D5;'>{len(rows):,}</b> subscribed podcasts" if rows else ""
+    return f"<b style='color:#f5f5f7;'>{len(rows):,}</b> subscribed podcasts" if rows else ""
 
 
 def _open(row: dict) -> None:
@@ -411,20 +480,20 @@ class MediaPage(QWidget):
         outer.setSpacing(10)
 
         title = QLabel("Media")
-        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #F0E9D5;")
+        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #f5f5f7;")
         outer.addWidget(title)
         sub = QLabel("Letterboxd · YouTube · YouTube Music · Pocket Casts · TV Time · "
                      "Instapaper — click any poster (or row) to open it. Filter and sort "
                      "from the toolbar.")
-        sub.setStyleSheet("color: #9CA3AF;")
+        sub.setStyleSheet("color: #76767f;")
         outer.addWidget(sub)
 
         tabs = QTabWidget()
         tabs.setStyleSheet(
-            "QTabWidget::pane { border: 1px solid #1F4858; background: #102F3C; border-radius: 4px; }"
-            "QTabBar::tab { background: #0B1F28; color: #9CA3AF; padding: 6px 14px; "
-            "border: 1px solid #1F4858; border-bottom: none; }"
-            "QTabBar::tab:selected { background: #16404F; color: #F0E9D5; font-weight: 600; }"
+            "QTabWidget::pane { border: 1px solid #22252a; background: #0c0d0f; border-radius: 4px; }"
+            "QTabBar::tab { background: #0c0d0f; color: #76767f; padding: 6px 14px; "
+            "border: 1px solid #22252a; border-bottom: none; }"
+            "QTabBar::tab:selected { background: #212328; color: #f5f5f7; font-weight: 600; }"
         )
         outer.addWidget(tabs, 1)
 
@@ -498,6 +567,15 @@ class MediaPage(QWidget):
             sort_fields=[("title", "Title"), ("year", "Year")],
             empty_message="No TV Time data yet. Log in via Settings → TV Time.",
         ), "TV Time")
+
+        tabs.addTab(PosterGridWidget(
+            provider=_kindle_books,
+            on_click=_open,
+            shape="portrait",
+            cache_key="kindle",
+            sort_fields=[("title", "Title"), ("year", "Acquisition Year")],
+            empty_message="No Kindle books found. Log in via Settings → Kindle.",
+        ), "Kindle")
 
         # ── Instapaper: saved articles as a searchable list ──
         tabs.addTab(ItemListWidget(

@@ -6,7 +6,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QFrame, QLabel,
     QPushButton, QStackedWidget, QButtonGroup, QSizePolicy, QStatusBar,
-    QMessageBox,
+    QMessageBox, QSplitter,
 )
 
 from egon_app import data
@@ -90,14 +90,24 @@ class MainWindow(QMainWindow):
         root.setSpacing(0)
 
         root.addWidget(self._build_header())
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(0)
-        row.addWidget(self._build_sidebar())
-        row.addWidget(self._build_stack(), 1)
-        wrap = QWidget()
-        wrap.setLayout(row)
-        root.addWidget(wrap, 1)
+        
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setStyleSheet(
+            "QSplitter::handle { background: #22252a; width: 1px; }"
+            "QSplitter::handle:hover { background: #ff453a; }"
+        )
+        
+        sidebar = self._build_sidebar()
+        stack = self._build_stack()
+        
+        splitter.addWidget(sidebar)
+        splitter.addWidget(stack)
+        
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, False)
+        splitter.setSizes([240, 1240])
+        
+        root.addWidget(splitter, 1)
 
         # Status bar
         sb = QStatusBar()
@@ -171,7 +181,16 @@ class MainWindow(QMainWindow):
         h = QHBoxLayout(hdr)
         h.setContentsMargins(16, 0, 16, 0)
 
-        title = QLabel("🛰  Egon")
+        from pathlib import Path
+        from PySide6.QtGui import QPixmap
+        logo_label = QLabel()
+        logo_path = str(Path(__file__).resolve().parent.parent / "theme" / "logo.png")
+        pixmap = QPixmap(logo_path)
+        if not pixmap.isNull():
+            logo_label.setPixmap(pixmap.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            h.addWidget(logo_label)
+
+        title = QLabel("Egon")
         title.setObjectName("headerTitle")
         h.addWidget(title)
         h.addStretch(1)

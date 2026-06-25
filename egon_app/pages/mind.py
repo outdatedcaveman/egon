@@ -12,42 +12,44 @@ from datetime import datetime
 from typing import Any
 
 from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
-from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject, QRectF, QPointF
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QFrame, QScrollArea, QPushButton, QLineEdit, QSizePolicy,
     QMessageBox, QTabWidget, QListWidget, QSplitter,
+    QGraphicsView, QGraphicsScene, QGraphicsEllipseItem, QGraphicsSimpleTextItem,
 )
 
 _API = "http://127.0.0.1:8000/api/v1/mind"
 
 # Shared palette
-_BG_CARD = "#0E2630"
-_BORDER  = "#1F4858"
-_ACCENT  = "#7BC5C7"
-_TEXT    = "#F0E9D5"
-_MUTED   = "#9CA3AF"
-_GOLD    = "#D4A24C"
-_OK      = "#7FB069"
-_WARN    = "#D4A24C"
-_ERR     = "#D67A6A"
+_BG_CARD = "#16181c"
+_BORDER  = "#22252a"
+_ACCENT  = "#ff453a"
+_TEXT    = "#f5f5f7"
+_MUTED   = "#76767f"
+_GOLD    = "#ff9f0a"
+_OK      = "#30d158"
+_WARN    = "#ff9f0a"
+_ERR     = "#ff453a"
 
 # Agent → colour mapping
 _AGENT_COLOR = {
     "claude-code": "#D77A56",
-    "codex":       "#7BC5C7",
+    "codex":       "#ff453a",
     "antigravity": "#9D7BC5",
-    "chatgpt":     "#7FB069",
-    "gemini":      "#D4A24C",
+    "chatgpt":     "#30d158",
+    "gemini":      "#ff9f0a",
 }
 
 _TAB_QSS = """
-QTabWidget::pane { border: 1px solid #1F4858; background: #0E2630; }
-QTabBar::tab { background: #16404F; color: #9CA3AF; padding: 8px 16px;
-    border: 1px solid #1F4858; border-bottom: none;
+QTabWidget::pane { border: 1px solid #22252a; background: #16181c; }
+QTabBar::tab { background: #212328; color: #76767f; padding: 8px 16px;
+    border: 1px solid #22252a; border-bottom: none;
     border-top-left-radius: 6px; border-top-right-radius: 6px;
     margin-right: 2px; }
-QTabBar::tab:selected { background: #0E2630; color: #F0E9D5; font-weight: 600; }
+QTabBar::tab:selected { background: #16181c; color: #f5f5f7; font-weight: 600; }
 """
 
 
@@ -86,7 +88,7 @@ def _lock_pill(lease: dict) -> QFrame:
     
     pill = QFrame()
     pill.setStyleSheet(
-        f"background-color: #16404F; border: 1px solid {_BORDER}; "
+        f"background-color: #212328; border: 1px solid {_BORDER}; "
         f"border-radius: 12px; padding: 4px 10px;"
     )
     h = QHBoxLayout(pill)
@@ -235,7 +237,7 @@ def _activity_row(item: dict) -> QFrame:
 
     pill = QLabel(agent)
     pill.setStyleSheet(
-        f"background-color: {color}; color: #0E2630; "
+        f"background-color: {color}; color: #16181c; "
         f"padding: 2px 8px; border-radius: 8px; font-weight: 600;")
     pill.setMinimumWidth(90); pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
     h.addWidget(pill)
@@ -514,7 +516,7 @@ class _ActivityStatsTab(QWidget):
         ]
         for idx, (label, value) in enumerate(rows):
             box = QFrame()
-            box.setStyleSheet(f"background-color: #16404F; border: 1px solid {_BORDER}; border-radius: 6px;")
+            box.setStyleSheet(f"background-color: #212328; border: 1px solid {_BORDER}; border-radius: 6px;")
             v = QVBoxLayout(box)
             v.setContentsMargins(10, 7, 10, 7)
             v.setSpacing(1)
@@ -637,7 +639,7 @@ class _CategoricalMindTab(QWidget):
         ctrl_bar.addWidget(self._scan_btn)
 
         self._status_lbl = QLabel("")
-        self._status_lbl.setStyleSheet("color: #9CA3AF; font-size: 12px;")
+        self._status_lbl.setStyleSheet("color: #76767f; font-size: 12px;")
         ctrl_bar.addWidget(self._status_lbl, 1)
         layout.addLayout(ctrl_bar)
 
@@ -646,7 +648,7 @@ class _CategoricalMindTab(QWidget):
         self._concept_input = QLineEdit()
         self._concept_input.setPlaceholderText("Describe a system/concept in natural language to model & compare (e.g. 'a database replication cluster')...")
         self._concept_input.setStyleSheet(
-            "QLineEdit { background: #102F3C; color: #F0E9D5; border: 1px solid #1F4858; "
+            "QLineEdit { background: #0c0d0f; color: #f5f5f7; border: 1px solid #22252a; "
             "border-radius: 4px; padding: 6px; font-size: 12px; }"
         )
         self._concept_input.returnPressed.connect(self._on_synth_clicked)
@@ -654,9 +656,9 @@ class _CategoricalMindTab(QWidget):
 
         self._synth_btn = QPushButton("⚡ Translate & Model")
         self._synth_btn.setStyleSheet(
-            "QPushButton { background: #D4A24C; color: #0E2630; padding: 6px 12px; "
+            "QPushButton { background: #ff9f0a; color: #16181c; padding: 6px 12px; "
             "border-radius: 4px; font-weight: 600; font-size: 12px; }"
-            "QPushButton:disabled { background: #5A4E39; color: #9CA3AF; }"
+            "QPushButton:disabled { background: #5A4E39; color: #76767f; }"
         )
         self._synth_btn.clicked.connect(self._on_synth_clicked)
         synth_bar.addWidget(self._synth_btn)
@@ -664,7 +666,10 @@ class _CategoricalMindTab(QWidget):
 
         # Main splitter (Categories vs Functors)
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setStyleSheet("QSplitter::handle { background: #1F4858; height: 1px; width: 1px; }")
+        splitter.setStyleSheet(
+            "QSplitter::handle { background: #22252a; width: 1px; }"
+            "QSplitter::handle:hover { background: #ff453a; }"
+        )
         layout.addWidget(splitter, 1)
 
         # Left Column: Categories List & Detail
@@ -674,27 +679,27 @@ class _CategoricalMindTab(QWidget):
         left_layout.setSpacing(10)
 
         cat_lbl = QLabel("Parsed Categories")
-        cat_lbl.setStyleSheet("font-size: 13px; font-weight: 600; color: #7BC5C7;")
+        cat_lbl.setStyleSheet("font-size: 13px; font-weight: 600; color: #ff453a;")
         left_layout.addWidget(cat_lbl)
 
         self._cat_list = QListWidget()
         self._cat_list.setStyleSheet(
-            "QListWidget { background: #102F3C; color: #F0E9D5; border: 1px solid #1F4858; border-radius: 6px; padding: 6px; }"
+            "QListWidget { background: #0c0d0f; color: #f5f5f7; border: 1px solid #22252a; border-radius: 6px; padding: 6px; }"
             "QListWidget::item { padding: 4px 6px; border-radius: 4px; }"
-            "QListWidget::item:selected { background: #1F5366; color: white; }"
-            "QListWidget::item:hover { background: #16404F; }"
+            "QListWidget::item:selected { background: #2a2d34; color: white; }"
+            "QListWidget::item:hover { background: #212328; }"
         )
         self._cat_list.itemSelectionChanged.connect(self._on_category_selected)
         left_layout.addWidget(self._cat_list, 2)
 
         self._cat_detail = QFrame()
         self._cat_detail.setStyleSheet(
-            "QFrame { background: #0E2630; border: 1px solid #1F4858; border-radius: 6px; padding: 12px; }")
+            "QFrame { background: #16181c; border: 1px solid #22252a; border-radius: 6px; padding: 12px; }")
         cat_detail_layout = QVBoxLayout(self._cat_detail)
         cat_detail_layout.setContentsMargins(8, 8, 8, 8)
         
         self._cat_detail_title = QLabel("Select a category to view details")
-        self._cat_detail_title.setStyleSheet("font-size: 12px; font-weight: 600; color: #7BC5C7;")
+        self._cat_detail_title.setStyleSheet("font-size: 12px; font-weight: 600; color: #ff453a;")
         self._cat_detail_title.setTextFormat(Qt.TextFormat.RichText)
         cat_detail_layout.addWidget(self._cat_detail_title)
 
@@ -702,7 +707,7 @@ class _CategoricalMindTab(QWidget):
         cat_scroll.setWidgetResizable(True)
         cat_scroll.setStyleSheet("border: none; background: transparent;")
         self._cat_detail_text = QLabel("")
-        self._cat_detail_text.setStyleSheet("color: #F0E9D5; font-size: 11px;")
+        self._cat_detail_text.setStyleSheet("color: #f5f5f7; font-size: 11px;")
         self._cat_detail_text.setWordWrap(True)
         self._cat_detail_text.setTextFormat(Qt.TextFormat.RichText)
         cat_scroll.setWidget(self._cat_detail_text)
@@ -718,27 +723,27 @@ class _CategoricalMindTab(QWidget):
         right_layout.setSpacing(10)
 
         func_lbl = QLabel("Discovered Analogies (Functors)")
-        func_lbl.setStyleSheet("font-size: 13px; font-weight: 600; color: #D4A24C;")
+        func_lbl.setStyleSheet("font-size: 13px; font-weight: 600; color: #ff9f0a;")
         right_layout.addWidget(func_lbl)
 
         self._func_list = QListWidget()
         self._func_list.setStyleSheet(
-            "QListWidget { background: #102F3C; color: #F0E9D5; border: 1px solid #1F4858; border-radius: 6px; padding: 6px; }"
+            "QListWidget { background: #0c0d0f; color: #f5f5f7; border: 1px solid #22252a; border-radius: 6px; padding: 6px; }"
             "QListWidget::item { padding: 4px 6px; border-radius: 4px; }"
-            "QListWidget::item:selected { background: #1F5366; color: white; }"
-            "QListWidget::item:hover { background: #16404F; }"
+            "QListWidget::item:selected { background: #2a2d34; color: white; }"
+            "QListWidget::item:hover { background: #212328; }"
         )
         self._func_list.itemSelectionChanged.connect(self._on_functor_selected)
         right_layout.addWidget(self._func_list, 2)
 
         self._func_detail = QFrame()
         self._func_detail.setStyleSheet(
-            "QFrame { background: #0E2630; border: 1px solid #1F4858; border-radius: 6px; padding: 12px; }")
+            "QFrame { background: #16181c; border: 1px solid #22252a; border-radius: 6px; padding: 12px; }")
         func_detail_layout = QVBoxLayout(self._func_detail)
         func_detail_layout.setContentsMargins(8, 8, 8, 8)
 
         self._func_detail_title = QLabel("Select an analogy to view mapping")
-        self._func_detail_title.setStyleSheet("font-size: 12px; font-weight: 600; color: #D4A24C;")
+        self._func_detail_title.setStyleSheet("font-size: 12px; font-weight: 600; color: #ff9f0a;")
         self._func_detail_title.setTextFormat(Qt.TextFormat.RichText)
         func_detail_layout.addWidget(self._func_detail_title)
 
@@ -746,7 +751,7 @@ class _CategoricalMindTab(QWidget):
         func_scroll.setWidgetResizable(True)
         func_scroll.setStyleSheet("border: none; background: transparent;")
         self._func_detail_text = QLabel("")
-        self._func_detail_text.setStyleSheet("color: #F0E9D5; font-size: 11px;")
+        self._func_detail_text.setStyleSheet("color: #f5f5f7; font-size: 11px;")
         self._func_detail_text.setWordWrap(True)
         self._func_detail_text.setTextFormat(Qt.TextFormat.RichText)
         func_scroll.setWidget(self._func_detail_text)
@@ -868,7 +873,7 @@ class _CategoricalMindTab(QWidget):
         if not cat_data:
             return
             
-        self._cat_detail_title.setText(f"Category: <span style='color:#7BC5C7;'><b>{cat_name}</b></span>")
+        self._cat_detail_title.setText(f"Category: <span style='color:#ff453a;'><b>{cat_name}</b></span>")
         
         objs = cat_data.get("objects", [])
         mors = cat_data.get("morphisms", [])
@@ -884,7 +889,7 @@ class _CategoricalMindTab(QWidget):
                 codom = mor.get("codom")
                 labels = mor.get("labels", [])
                 for lbl in labels:
-                    lines.append(f"  ⚡ {dom} ➔ {codom} <span style='color:#7BC5C7;'>({lbl})</span>")
+                    lines.append(f"  ⚡ {dom} ➔ {codom} <span style='color:#ff453a;'>({lbl})</span>")
         else:
             lines.append("  <i>None</i>")
             
@@ -904,19 +909,216 @@ class _CategoricalMindTab(QWidget):
         if not lines:
             return
             
-        self._func_detail_title.setText(f"Analogy Mapping: <span style='color:#D4A24C;'><b>{lines[0].split(':', 1)[0]}</b></span>")
+        self._func_detail_title.setText(f"Analogy Mapping: <span style='color:#ff9f0a;'><b>{lines[0].split(':', 1)[0]}</b></span>")
         
         body_lines = []
         for line in lines[1:]:
             line_str = line.strip()
             if line_str.startswith("●"):
-                body_lines.append(f"<span style='color:#7FB069;'>●</span> {line_str[1:].strip()}")
+                body_lines.append(f"<span style='color:#30d158;'>●</span> {line_str[1:].strip()}")
             elif line_str.startswith("⚡"):
-                body_lines.append(f"<span style='color:#D4A24C;'>⚡</span> {line_str[1:].strip()}")
+                body_lines.append(f"<span style='color:#ff9f0a;'>⚡</span> {line_str[1:].strip()}")
             else:
                 body_lines.append(line_str)
                 
         self._func_detail_text.setText("<br/>".join(body_lines))
+
+
+# ── Concept Graph (CatColab graphic home) ──────────────────────────────────
+
+_CG_FAMILIES = [
+    (("quantum", "physics", "topos", "spacetime", "entangle", "mechanics"), "#378ADD"),
+    (("categor", "logic", "math", "computab", "church", "algebra", "geometry",
+      "numbers", "theory", "proof", "axiom"), "#7F77DD"),
+    (("neural", "brain", "cell", "molecular", "genetic", "evolution", "cognition",
+      "neuro", "psychiatr", "transcriptom", "biolog"), "#1D9E75"),
+    (("philosoph", "philpapers", "cause", "concept", "epistem", "metaphys"), "#D85A30"),
+]
+_CG_NOISE = ("cloudflare", "sciencedirect", "newsmap", "oracle", "login", "url",
+             "misc", "bare", "pnas", "nber", "cambridge", "scholar", "amazon",
+             "drive", "library", "unlabeled", "springer", "jstor", "moment")
+
+
+def _cg_color(label: str) -> str:
+    low = (label or "").lower()
+    if any(k in low for k in _CG_NOISE):
+        return "#5f5f67"
+    for kws, c in _CG_FAMILIES:
+        if any(k in low for k in kws):
+            return c
+    return "#888780"
+
+
+def _concept_graph_path():
+    from pathlib import Path
+    return Path(__file__).resolve().parent.parent.parent / "state" / "concept_graph.json"
+
+
+class _ConceptGraphView(QGraphicsView):
+    """Pan + wheel-zoom canvas. Click forwards the concept under the cursor."""
+    nodeClicked = Signal(int)
+
+    def __init__(self, scene, parent=None):
+        super().__init__(scene, parent)
+        self.setRenderHint(QPainter.Antialiasing)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setBackgroundBrush(QColor("#0c0d0f"))
+
+    def wheelEvent(self, ev):
+        factor = 1.18 if ev.angleDelta().y() > 0 else 1 / 1.18
+        self.scale(factor, factor)
+
+    def mousePressEvent(self, ev):
+        item = self.itemAt(ev.pos())
+        if item is not None:
+            nid = item.data(0)
+            if nid is None and item.parentItem() is not None:
+                nid = item.parentItem().data(0)
+            if nid is not None:
+                self.nodeClicked.emit(int(nid))
+        super().mousePressEvent(ev)
+
+
+class _ConceptGraphTab(QWidget):
+    """The graphic CatColab home: higher-order concepts clustered from the whole
+    embedded vault, laid out by PCA of their centroids, edges = morphisms."""
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._loaded = False
+        self._graph = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(10)
+
+        bar = QHBoxLayout()
+        self._meta_lbl = QLabel("Concept graph — derived from your embedded vault")
+        self._meta_lbl.setStyleSheet(f"color: {_TEXT}; font-size: 13px; font-weight: 600;")
+        bar.addWidget(self._meta_lbl)
+        bar.addStretch(1)
+        self._reload_btn = QPushButton("Reload")
+        self._reload_btn.clicked.connect(lambda: self.load_data(force=True))
+        bar.addWidget(self._reload_btn)
+        layout.addLayout(bar)
+
+        split = QSplitter(Qt.Orientation.Horizontal)
+        layout.addWidget(split, 1)
+
+        self._scene = QGraphicsScene(self)
+        self._view = _ConceptGraphView(self._scene)
+        self._view.nodeClicked.connect(self._on_node)
+        split.addWidget(self._view)
+
+        self._detail = QScrollArea()
+        self._detail.setWidgetResizable(True)
+        self._detail.setMinimumWidth(260)
+        self._detail.setMaximumWidth(360)
+        self._detail.setStyleSheet("border: none; background: #16181c;")
+        self._detail_inner = QLabel(
+            "Click a concept to see its representative items.\n\n"
+            "Scroll to zoom · drag to pan.")
+        self._detail_inner.setWordWrap(True)
+        self._detail_inner.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._detail_inner.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._detail_inner.setStyleSheet(f"color: {_MUTED}; font-size: 12px; padding: 12px;")
+        self._detail.setWidget(self._detail_inner)
+        split.addWidget(self._detail)
+        split.setSizes([720, 300])
+
+    def load_data(self, force: bool = False) -> None:
+        if self._loaded and not force:
+            return
+        self._loaded = True
+        graph = None
+        try:
+            graph = _api_get("/concept_graph", timeout=6.0)
+        except Exception:
+            graph = None
+        if not graph or graph.get("status") in ("empty", "error") or not graph.get("concepts"):
+            p = _concept_graph_path()
+            if p.exists():
+                try:
+                    graph = json.loads(p.read_text(encoding="utf-8"))
+                except Exception:
+                    graph = None
+        if not graph or not graph.get("concepts"):
+            self._meta_lbl.setText(
+                "Concept graph not built yet — it generates idle-gated via egon_core.")
+            return
+        self._graph = graph
+        self._render(graph)
+
+    def _render(self, g: dict) -> None:
+        self._scene.clear()
+        concepts = sorted(g.get("concepts", []), key=lambda c: -c.get("size", 0))[:120]
+        keep = {c["id"] for c in concepts}
+        by_id = {c["id"]: c for c in concepts}
+        W, H = 1600.0, 1000.0
+        sizes = [c.get("size", 1) for c in concepts] or [1]
+        smax = max(sizes)
+
+        def rad(s):
+            return 10 + (s / smax) ** 0.5 * 46
+
+        # edges first (under nodes)
+        for e in g.get("edges", []):
+            a, b = e.get("a"), e.get("b")
+            if a not in keep or b not in keep:
+                continue
+            ca, cb = by_id[a], by_id[b]
+            pen = QPen(QColor(120, 124, 132, int(60 + (e.get("weight", 0.5) - 0.45) * 260)))
+            pen.setWidthF(0.4 + (e.get("weight", 0.5) - 0.45) * 3)
+            self._scene.addLine(ca["x"] * W, ca["y"] * H, cb["x"] * W, cb["y"] * H, pen)
+
+        font = QFont("Segoe UI", 9)
+        for c in concepts:
+            r = rad(c.get("size", 1))
+            x, y = c["x"] * W - r, c["y"] * H - r
+            col = QColor(_cg_color(c.get("label", "")))
+            node = QGraphicsEllipseItem(QRectF(x, y, 2 * r, 2 * r))
+            node.setBrush(QBrush(QColor(col.red(), col.green(), col.blue(), 210)))
+            node.setPen(QPen(col, 1.5))
+            node.setData(0, c["id"])
+            node.setZValue(2)
+            node.setToolTip(f"{c.get('label','')}  ·  {c.get('size',0):,} items")
+            self._scene.addItem(node)
+            if r > 17:
+                short = (c.get("label", "").split(" · ")[0])[:22]
+                txt = QGraphicsSimpleTextItem(short)
+                txt.setFont(font)
+                txt.setBrush(QColor("#c9c9d0"))
+                txt.setPos(c["x"] * W - txt.boundingRect().width() / 2, c["y"] * H + r + 2)
+                txt.setData(0, c["id"])
+                txt.setZValue(3)
+                self._scene.addItem(txt)
+
+        self._scene.setSceneRect(self._scene.itemsBoundingRect().adjusted(-60, -60, 60, 60))
+        self._view.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        n = g.get("n_items", 0)
+        gen = (g.get("generated_at", "") or "").replace("T", " ")[:16]
+        self._meta_lbl.setText(
+            f"{len(concepts)} concepts · {len(g.get('concepts', []))} total · "
+            f"{n:,} items embedded · built {gen}")
+
+    def _on_node(self, nid: int) -> None:
+        if not self._graph:
+            return
+        c = next((x for x in self._graph["concepts"] if x["id"] == nid), None)
+        if not c:
+            return
+        items = "".join(
+            f"<div style='margin:4px 0;color:#c9c9d0'>• {(it.get('title') or '')[:64]}"
+            f"<span style='color:#5f5f67'> · {it.get('source','')}</span></div>"
+            for it in c.get("top_items", [])[:8])
+        srcs = ", ".join(c.get("sources", [])[:3])
+        self._detail_inner.setText(
+            f"<div style='color:#f5f5f7;font-size:14px;font-weight:600;margin-bottom:6px'>"
+            f"{c.get('label','')}</div>"
+            f"<div style='color:#76767f;font-size:11px;margin-bottom:10px'>"
+            f"{c.get('size',0):,} items · sources: {srcs}</div>"
+            f"<div style='color:#888780;font-size:11px;margin-bottom:4px'>Representative items:</div>"
+            f"{items}")
+        self._detail_inner.setTextFormat(Qt.TextFormat.RichText)
 
 
 # ── Main MindPage QTabWidget wrapper ───────────────────────────────────────
@@ -967,15 +1169,22 @@ class MindPage(QWidget):
         self._stats_tab = _ActivityStatsTab()
         self._tabs.addTab(self._stats_tab, "Activity & Stats")
 
-        # Tab 2: Categorical Mind (CatColab)
+        # Tab 2: Concept Graph — the graphic CatColab home (embedding-derived)
+        self._concept_tab = _ConceptGraphTab()
+        self._tabs.addTab(self._concept_tab, "Concept Graph")
+
+        # Tab 3: Categorical Mind (ACT) — formal categories/functors
         self._categorical_tab = _CategoricalMindTab()
         self._tabs.addTab(self._categorical_tab, "Categorical Mind (ACT)")
-        
+
         # Connect tab changes to load data dynamically
         self._tabs.currentChanged.connect(self._on_tab_changed)
 
     def _on_tab_changed(self, index: int) -> None:
-        if index == 1:
+        w = self._tabs.widget(index)
+        if w is self._concept_tab:
+            self._concept_tab.load_data()
+        elif w is self._categorical_tab:
             self._categorical_tab.load_data()
 
     def refresh(self) -> None:

@@ -168,3 +168,32 @@ def enrich(title: str, year: str = "") -> dict:
         cache[key] = result
         _save_cache()
     return result
+
+
+def enrich_tv_show(tvdb_id: str | int) -> dict:
+    """Find a TV show by its TVDB ID on TMDB and return its metadata (poster, etc.).
+    Cached to disk keyed by 'tvdb|<tvdb_id>'.
+    """
+    if not configured() or not tvdb_id:
+        return {}
+    key = f"tvdb|{tvdb_id}"
+    cache = _load_cache()
+    if key in cache:
+        return cache[key]
+
+    result: dict = {}
+    data = _get(f"/find/{tvdb_id}", {"external_source": "tvdb_id"})
+    tv_results = (data or {}).get("tv_results") or []
+    if tv_results:
+        show = tv_results[0]
+        result = {
+            "poster": (_IMG + show["poster_path"]) if show.get("poster_path") else "",
+            "title": show.get("name") or "",
+            "overview": (show.get("overview") or "")[:500],
+            "tmdb_rating": show.get("vote_average") or "",
+            "year": (show.get("first_air_date") or "")[:4],
+        }
+    with _LOCK:
+        cache[key] = result
+        _save_cache()
+    return result

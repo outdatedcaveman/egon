@@ -46,7 +46,8 @@ def audit_mind(project: str | None = None,
                  FROM sessions s
                  JOIN agents ag ON ag.id = s.agent_id
                  LEFT JOIN projects p ON p.id = s.project_id
-                 WHERE s.started_at >= ?"""
+                 WHERE s.started_at >= ?
+                   AND COALESCE(s.external_id, '') NOT LIKE 'mock-%'"""
         params: list[Any] = [since]
         if project:
             sql += " AND p.slug = ?"

@@ -40,7 +40,7 @@ if sys.platform == "win32":
 
     _sp.Popen.__init__ = _silent_popen_init
 
-from PySide6.QtCore import Qt, QSharedMemory, QCoreApplication
+from PySide6.QtCore import Qt, QSharedMemory, QCoreApplication, QEvent, QObject
 from PySide6.QtGui import QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -117,6 +117,7 @@ def _start_mind_service(log_fn=None) -> bool:
         env = os.environ.copy()
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env["PYTHONPATH"] = str(_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+        env["EGON_MIND_SERVICE_FORCE"] = "1"
         kwargs = {
             "cwd": str(_ROOT),
             "stdin": subprocess.DEVNULL,
@@ -141,6 +142,45 @@ def _start_mind_service(log_fn=None) -> bool:
         return False
 
 
+class EgonScrollTamer(QObject):
+    """Event filter to intercept wheel events and tame scroll speed inside Egon.
+    Uses a low multiplier (0.1) so touchpad scrolling feels precise and
+    controlled, matching the speed Bruno tuned for Antigravity/Claude.
+    """
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Wheel:
+            from PySide6.QtWidgets import QAbstractScrollArea
+            parent = obj.parent()
+            if isinstance(parent, QAbstractScrollArea) or isinstance(obj, QAbstractScrollArea):
+                scroll_area = parent if isinstance(parent, QAbstractScrollArea) else obj
+                
+                # Check vertical scroll
+                v_delta = event.angleDelta().y()
+                if v_delta != 0:
+                    scrollbar = scroll_area.verticalScrollBar()
+                    if scrollbar and scrollbar.isVisible():
+                        # Tame scroll step (multiplier=0.1 — Bruno 2026-06-23)
+                        multiplier = 0.1
+                        step = max(scrollbar.singleStep() * multiplier, 3)
+                        current = scrollbar.value()
+                        new_val = current - (v_delta / 120) * step
+                        scrollbar.setValue(int(max(scrollbar.minimum(), min(scrollbar.maximum(), new_val))))
+                        return True
+                        
+                # Check horizontal scroll
+                h_delta = event.angleDelta().x()
+                if h_delta != 0:
+                    scrollbar = scroll_area.horizontalScrollBar()
+                    if scrollbar and scrollbar.isVisible():
+                        multiplier = 0.1
+                        step = max(scrollbar.singleStep() * multiplier, 3)
+                        current = scrollbar.value()
+                        new_val = current - (h_delta / 120) * step
+                        scrollbar.setValue(int(max(scrollbar.minimum(), min(scrollbar.maximum(), new_val))))
+                        return True
+        return super().eventFilter(obj, event)
+
+
 def main() -> int:
     _trace("main() entered")
     _set_appusermodelid()
@@ -149,6 +189,9 @@ def main() -> int:
     os.environ["QSG_RHI_PREFER_SOFTWARE_RENDERER"] = "1"
     QCoreApplication.setAttribute(Qt.AA_UseSoftwareOpenGL)
     app = QApplication(sys.argv)
+    _tamer = EgonScrollTamer()
+    app.installEventFilter(_tamer)
+    app._egon_scroll_tamer = _tamer  # type: ignore[attr-defined]
     _trace("QApplication created")
     app.setApplicationName("Egon")
     app.setOrganizationName("outdatedcaveman")

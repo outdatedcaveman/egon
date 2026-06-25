@@ -32,12 +32,12 @@ class ConnectSearchPage(QWidget):
 
         head = QHBoxLayout()
         title = QLabel("✨ Connect & Search")
-        title.setStyleSheet("color: #F0E9D5; font-size: 20px; font-weight: 700;")
+        title.setStyleSheet("color: #f5f5f7; font-size: 20px; font-weight: 700;")
         head.addWidget(title)
         head.addStretch(1)
 
         self._cap_status = QLabel("")
-        self._cap_status.setStyleSheet("color: #9CA3AF; font-size: 11px;")
+        self._cap_status.setStyleSheet("color: #76767f; font-size: 11px;")
         head.addWidget(self._cap_status)
         cap_btn = QPushButton("🖥️ Launch screen capturer (Ctrl+Alt+E)")
         cap_btn.setToolTip(
@@ -46,7 +46,7 @@ class ConnectSearchPage(QWidget):
             "OCR'd and connected to your archives. Single-instance — safe "
             "to click again.")
         cap_btn.setStyleSheet(
-            "QPushButton { background: #D4A24C; color: #102F3C; padding: 6px 14px; "
+            "QPushButton { background: #ff9f0a; color: #0c0d0f; padding: 6px 14px; "
             "border-radius: 4px; font-weight: 700; border: none; }"
             "QPushButton:hover { background: #E0B45E; }")
         cap_btn.clicked.connect(self._launch_capturer)
@@ -55,10 +55,10 @@ class ConnectSearchPage(QWidget):
 
         tabs = QTabWidget()
         tabs.setStyleSheet(
-            "QTabWidget::pane { border: 1px solid #1F4858; border-radius: 6px; }"
-            "QTabBar::tab { background: #102F3C; color: #9CA3AF; padding: 7px 18px; "
+            "QTabWidget::pane { border: 1px solid #22252a; border-radius: 6px; }"
+            "QTabBar::tab { background: #0c0d0f; color: #76767f; padding: 7px 18px; "
             "border-top-left-radius: 6px; border-top-right-radius: 6px; font-weight: 600; }"
-            "QTabBar::tab:selected { background: #16404F; color: #F0E9D5; }")
+            "QTabBar::tab:selected { background: #212328; color: #f5f5f7; }")
         from egon_app.pages.connect import ConnectPage
         from egon_app.pages.search import SearchPage
         self._connect = ConnectPage()

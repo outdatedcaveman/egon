@@ -51,17 +51,42 @@ def write_snapshot(source: str, payload: dict, when: datetime | None = None) -> 
 
 
 def latest_snapshot(source: str) -> dict | None:
-    """Most recent snapshot for `source`. Prefers local; falls back to vault if local missing."""
+    """Most recent successful/rich snapshot for `source`. Prefers local; falls back to vault."""
     for root in (LOCAL_ROOT, VAULT_ROOT):
         d = root / source
         if not d.exists():
             continue
         files = sorted(d.glob("*.json"), reverse=True)
-        if files:
+        valid_candidates = []
+        for f in files:
             try:
-                return json.loads(files[0].read_text(encoding="utf-8"))
+                data = json.loads(f.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    continue
+                if data.get("status") in ("error", "timeout", "unconfigured"):
+                    continue
+                
+                # Check list lengths of main media collection keys
+                item_count = 0
+                for k in ("items", "films", "books", "shows"):
+                    if k in data and isinstance(data[k], list):
+                        item_count = max(item_count, len(data[k]))
+                
+                valid_candidates.append((data, item_count))
             except Exception:
                 continue
+                
+        if valid_candidates:
+            # If the newest valid snapshot is nearly empty (< 15 items) but we have a
+            # historical snapshot that was rich (>= 15 items), fall back to the rich one
+            # to preserve data visibility in the UI.
+            newest_data, newest_cnt = valid_candidates[0]
+            if newest_cnt < 15:
+                richer = [c for c in valid_candidates if c[1] >= 15]
+                if richer:
+                    return richer[0][0]
+            return newest_data
+            
     return None
 
 

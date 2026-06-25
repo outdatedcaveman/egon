@@ -2229,6 +2229,15 @@ def start_background_jobs():
     # the new port via mDNS and reconnects within ~6 s.
     try: _start_adb_watchdog()
     except Exception: pass
+    # Keep Egon's AI task orchestrator active whenever the mind/API process is
+    # active. This is the same lifecycle as the mind: route around cooldowns,
+    # wake Hermes, and recover agents as cooldowns expire even when the
+    # Orchestrator UI page is closed.
+    try:
+        from lib.orchestrator_service import ensure_orchestrator_service
+        ensure_orchestrator_service()
+    except Exception:
+        pass
     # Kill any stale panop-server siblings left from a previous crashed run.
     # Bruno 2026-05-27 (revised): match the exact ABSOLUTE PATH of this
     # main.py against each candidate process's positional arguments — not
@@ -3007,6 +3016,35 @@ def _do_close_synced_tabs_now():
         else:
             skipped += 1
     return {"status": "ok", "closed": closed, "skipped": skipped, "failed": failed, "total": len(tabs)}
+
+
+from fastapi import Request as _HReq
+_CHROME_TABS_STATE = os.path.join(OUTPUT_DIR(), "chrome_tabs_state.json")
+
+@app.post("/api/v1/chrome_tabs/update")
+async def chrome_tabs_update(req: _HReq):
+    try:
+        body = await req.json()
+        if not isinstance(body, dict) or "tabs" not in body:
+            return {"status": "error", "error": "bad payload"}
+        body["received_at"] = datetime.now().isoformat(timespec="seconds")
+        with open(_CHROME_TABS_STATE, "w", encoding="utf-8") as f:
+            json.dump(body, f, ensure_ascii=False, indent=2)
+        return {"status": "ok", "count": body.get("count", 0)}
+    except Exception as e:
+        return {"status": "error", "error": str(e)[:200]}
+
+
+@app.get("/api/v1/chrome_tabs/state")
+def chrome_tabs_state():
+    if not os.path.exists(_CHROME_TABS_STATE):
+        return {"status": "no_data", "tabs": [], "count": 0}
+    try:
+        with open(_CHROME_TABS_STATE, encoding="utf-8") as f:
+            return {"status": "ok", **json.load(f)}
+    except Exception as e:
+        return {"status": "error", "error": str(e)[:200]}
+
 
 @app.get("/api/v1/tabs/inspect")
 def inspect_tabs(wake: bool = False):

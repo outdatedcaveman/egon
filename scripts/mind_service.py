@@ -11,6 +11,7 @@ mind ingestion loop, not Egon's UI-only routines.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import sys
 import threading
@@ -85,6 +86,48 @@ def _start_mind_ingest() -> object | None:
         return None
 
 
+def _start_orchestrator_service() -> object | None:
+    try:
+        from lib.orchestrator_service import ensure_orchestrator_service
+
+        svc = ensure_orchestrator_service()
+        _log("info", "orchestrator_service_started")
+        return svc
+    except Exception as e:
+        _log("warn", "orchestrator_service_start_failed",
+             error=f"{type(e).__name__}: {str(e)[:200]}")
+        return None
+
+
+def _warm_context_stack() -> None:
+    """Warm optional semantic helpers without delaying the mind API."""
+    try:
+        from lib import semantic_index
+
+        semantic_index.warm_model_async()
+        _log("info", "context_warmup_started")
+    except Exception as e:
+        _log("warn", "context_warmup_failed",
+             error=f"{type(e).__name__}: {str(e)[:200]}")
+
+
+def _warm_health_cache() -> None:
+    """Seed operational health caches after the API is serving."""
+    paths = [
+        "/api/v1/mind/scorecard?project=egon&since_hours=24&capsule_budget_chars=1000",
+        "/api/v1/mind/enforcement/status?project=egon&since_hours=24",
+    ]
+    for path in paths:
+        try:
+            url = f"http://{HOST}:{PORT}{path}"
+            with urllib.request.urlopen(url, timeout=30.0) as resp:
+                body = resp.read(300).decode("utf-8", errors="replace")
+            _log("info", "health_cache_warmed", path=path, status=resp.status, body=body[:120])
+        except Exception as e:
+            _log("warn", "health_cache_warm_failed",
+                 path=path, error=f"{type(e).__name__}: {str(e)[:200]}")
+
+
 def main() -> int:
     _log("info", "starting", argv=" ".join(sys.argv[1:]))
 
@@ -92,11 +135,16 @@ def main() -> int:
         _log("info", "already_running")
         return 0
 
-    try:
-        from lib.single_instance_mutex import claim_or_exit
-        claimed = claim_or_exit("Egon-Mind-Service-2026-06")
-    except Exception:
+    force_start = os.environ.get("EGON_MIND_SERVICE_FORCE") == "1"
+    if force_start:
+        _log("warn", "singleton_bypass_requested")
         claimed = True
+    else:
+        try:
+            from lib.single_instance_mutex import claim_or_exit
+            claimed = claim_or_exit("Egon-Mind-Service-2026-06")
+        except Exception:
+            claimed = True
     if not claimed:
         _log("info", "singleton_already_claimed")
         if _wait_ready(timeout_s=25.0):
@@ -120,6 +168,9 @@ def main() -> int:
         return 1
 
     ingest = _start_mind_ingest()
+    orchestrator = _start_orchestrator_service()
+    threading.Thread(target=_warm_context_stack, name="egon-context-warmup",
+                     daemon=True).start()
     config = uvicorn.Config(
         panop_app,
         host=HOST,
@@ -161,6 +212,8 @@ def main() -> int:
     th.start()
     if _wait_ready():
         _log("info", "ready", port=PORT)
+        threading.Thread(target=_warm_health_cache, name="egon-health-cache-warmup",
+                         daemon=True).start()
     else:
         _log("warn", "ready_timeout", port=PORT)
 
@@ -170,6 +223,11 @@ def main() -> int:
         if ingest is not None:
             try:
                 ingest.stop()
+            except Exception:
+                pass
+        if orchestrator is not None:
+            try:
+                orchestrator.stop()
             except Exception:
                 pass
         _log("info", "stopped")

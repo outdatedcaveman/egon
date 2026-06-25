@@ -8,8 +8,8 @@ every file as an entity, connected by semantic similarity.
 
 | Root | Contents | Caveat |
 |---|---|---|
-| `C:\Users\bruno\Google Drive` | **43,476 PDFs / 57 GB** — the paper+book library | Drive File Stream **cloud placeholders**: metadata is free, reading content force-downloads |
-| `C:\Users\bruno\Documents` | ~30k files, mostly code trees | only ~800 knowledge-bearing files after extension curation |
+| `~/Google Drive` | **43,476 PDFs / 57 GB** — the paper+book library | Drive File Stream **cloud placeholders**: metadata is free, reading content force-downloads |
+| `~/Documents` | ~30k files, mostly code trees | only ~800 knowledge-bearing files after extension curation |
 | `My Drive`, `EgonVault` | placeholder roots, ~empty locally | populated on demand by Drive |
 
 Key consequence: **naive full-text indexing would download 57 GB.** The
@@ -26,14 +26,18 @@ design is tiered to never do that by accident.
 - Refresh rides the egon_core `connect_index` unit (every 6 h).
 - Sweep visibility via `lib/adapters/local_files.py`.
 
-## Tier 2 — budgeted content extraction (next)
+## Tier 2 - SHIPPED (budgeted content extraction)
 
-- For PDFs that are ALREADY hydrated locally (Drive marks them; detectable
-  via `os.stat` block allocation) extract first ~10 pages with pypdf and
-  re-embed the same uid with fuller text.
-- Daily byte budget (e.g. 200 MB) for deliberately hydrating high-value
-  files: most-recently-opened, most-connected, or explicitly pinned.
-- Mouseion/PaperGuru already OCR/parse papers — reuse, don't duplicate.
+- Pinned files still go through `lib/hydration_worker.py`, with a per-run byte
+  cap before content is opened.
+- `lib/auto_hydrate_crawler.py` now scans the indexed corpus for supported
+  local formats (`pdf`, text/markup/data files, `docx`, `pptx`, `epub`, `odt`)
+  and writes extracts to `state/file_extracts/` before the semantic rebuild.
+- Cloud-backed Drive files are only opened when Windows reports them locally
+  available, so placeholder files are not force-downloaded by the crawler.
+- `lib/semantic_index.py` chunks extracted file text and embeds each chunk with
+  filename/path context, while files without extracts keep metadata vectors.
+- Mouseion/PaperGuru already OCR/parse papers - reuse, don't duplicate.
 
 ## Tier 3 — entity instantiation (the mirror)
 
@@ -43,10 +47,11 @@ design is tiered to never do that by accident.
 - Dedup pass: a Drive PDF, its Zotero attachment, and its Paperpile entry
   are ONE entity with three locations.
 
-## Decisions to make before tier 2
+## Decisions to make after tier 2
 
-1. Hydration budget size and trigger (auto vs pinned-only).
-2. Whether Documents code trees deserve a separate "code" index (different
+1. Whether Documents code trees deserve a separate "code" index (different
    embedding model, different surfaces) or stay excluded.
-3. Where extracted text lives: alongside the index (jsonl) vs mind.db blobs
-   (bears on the day-to-day/long-term DB split — see archival-tier memory).
+2. Whether scanned PDFs should get OCR, and which existing OCR/PaperGuru output
+   can be reused before adding another extractor.
+3. Where extracted text ultimately lives: alongside the index (`file_extracts`)
+   vs mind.db blobs (bears on the day-to-day/long-term DB split).

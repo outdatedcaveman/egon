@@ -117,6 +117,27 @@ def _snapshot_from_harvest() -> dict | None:
     raw = st.get("items") or []
     if not raw:
         return None
+
+    # Load watched episodes details to group them by series ID
+    _EPISODES_STATE = ROOT / "state" / "panop" / "tvtime_episodes_state.json"
+    ep_by_series = {}
+    if _EPISODES_STATE.exists():
+        try:
+            ep_data = json.loads(_EPISODES_STATE.read_text(encoding="utf-8"))
+            eps = ep_data.get("episodes") or []
+            for ep in eps:
+                sid = str(ep.get("series_id") or "")
+                if not sid:
+                    continue
+                wat = ep.get("watched_at") or ""
+                if sid not in ep_by_series:
+                    ep_by_series[sid] = {"count": 0, "last_watched": ""}
+                ep_by_series[sid]["count"] += 1
+                if wat and wat > ep_by_series[sid]["last_watched"]:
+                    ep_by_series[sid]["last_watched"] = wat
+        except Exception:
+            pass
+
     items: list[dict] = []
     for it in raw:
         eid = str(it.get("id") or it.get("tvdb_id") or "")
@@ -124,22 +145,73 @@ def _snapshot_from_harvest() -> dict | None:
             continue
         etype = it.get("entity_type") or it.get("kind") or "series"
         etype = "movie" if "movie" in etype else "series"
+
+        # Extract numeric TVDB ID
+        tvdb_id = it.get("tvdb_id")
+        if not tvdb_id:
+            try:
+                parts = eid.split(":")
+                if len(parts) > 1:
+                    tvdb_id = int(parts[-1])
+                else:
+                    parts = eid.split("-")
+                    if len(parts) > 1:
+                        tvdb_id = int(parts[-1])
+            except ValueError:
+                pass
+
+        # Resolve watched episode metadata
+        ep_count = it.get("watched_episodes") or 0
+        last_wat = it.get("last_watched") or ""
+        if tvdb_id:
+            sid_str = str(tvdb_id)
+            if sid_str in ep_by_series:
+                if not ep_count:
+                    ep_count = ep_by_series[sid_str]["count"]
+                if not last_wat:
+                    last_wat = ep_by_series[sid_str]["last_watched"]
+
         items.append({
             "id": eid,
             "title": str(it.get("title") or "(no title)").strip()[:160],
             "poster": it.get("image") or it.get("poster") or "",
             "url": it.get("url") or f"https://www.thetvdb.com/?id={it.get('tvdb_id','')}",
             "year": str(it.get("year") or "")[:4],
-            "status": ("watching" if (it.get("watched_episodes") or 0) > 0
+            "status": ("watching" if (ep_count or 0) > 0
                        else ("following" if it.get("followed") else "")),
             "entity_type": etype,
-            "watched_episodes": it.get("watched_episodes") or 0,
-            "last_watched": (it.get("last_watched") or "")[:10],
+            "watched_episodes": ep_count,
+            "last_watched": last_wat[:10] if last_wat else "",
             "rating": str(it.get("rating") or ""),
+            "tvdb_id": tvdb_id,
         })
     items.sort(key=lambda x: (x.get("watched_episodes") or 0), reverse=True)
     return {"status": "ok", "synced_at": st.get("received_at") or datetime.now().isoformat(),
             "count": len(items), "items": items, "source": "extension_harvest"}
+
+
+def _prewarm_tmdb(items: list[dict]) -> None:
+    try:
+        from lib.adapters import tmdb
+        import time
+        if tmdb.configured():
+            t_cache = tmdb._load_cache()
+            uncached = []
+            for it in items:
+                tid = it.get("tvdb_id")
+                if tid:
+                    ckey = f"tvdb|{tid}"
+                    if ckey not in t_cache:
+                        uncached.append(tid)
+            # Enrich up to 30 TV shows per pass in the background
+            for tid in uncached[:30]:
+                try:
+                    tmdb.enrich_tv_show(tid)
+                    time.sleep(0.2)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 def snapshot() -> dict:
@@ -147,6 +219,7 @@ def snapshot() -> dict:
     # Playwright scrape only if no harvest state exists yet.
     harv = _snapshot_from_harvest()
     if harv:
+        _prewarm_tmdb(harv.get("items") or [])
         return harv
     if not is_logged_in():
         return {"status": "unconfigured", "error": "not logged in"}
@@ -328,6 +401,7 @@ def snapshot() -> dict:
                 "rating": str(entity.get("rating") or entity.get("user_rating") or "")
             })
 
+        _prewarm_tmdb(items)
         return {"status": "ok", "synced_at": datetime.now().isoformat(),
                 "count": len(items), "items": items}
     except Exception as e:

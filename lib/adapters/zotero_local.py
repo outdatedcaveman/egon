@@ -102,23 +102,19 @@ def snapshot() -> dict:
     }
 
 
-def items(limit: int = 300000) -> list[dict]:
+def items(limit: int = 300000, include_tags: bool = True) -> list[dict]:
     """Direct read from the Zotero SQLite — full set of fields.
 
     Bypasses snapshot_store so the UI always sees the live DB, with every
-    column the data-browser needs: title · creators · year · DOI · URL ·
-    publication · tags · dateAdded. SQLite reads on a 1.5 GB Zotero DB take
-    ~50 ms — no need to cache via snapshot.
+    column the data-browser needs. Optimized to use flat queries and bulk
+    creator/tag mapping to avoid correlated subquery overhead on large databases.
     """
     p = _db()
     if not p:
         return []
     try:
-        c = sqlite3.connect(f"file:{p}?mode=ro&immutable=1", uri=True, timeout=3.0)
+        c = sqlite3.connect(f"file:{p}?mode=ro&immutable=1", uri=True, timeout=10.0)
         cur = c.cursor()
-        # One query that joins every field we want. We pull the fieldID for
-        # each field up front, then LEFT JOIN itemData for each. Tags +
-        # creators come from sub-queries that we group_concat.
         cur.execute("SELECT fieldID, fieldName FROM fields")
         fields = {n: i for (i, n) in cur.fetchall()}
         def fid(name: str) -> int:
@@ -133,15 +129,7 @@ def items(limit: int = 300000) -> list[dict]:
               v_date.value           AS pub_date,
               v_publication.value    AS publication,
               v_book_title.value     AS book_title,
-              v_abstract.value       AS abstract,
-              (SELECT GROUP_CONCAT(c.lastName, ', ')
-                 FROM itemCreators ic
-                 JOIN creators c ON c.creatorID = ic.creatorID
-                WHERE ic.itemID = it.itemID
-                ORDER BY ic.orderIndex)  AS authors,
-              (SELECT GROUP_CONCAT(t.name, '; ')
-                 FROM itemTags itg JOIN tags t ON t.tagID = itg.tagID
-                WHERE itg.itemID = it.itemID)        AS tags
+              SUBSTR(v_abstract.value, 1, 300) AS abstract
             FROM items it
             LEFT JOIN itemData id_title ON id_title.itemID = it.itemID AND id_title.fieldID = {fid('title')}
             LEFT JOIN itemDataValues v_title ON v_title.valueID = id_title.valueID
@@ -164,11 +152,57 @@ def items(limit: int = 300000) -> list[dict]:
             LIMIT ?
         """
         cur.execute(sql, (limit,))
+        items_raw = cur.fetchall()
+        item_ids = [r[0] for r in items_raw]
+
+        creators_map = {}
+        if item_ids:
+            if len(item_ids) <= 900:
+                placeholders = ",".join(map(str, item_ids))
+                sql_creators = f"""
+                    SELECT ic.itemID, c.lastName
+                    FROM itemCreators ic
+                    JOIN creators c ON c.creatorID = ic.creatorID
+                    WHERE ic.itemID IN ({placeholders})
+                    ORDER BY ic.itemID, ic.orderIndex
+                """
+            else:
+                sql_creators = """
+                    SELECT ic.itemID, c.lastName
+                    FROM itemCreators ic
+                    JOIN creators c ON c.creatorID = ic.creatorID
+                    ORDER BY ic.itemID, ic.orderIndex
+                """
+            cur.execute(sql_creators)
+            for item_id, last_name in cur.fetchall():
+                if last_name:
+                    creators_map.setdefault(item_id, []).append(last_name)
+
+        tags_map = {}
+        if item_ids and include_tags:
+            if len(item_ids) <= 900:
+                placeholders = ",".join(map(str, item_ids))
+                sql_tags = f"""
+                    SELECT itg.itemID, t.name
+                    FROM itemTags itg
+                    JOIN tags t ON t.tagID = itg.tagID
+                    WHERE itg.itemID IN ({placeholders})
+                """
+            else:
+                sql_tags = """
+                    SELECT itg.itemID, t.name
+                    FROM itemTags itg
+                    JOIN tags t ON t.tagID = itg.tagID
+                """
+            cur.execute(sql_tags)
+            for item_id, name in cur.fetchall():
+                if name:
+                    tags_map.setdefault(item_id, []).append(name)
+
         rows = []
-        for r in cur.fetchall():
+        for r in items_raw:
             (itemID, dateAdded, title, doi, url, pub_date, publication,
-             book_title, abstract, authors, tags) = r
-            # Extract a 4-digit year from pub_date if present
+             book_title, abstract) = r
             year = ""
             if pub_date:
                 import re
@@ -178,15 +212,15 @@ def items(limit: int = 300000) -> list[dict]:
             rows.append({
                 "id":          itemID,
                 "title":       title or "(untitled)",
-                "authors":     authors or "",
+                "authors":     ", ".join(creators_map.get(itemID, [])),
                 "year":        year,
                 "doi":         doi or "",
                 "url":         url or "",
                 "publication": publication or book_title or "",
                 "date":        pub_date or "",
                 "added":       (dateAdded or "")[:10],
-                "tags":        tags or "",
-                "abstract":    (abstract or "")[:300],
+                "tags":        "; ".join(tags_map.get(itemID, [])),
+                "abstract":    abstract or "",
             })
         c.close()
         return rows

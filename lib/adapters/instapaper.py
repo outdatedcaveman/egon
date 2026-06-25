@@ -175,6 +175,18 @@ def _standardize_date(date_str: str | None) -> str:
     if m_days_en:
         return (now - timedelta(days=int(m_days_en.group(1)))).date().isoformat()
         
+    m_weeks_en = re.search(r'(\d+)\s*(?:weeks?|w)\s+ago', date_str)
+    if m_weeks_en:
+        return (now - timedelta(days=int(m_weeks_en.group(1)) * 7)).date().isoformat()
+
+    m_months_en = re.search(r'(\d+)\s*(?:months?|mo|mths?)\s+ago', date_str)
+    if m_months_en:
+        return (now - timedelta(days=int(m_months_en.group(1)) * 30)).date().isoformat()
+
+    m_years_en = re.search(r'(\d+)\s*(?:years?|y|yrs?)\s+ago', date_str)
+    if m_years_en:
+        return (now - timedelta(days=int(m_years_en.group(1)) * 365)).date().isoformat()
+        
     m_hours_en = re.search(r'(\d+)\s*(?:hours?|h)\s+ago', date_str)
     if m_hours_en:
         return (now - timedelta(hours=int(m_hours_en.group(1)))).date().isoformat()
@@ -188,6 +200,18 @@ def _standardize_date(date_str: str | None) -> str:
     if m_days_pt:
         return (now - timedelta(days=int(m_days_pt.group(1)))).date().isoformat()
         
+    m_weeks_pt = re.search(r'há\s+(\d+)\s*(?:semanas?|sem|w)', date_str)
+    if m_weeks_pt:
+        return (now - timedelta(days=int(m_weeks_pt.group(1)) * 7)).date().isoformat()
+
+    m_months_pt = re.search(r'há\s+(\d+)\s*(?:meses|mês|mth|mo)', date_str)
+    if m_months_pt:
+        return (now - timedelta(days=int(m_months_pt.group(1)) * 30)).date().isoformat()
+
+    m_years_pt = re.search(r'há\s+(\d+)\s*(?:anos?|y)', date_str)
+    if m_years_pt:
+        return (now - timedelta(days=int(m_years_pt.group(1)) * 365)).date().isoformat()
+        
     m_hours_pt = re.search(r'há\s+(\d+)\s*(?:horas|h)', date_str)
     if m_hours_pt:
         return (now - timedelta(hours=int(m_hours_pt.group(1)))).date().isoformat()
@@ -196,8 +220,8 @@ def _standardize_date(date_str: str | None) -> str:
     if m_mins_pt:
         return (now - timedelta(minutes=int(m_mins_pt.group(1)))).date().isoformat()
 
-    # Generic short format: "2d", "3h", "5m"
-    m_short = re.search(r'^(\d+)([dhm])$', date_str)
+    # Generic short format: "2d", "3h", "5m", "4w", "1y"
+    m_short = re.search(r'^(\d+)([dhmwy])$', date_str)
     if m_short:
         val = int(m_short.group(1))
         unit = m_short.group(2)
@@ -207,6 +231,14 @@ def _standardize_date(date_str: str | None) -> str:
             return (now - timedelta(hours=val)).date().isoformat()
         elif unit == 'm':
             return (now - timedelta(minutes=val)).date().isoformat()
+        elif unit == 'w':
+            return (now - timedelta(days=val * 7)).date().isoformat()
+        elif unit == 'y':
+            return (now - timedelta(days=val * 365)).date().isoformat()
+
+    m_short_mo = re.search(r'^(\d+)mo$', date_str)
+    if m_short_mo:
+        return (now - timedelta(days=int(m_short_mo.group(1)) * 30)).date().isoformat()
 
     # 3. Absolute dates
     pt_months = {

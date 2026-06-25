@@ -48,7 +48,7 @@ def _metric(label: str, value: str, gold: bool = False) -> QFrame:
     v.addWidget(l1)
     l2 = QLabel(value)
     l2.setStyleSheet("font-size: 26px; font-weight: 700; color: "
-                     + ("#D4A24C" if gold else "#7BC5C7"))
+                     + ("#ff9f0a" if gold else "#ff453a"))
     v.addWidget(l2)
     return f
 
@@ -71,12 +71,12 @@ class StackedAreaChartWidget(QWidget):
 
         rect = self.rect()
         # Draw card container frame
-        painter.setPen(QPen(QColor("#1F4858"), 1))
-        painter.setBrush(QBrush(QColor("#102F3C")))
+        painter.setPen(QPen(QColor("#22252a"), 1))
+        painter.setBrush(QBrush(QColor("#0c0d0f")))
         painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 6, 6)
 
         if not self._data or "cache_reads" not in self._data:
-            painter.setPen(QColor("#9CA3AF"))
+            painter.setPen(QColor("#76767f"))
             painter.setFont(QFont("Segoe UI", 10))
             painter.drawText(rect, Qt.AlignCenter, "No token chart data available.")
             painter.end()
@@ -90,7 +90,7 @@ class StackedAreaChartWidget(QWidget):
 
         n_points = len(cr)
         if n_points == 0:
-            painter.setPen(QColor("#9CA3AF"))
+            painter.setPen(QColor("#76767f"))
             painter.setFont(QFont("Segoe UI", 10))
             painter.drawText(rect, Qt.AlignCenter, "No cumulative data points yet.")
             painter.end()
@@ -130,7 +130,7 @@ class StackedAreaChartWidget(QWidget):
         plot_h = rect.height() - top_m - bottom_m
 
         # Draw grid and Y axis labels
-        painter.setPen(QPen(QColor("#1F4858"), 1, Qt.DotLine))
+        painter.setPen(QPen(QColor("#22252a"), 1, Qt.DotLine))
         painter.setFont(QFont("Segoe UI", 9))
         y_ticks = 4
         for i in range(y_ticks + 1):
@@ -139,26 +139,26 @@ class StackedAreaChartWidget(QWidget):
             # grid line
             painter.drawLine(left_m, y_pos, left_m + plot_w, y_pos)
             # label
-            painter.setPen(QColor("#9CA3AF"))
+            painter.setPen(QColor("#76767f"))
             painter.drawText(QRectF(5, y_pos - 8, left_m - 12, 16),
                              Qt.AlignRight | Qt.AlignVCenter, f"{y_val:.1f}M")
-            painter.setPen(QPen(QColor("#1F4858"), 1, Qt.DotLine))
+            painter.setPen(QPen(QColor("#22252a"), 1, Qt.DotLine))
 
         # Draw X axis labels (first, middle, last)
         x_indices = [0, n_points // 2, n_points - 1] if n_points > 2 else list(range(n_points))
         for idx in x_indices:
             x_pos = left_m + (plot_w * idx / (n_points - 1)) if n_points > 1 else left_m
             date_str = labels[idx] if idx < len(labels) else ""
-            painter.setPen(QColor("#9CA3AF"))
+            painter.setPen(QColor("#76767f"))
             painter.drawText(QRectF(x_pos - 45, top_m + plot_h + 8, 90, 20),
                              Qt.AlignCenter, date_str)
 
         # Stacked layers colors
         colors = [
-            QColor("#7FB069"),  # Cache Reads (Green)
+            QColor("#30d158"),  # Cache Reads (Green)
             QColor("#60A5A8"),  # Cache Writes (Teal)
             QColor("#94A3B8"),  # Input (Slate)
-            QColor("#D4A24C"),  # Output (Gold)
+            QColor("#ff9f0a"),  # Output (Gold)
         ]
 
         y_base = top_m + plot_h
@@ -194,7 +194,7 @@ class StackedAreaChartWidget(QWidget):
             painter.setBrush(QBrush(col))
             painter.drawRect(lx, ly, 10, 10)
             # label
-            painter.setPen(QColor("#F0E9D5"))
+            painter.setPen(QColor("#f5f5f7"))
             painter.drawText(lx + 15, ly + 9, lbl)
             lx += 115
 
@@ -211,7 +211,7 @@ class LedgerPage(QWidget):
         # title + range selector
         top = QHBoxLayout()
         title = QLabel("💰  Token Ledger")
-        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #F0E9D5;")
+        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #f5f5f7;")
         top.addWidget(title)
         top.addStretch(1)
         top.addWidget(QLabel("Range:"))
@@ -224,7 +224,7 @@ class LedgerPage(QWidget):
 
         sub = QLabel("Live computation from .claude session JSONLs. "
                      "Pro/Max headline = tokens; API headline = $$.")
-        sub.setStyleSheet("color: #9CA3AF;")
+        sub.setStyleSheet("color: #76767f;")
         outer.addWidget(sub)
 
         # metrics grid
@@ -243,10 +243,10 @@ class LedgerPage(QWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setStyleSheet(
-            "QTableWidget { background: #102F3C; color: #F0E9D5; gridline-color: #1F4858; "
-            "border: 1px solid #1F4858; border-radius: 6px; }"
-            "QHeaderView::section { background: #16404F; color: #9CA3AF; padding: 6px; "
-            "border: none; border-bottom: 1px solid #1F4858; font-weight: 600; }"
+            "QTableWidget { background: #0c0d0f; color: #f5f5f7; gridline-color: #22252a; "
+            "border: 1px solid #22252a; border-radius: 6px; }"
+            "QHeaderView::section { background: #212328; color: #76767f; padding: 6px; "
+            "border: none; border-bottom: 1px solid #22252a; font-weight: 600; }"
         )
         outer.addWidget(self._table, 1)
 
@@ -320,6 +320,6 @@ class LedgerPage(QWidget):
             w = it.widget()
             if w: w.deleteLater()
         err = QLabel(msg)
-        err.setStyleSheet("color: #D67A6A; padding: 10px;")
+        err.setStyleSheet("color: #ff453a; padding: 10px;")
         err.setWordWrap(True)
         self._grid.addWidget(err, 0, 0, 1, 3)

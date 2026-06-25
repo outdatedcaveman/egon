@@ -125,6 +125,10 @@ def _project_clause(alias: str = "p") -> str:
     return f" AND {alias}.slug = ?"
 
 
+def _production_session_clause(alias: str = "s") -> str:
+    return f" AND COALESCE({alias}.external_id, '') NOT LIKE 'mock-%'"
+
+
 def _session_stats(project: str | None, since_ts: int) -> dict[str, Any]:
     with _connect() as conn:
         sql = """SELECT s.id, s.summary, s.ended_at, ag.name AS agent_name, p.slug AS project_slug
@@ -132,6 +136,7 @@ def _session_stats(project: str | None, since_ts: int) -> dict[str, Any]:
                  JOIN agents ag ON ag.id = s.agent_id
                  LEFT JOIN projects p ON p.id = s.project_id
                  WHERE s.started_at >= ?"""
+        sql += _production_session_clause("s")
         params: list[Any] = [since_ts]
         if project:
             sql += _project_clause()
@@ -193,6 +198,7 @@ def _context_stats(project: str | None, since_ts: int) -> dict[str, Any]:
                  JOIN sessions s ON s.id = a.session_id
                  LEFT JOIN projects p ON p.id = s.project_id
                  WHERE a.ts >= ? AND a.kind = 'mind_context'"""
+        sql += _production_session_clause("s")
         params: list[Any] = [since_ts]
         if project:
             sql += _project_clause()
@@ -249,6 +255,7 @@ def _token_ledger_stats(project: str | None, since_ts: int) -> dict[str, Any]:
                  JOIN sessions s ON s.id = t.session_id
                  LEFT JOIN projects p ON p.id = s.project_id
                  WHERE t.ts >= ?"""
+        sql += _production_session_clause("s")
         params: list[Any] = [since_ts]
         if project:
             sql += _project_clause()
@@ -284,6 +291,7 @@ def _estimate_v1_context_tokens(project: str | None) -> dict[str, Any]:
                      JOIN agents ag ON ag.id = s.agent_id
                      LEFT JOIN projects p ON p.id = s.project_id
                      WHERE 1=1"""
+        act_sql += _production_session_clause("s")
         params: list[Any] = []
         if project:
             act_sql += _project_clause()

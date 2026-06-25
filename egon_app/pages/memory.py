@@ -58,17 +58,17 @@ class MemoryPage(QWidget):
         # Title + Project selector row
         top_row = QHBoxLayout()
         title = QLabel("Memory & rules")
-        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #F0E9D5;")
+        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #f5f5f7;")
         top_row.addWidget(title)
         top_row.addStretch(1)
 
         top_row.addWidget(QLabel("Project:"))
         self._project_cb = QComboBox()
         self._project_cb.setStyleSheet(
-            "QComboBox { background: #16404F; color: #F0E9D5; border: 1px solid #1F4858; "
+            "QComboBox { background: #212328; color: #f5f5f7; border: 1px solid #22252a; "
             "border-radius: 4px; padding: 4px 10px; min-width: 250px; }"
             "QComboBox::drop-down { border: none; }"
-            "QComboBox QAbstractItemView { background: #102F3C; color: #F0E9D5; selection-background-color: #1F5366; }"
+            "QComboBox QAbstractItemView { background: #0c0d0f; color: #f5f5f7; selection-background-color: #2a2d34; }"
         )
         for name, path in self._mem_dirs:
             self._project_cb.addItem(name, str(path))
@@ -80,15 +80,15 @@ class MemoryPage(QWidget):
         hdr = QHBoxLayout()
         self._sub_label = QLabel("Select a project above to view memory documents.")
         self._sub_label.setTextFormat(Qt.RichText)
-        self._sub_label.setStyleSheet("color: #9CA3AF;")
+        self._sub_label.setStyleSheet("color: #76767f;")
         hdr.addWidget(self._sub_label)
         hdr.addStretch(1)
 
         self._edit_btn = QPushButton("✎ Open in Editor")
         self._edit_btn.setStyleSheet(
-            "QPushButton { background: #16404F; color: #F0E9D5; border: 1px solid #1F4858; "
+            "QPushButton { background: #212328; color: #f5f5f7; border: 1px solid #22252a; "
             "border-radius: 4px; padding: 6px 14px; font-weight: 600; }"
-            "QPushButton:hover { background: #1F5366; }"
+            "QPushButton:hover { background: #2a2d34; }"
         )
         self._edit_btn.clicked.connect(self._open_in_editor)
         hdr.addWidget(self._edit_btn)
@@ -96,10 +96,10 @@ class MemoryPage(QWidget):
 
         self._tabs = QTabWidget()
         self._tabs.setStyleSheet(
-            "QTabWidget::pane { border: 1px solid #1F4858; background: #102F3C; border-radius: 4px; }"
-            "QTabBar::tab { background: #0B1F28; color: #9CA3AF; padding: 6px 14px; "
-            "border: 1px solid #1F4858; border-bottom: none; }"
-            "QTabBar::tab:selected { background: #16404F; color: #F0E9D5; font-weight: 600; }"
+            "QTabWidget::pane { border: 1px solid #22252a; background: #0c0d0f; border-radius: 4px; }"
+            "QTabBar::tab { background: #0c0d0f; color: #76767f; padding: 6px 14px; "
+            "border: 1px solid #22252a; border-bottom: none; }"
+            "QTabBar::tab:selected { background: #212328; color: #f5f5f7; font-weight: 600; }"
         )
         outer.addWidget(self._tabs, 1)
 
@@ -122,7 +122,7 @@ class MemoryPage(QWidget):
         files = sorted(mem_dir.glob("*.md"))
         if not files:
             empty = QLabel("No memory files found in this directory.")
-            empty.setStyleSheet("color: #9CA3AF; padding: 12px;")
+            empty.setStyleSheet("color: #76767f; padding: 12px;")
             self._tabs.addTab(empty, "Empty")
             self._edit_btn.setEnabled(False)
             return
@@ -132,7 +132,7 @@ class MemoryPage(QWidget):
             text_view.setReadOnly(True)
             text_view.setFont(QFont("Cascadia Mono", 10))
             text_view.setStyleSheet(
-                "QPlainTextEdit { background: #102F3C; color: #F0E9D5; border: none; padding: 12px; }"
+                "QPlainTextEdit { background: #0c0d0f; color: #f5f5f7; border: none; padding: 12px; }"
             )
             text_view.setProperty("file_path", str(f))
             try:

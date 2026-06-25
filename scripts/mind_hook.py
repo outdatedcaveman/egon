@@ -325,6 +325,21 @@ def cmd_prompt() -> int:
                                 "approx_tokens": (ctx.get("budget") or {}).get("approx_tokens"),
                             },
                             "ts": int(time.time())})
+        delegated = sections.get("delegated_task") or {}
+        if delegated.get("id"):
+            task_id = delegated.get("id")
+            _post(f"/orchestrator/tasks/{int(task_id)}/events", {
+                "agent_name": AGENT_NAME,
+                "event_type": "hook_delivered",
+                "content": "Delegated task delivered through UserPromptSubmit context hook.",
+                "payload": {"session_id": sid, "project": project},
+            })
+            _post("/agents/heartbeat", {
+                "agent_name": AGENT_NAME,
+                "task_id": task_id,
+                "status": "hook_delivered",
+                "detail": str(delegated.get("sub_task_desc") or "")[:500],
+            })
     briefing = ctx.get("briefing")
     if briefing:
         additional = ("=== Shared mind context capsule (Egon Context Broker v2) ===\n"

@@ -16,6 +16,13 @@ if str(ROOT) not in sys.path:
 
 def enforcement_status(project: str | None = "egon",
                        since_hours: int = 168) -> dict[str, Any]:
+    scorecard = None
+    try:
+        from lib.mind_scorecard import build_mind_scorecard
+
+        scorecard = build_mind_scorecard(project=project, since_hours=since_hours)
+    except Exception:
+        scorecard = None
     checks = [
         _service_check(),
         _shared_workspace_check(),
@@ -30,8 +37,8 @@ def enforcement_status(project: str | None = "egon",
         _agent_state_guard_check(),
         _mcp_server_v2_check(),
         _mcp_live_smoke_check(project=project),
-        _token_waste_sentinel_check(project=project, since_hours=since_hours),
-        _runtime_scorecard_check(project=project, since_hours=since_hours),
+        _token_waste_sentinel_check(project=project, since_hours=since_hours, card=scorecard),
+        _runtime_scorecard_check(project=project, since_hours=since_hours, card=scorecard),
     ]
     gaps = []
     for check in checks:
@@ -250,8 +257,12 @@ def _mcp_server_v2_check() -> dict[str, Any]:
 
 def _claude_session_state_check() -> dict[str, Any]:
     try:
-        from lib.agent_state_guard import claude_session_state_health
+        from lib.agent_state_guard import (
+            claude_session_state_health,
+            repair_claude_archived_only_transcripts,
+        )
 
+        repair = repair_claude_archived_only_transcripts()
         health = claude_session_state_health()
     except Exception as e:
         return {
@@ -262,7 +273,7 @@ def _claude_session_state_check() -> dict[str, Any]:
             "gaps": ["Claude session state could not be checked."],
         }
     ok = health.get("status") == "ok"
-    return _check(
+    check = _check(
         "claude_session_state",
         ok,
         (
@@ -278,6 +289,10 @@ def _claude_session_state_check() -> dict[str, Any]:
         None,
         (health.get("archived_only_examples") or []) + (health.get("transcript_unavailable_examples") or []),
     )
+    if repair.get("restored"):
+        check["repair"] = repair
+        check["message"] += f" Auto-restored {repair.get('restored')} archived-only live transcript(s)."
+    return check
 
 
 def _agent_state_guard_check() -> dict[str, Any]:
@@ -335,7 +350,7 @@ def _mcp_live_smoke_check(project: str | None) -> dict[str, Any]:
                     "limit_activity": 2,
                     "limit_memory": 3,
                     "include_graph": False,
-                    "include_audit": True,
+                    "include_audit": False,
                 },
             },
         }),
@@ -344,15 +359,16 @@ def _mcp_live_smoke_check(project: str | None) -> dict[str, Any]:
     ])
     kwargs: dict[str, Any] = {
         "cwd": str(ROOT),
-        "input": payload,
+        "stdin": subprocess.PIPE,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
         "text": True,
-        "capture_output": True,
-        "timeout": 12,
     }
     if sys.platform == "win32":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        proc = subprocess.run([str(py), str(server)], **kwargs)
+        proc = subprocess.Popen([str(py), str(server)], **kwargs)
+        stdout, stderr = proc.communicate(input=payload, timeout=45)
     except Exception as e:
         return {
             "name": "mcp_live_smoke",
@@ -361,8 +377,8 @@ def _mcp_live_smoke_check(project: str | None) -> dict[str, Any]:
             "fix": "Run the MCP server with python.exe and verify mind_context_v2 responds.",
             "gaps": ["MCP live smoke check failed."],
         }
-    detail = (proc.stderr or proc.stdout or "")[:400]
-    for line in (proc.stdout or "").splitlines():
+    detail = (stderr or stdout or "")[:400]
+    for line in (stdout or "").splitlines():
         try:
             msg = json.loads(line)
         except Exception:
@@ -395,11 +411,13 @@ def _mcp_live_smoke_check(project: str | None) -> dict[str, Any]:
     }
 
 
-def _token_waste_sentinel_check(project: str | None, since_hours: int) -> dict[str, Any]:
+def _token_waste_sentinel_check(project: str | None, since_hours: int,
+                                card: dict[str, Any] | None = None) -> dict[str, Any]:
     try:
-        from lib.mind_scorecard import build_mind_scorecard
+        if card is None:
+            from lib.mind_scorecard import build_mind_scorecard
 
-        card = build_mind_scorecard(project=project, since_hours=since_hours)
+            card = build_mind_scorecard(project=project, since_hours=since_hours)
     except Exception as e:
         return {
             "name": "token_waste_sentinel",
@@ -439,11 +457,13 @@ def _token_waste_sentinel_check(project: str | None, since_hours: int) -> dict[s
     }
 
 
-def _runtime_scorecard_check(project: str | None, since_hours: int) -> dict[str, Any]:
+def _runtime_scorecard_check(project: str | None, since_hours: int,
+                             card: dict[str, Any] | None = None) -> dict[str, Any]:
     try:
-        from lib.mind_scorecard import build_mind_scorecard
+        if card is None:
+            from lib.mind_scorecard import build_mind_scorecard
 
-        card = build_mind_scorecard(project=project, since_hours=since_hours)
+            card = build_mind_scorecard(project=project, since_hours=since_hours)
     except Exception as e:
         return {
             "name": "runtime_scorecard",

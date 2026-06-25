@@ -20,9 +20,20 @@ try:
 except ImportError:
     pass
 
-from lib.orchestration_engine import get_pending_task, update_task_status, ROOT
+from lib.orchestration_engine import (
+    acknowledge_task_control,
+    append_task_event,
+    get_pending_task,
+    get_task_control,
+    is_quota_failure,
+    report_agent_failure,
+    record_agent_heartbeat,
+    update_task_status,
+    ROOT,
+)
 
 LOG_FILE = ROOT / "logs" / "hermes-tasks.log"
+_RUNNER_LOCK = threading.Lock()
 
 
 def translate_task(task_desc: str) -> str:
@@ -30,6 +41,13 @@ def translate_task(task_desc: str) -> str:
     Uses rule-based heuristics and local Qwen LLM as fallback.
     """
     desc_lower = task_desc.lower()
+
+    explicit_marker = "hermes-command:"
+    if explicit_marker in desc_lower:
+        start = desc_lower.index(explicit_marker) + len(explicit_marker)
+        command = task_desc[start:].strip().splitlines()[0].strip().strip("`")
+        if command:
+            return command
     
     # 1. Rule-based classification
     if "audit" in desc_lower or "introspection" in desc_lower:
@@ -87,7 +105,7 @@ def translate_task(task_desc: str) -> str:
     return "python scripts/introspection.py"
 
 
-def run_command_silently(command: str) -> tuple[int, str]:
+def run_command_silently(command: str, task_id: int | None = None) -> tuple[int, str]:
     """Execute command silently under Windows to suppress popups."""
     # Prepend sys.executable for python commands to keep virtualenv active
     exec_cmd = command
@@ -101,7 +119,7 @@ def run_command_silently(command: str) -> tuple[int, str]:
         creationflags = 0x08000000  # CREATE_NO_WINDOW
 
     try:
-        res = subprocess.run(
+        proc = subprocess.Popen(
             exec_cmd,
             shell=True,
             stdout=subprocess.PIPE,
@@ -110,9 +128,38 @@ def run_command_silently(command: str) -> tuple[int, str]:
             encoding="utf-8",
             errors="replace",
             creationflags=creationflags,
-            timeout=300
         )
-        return res.returncode, f"STDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}"
+        started = time.time()
+        while proc.poll() is None:
+            if task_id is not None:
+                control = get_task_control(task_id)
+                action = (control or {}).get("action")
+                if action in {"stop", "cancel"}:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    try:
+                        stdout, stderr = proc.communicate(timeout=8)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                        stdout, stderr = proc.communicate()
+                    return -2, f"Execution cancelled by orchestrator control: {action}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+                if action == "pause":
+                    append_task_event(task_id, "hermes", "paused", "Hermes saw pause control before process completion")
+            if time.time() - started > 300:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                stdout, stderr = proc.communicate()
+                return -1, f"Execution timed out after 300s\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+            time.sleep(1.0)
+        stdout, stderr = proc.communicate()
+        return proc.returncode, f"STDOUT:\n{stdout}\nSTDERR:\n{stderr}"
     except Exception as e:
         return -1, f"Execution failed: {str(e)}"
 
@@ -226,34 +273,63 @@ def execute_hermes_task(task: dict) -> None:
     task_desc = task["sub_task_desc"]
     
     print(f"[hermes_runner] Processing task {task_id}: {task_desc}", flush=True)
+    append_task_event(task_id, "hermes", "started", task_desc)
+    record_agent_heartbeat("hermes", task_id, "working", task_desc)
+    control = get_task_control(task_id)
+    if control and control.get("action") in {"stop", "cancel"}:
+        acknowledge_task_control(task_id, "hermes")
+        append_task_event(task_id, "hermes", "cancelled", "Hermes skipped task because stop/cancel was already requested")
+        update_task_status(task_id, "cancelled")
+        return
+    if control and control.get("action") == "pause":
+        append_task_event(task_id, "hermes", "paused", "Hermes skipped paused task")
+        return
     command = translate_task(task_desc)
     print(f"[hermes_runner] Translated command: {command}", flush=True)
+    append_task_event(task_id, "hermes", "command", command)
     
     # Run
-    code, output = run_command_silently(command)
+    code, output = run_command_silently(command, task_id=task_id)
     success = (code == 0)
+    quota_failure = (not success) and is_quota_failure(output)
     
     # Log
     log_task_run(task_id, task_desc, command, code, output)
     
     # Update SQLite task status
-    update_task_status(task_id, "completed" if success else "failed")
+    if quota_failure:
+        append_task_event(task_id, "hermes", "quota_failure", output[:3000])
+        report_agent_failure("hermes", output)
+    elif code == -2:
+        append_task_event(task_id, "hermes", "cancelled", output[:3000])
+        update_task_status(task_id, "cancelled")
+    else:
+        append_task_event(task_id, "hermes", "output", output[:12000], {"exit_code": code})
+        update_task_status(task_id, "completed" if success else "failed")
     
     # Synthesis memory
     save_synthesis_memory(task_desc, command, success, output)
-    print(f"[hermes_runner] Task {task_id} completed with status: {'success' if success else 'failed'}", flush=True)
+    if quota_failure:
+        print(f"[hermes_runner] Task {task_id} hit quota/rate limit; rerouted away from hermes", flush=True)
+    else:
+        print(f"[hermes_runner] Task {task_id} completed with status: {'success' if success else 'failed'}", flush=True)
 
 
 def process_pending_tasks() -> None:
     """Find all pending hermes tasks and execute them sequentially."""
-    while True:
-        task = get_pending_task("hermes")
-        if not task:
-            break
-        try:
-            execute_hermes_task(task)
-        except Exception as e:
-            print(f"[hermes_runner] Error running task: {e}", flush=True)
+    if not _RUNNER_LOCK.acquire(blocking=False):
+        return
+    try:
+        while True:
+            task = get_pending_task("hermes")
+            if not task:
+                break
+            try:
+                execute_hermes_task(task)
+            except Exception as e:
+                print(f"[hermes_runner] Error running task: {e}", flush=True)
+    finally:
+        _RUNNER_LOCK.release()
 
 
 def trigger_hermes_runner() -> None:

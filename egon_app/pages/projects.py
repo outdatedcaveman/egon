@@ -25,6 +25,7 @@ here once ingestion lands.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from lib.lazy_httpx import httpx  # deferred ~2s import (2026-06-11 perf pass)
@@ -35,22 +36,22 @@ from PySide6.QtWidgets import (
 )
 
 # Shared palette (matches Home, Media, Mind)
-_BG_CARD = "#0E2630"
-_BORDER  = "#1F4858"
-_ACCENT  = "#7BC5C7"
-_TEXT    = "#F0E9D5"
-_MUTED   = "#9CA3AF"
-_GOLD    = "#D4A24C"
-_OK      = "#7FB069"
-_WARN    = "#D4A24C"
-_ERR     = "#D67A6A"
+_BG_CARD = "#16181c"
+_BORDER  = "#22252a"
+_ACCENT  = "#ff453a"
+_TEXT    = "#f5f5f7"
+_MUTED   = "#76767f"
+_GOLD    = "#ff9f0a"
+_OK      = "#30d158"
+_WARN    = "#ff9f0a"
+_ERR     = "#ff453a"
 
 _AGENT_COLOR = {
     "claude-code": "#D77A56",
-    "codex":       "#7BC5C7",
+    "codex":       "#ff453a",
     "antigravity": "#9D7BC5",
-    "chatgpt":     "#7FB069",
-    "gemini":      "#D4A24C",
+    "chatgpt":     "#30d158",
+    "gemini":      "#ff9f0a",
 }
 
 _MIND = "http://127.0.0.1:8000/api/v1/mind"
@@ -82,7 +83,7 @@ def _icon_for(slug: str) -> str:
 # A project is "repo-backed" when a local working copy with .git exists.
 # The mind's projects table has no root_path yet, so we resolve slug -> dir by
 # scanning the known code bases once (cached); aliases cover renamed slugs.
-_REPO_BASES = [r"C:\Users\bruno\Claude Code", r"C:\Users\bruno"]
+_REPO_BASES = [str(Path.home() / "Claude Code"), str(Path.home())]
 _SLUG_ALIASES = {"careerops": "carrera", "navigation": "routster",
                  "inbox": "panop", "egon-meta": "claude-meta"}
 _repo_cache: dict = {}
@@ -194,7 +195,7 @@ def _project_card(slug: str, summary: dict, repo: str | None = None) -> QFrame:
             pill = QLabel(a)
             pill.setStyleSheet(
                 f"background-color: {_AGENT_COLOR.get(a, _MUTED)}; "
-                f"color: #0E2630; padding: 2px 8px; border-radius: 8px; "
+                f"color: #16181c; padding: 2px 8px; border-radius: 8px; "
                 f"font-weight: 600; font-size: 11px;")
             ar.addWidget(pill)
         ar.addStretch(1)

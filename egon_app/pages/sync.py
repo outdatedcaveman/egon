@@ -56,7 +56,7 @@ class _SchTasksWorker(QThread):
 
 def _section_title(text: str) -> QLabel:
     l = QLabel(text)
-    l.setStyleSheet("font-size: 14px; font-weight: 600; color: #F0E9D5; padding: 6px 0;")
+    l.setStyleSheet("font-size: 14px; font-weight: 600; color: #f5f5f7; padding: 6px 0;")
     return l
 
 
@@ -68,10 +68,10 @@ class SyncPage(QWidget):
         outer.setSpacing(14)
 
         title = QLabel("Sync")
-        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #F0E9D5;")
+        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #f5f5f7;")
         outer.addWidget(title)
         sub = QLabel("Scheduled jobs · last runs · log tails · re-trigger.")
-        sub.setStyleSheet("color: #9CA3AF;")
+        sub.setStyleSheet("color: #76767f;")
         outer.addWidget(sub)
 
         outer.addWidget(_section_title("Windows Scheduled Tasks (KMS-* / Egon-*)"))
@@ -85,10 +85,10 @@ class SyncPage(QWidget):
         self._tasks_table.verticalHeader().setVisible(False)
         self._tasks_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._tasks_table.setStyleSheet(
-            "QTableWidget { background: #102F3C; color: #F0E9D5; gridline-color: #1F4858; "
-            "border: 1px solid #1F4858; border-radius: 6px; }"
-            "QHeaderView::section { background: #16404F; color: #9CA3AF; padding: 6px; "
-            "border: none; border-bottom: 1px solid #1F4858; font-weight: 600; }"
+            "QTableWidget { background: #0c0d0f; color: #f5f5f7; gridline-color: #22252a; "
+            "border: 1px solid #22252a; border-radius: 6px; }"
+            "QHeaderView::section { background: #212328; color: #76767f; padding: 6px; "
+            "border: none; border-bottom: 1px solid #22252a; font-weight: 600; }"
         )
         self._tasks_table.setMaximumHeight(220)
         outer.addWidget(self._tasks_table)
@@ -101,7 +101,7 @@ class SyncPage(QWidget):
         self._log.setReadOnly(True)
         self._log.setFont(QFont("Cascadia Mono", 10))
         self._log.setStyleSheet(
-            "QPlainTextEdit { background: #0B1F28; color: #9CA3AF; border: 1px solid #1F4858; "
+            "QPlainTextEdit { background: #0c0d0f; color: #76767f; border: 1px solid #22252a; "
             "border-radius: 4px; padding: 8px; }"
         )
         self._log.setMaximumHeight(280)

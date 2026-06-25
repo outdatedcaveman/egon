@@ -25,15 +25,15 @@ from PySide6.QtWidgets import (
 from egon_app import data
 
 # palette (shared with Media cards)
-_BG_CARD = "#0E2630"
-_BORDER  = "#1F4858"
-_ACCENT  = "#7BC5C7"
-_TEXT    = "#F0E9D5"
-_MUTED   = "#9CA3AF"
-_GOLD    = "#D4A24C"
-_OK      = "#7FB069"
-_WARN    = "#D4A24C"
-_ERR     = "#D67A6A"
+_BG_CARD = "#16181c"
+_BORDER  = "#22252a"
+_ACCENT  = "#ff453a"
+_TEXT    = "#f5f5f7"
+_MUTED   = "#76767f"
+_GOLD    = "#ff9f0a"
+_OK      = "#30d158"
+_WARN    = "#ff9f0a"
+_ERR     = "#ff453a"
 
 
 def _status_color(status: str) -> str:
@@ -196,7 +196,8 @@ class HomePage(QWidget):
         self._v.addWidget(self._insights_header)
 
         self._insights_card = QFrame()
-        self._insights_card.setStyleSheet(f"background-color: {_BG_CARD}; border: 1px solid {_BORDER}; border-radius: 6px;")
+        self._insights_card.setObjectName("insightsCard")
+        self._insights_card.setStyleSheet(f"QFrame#insightsCard {{ background-color: {_BG_CARD}; border: 1px solid {_BORDER}; border-radius: 6px; }}")
         self._insights_layout = QVBoxLayout(self._insights_card)
         self._insights_layout.setContentsMargins(16, 14, 16, 14)
         self._insights_layout.setSpacing(10)
@@ -212,7 +213,8 @@ class HomePage(QWidget):
         self._v.addWidget(self._recall_header)
 
         self._recall_card = QFrame()
-        self._recall_card.setStyleSheet(f"background-color: {_BG_CARD}; border: 1px solid {_BORDER}; border-radius: 6px;")
+        self._recall_card.setObjectName("recallCard")
+        self._recall_card.setStyleSheet(f"QFrame#recallCard {{ background-color: {_BG_CARD}; border: 1px solid {_BORDER}; border-radius: 6px; }}")
         recall_layout = QVBoxLayout(self._recall_card)
         recall_layout.setContentsMargins(16, 14, 16, 14)
         recall_layout.setSpacing(12)
@@ -228,7 +230,7 @@ class HomePage(QWidget):
         self._a_label = QLabel()
         self._a_label.setWordWrap(True)
         self._a_label.setTextFormat(Qt.RichText)
-        self._a_label.setStyleSheet(f"color: {_GOLD}; font-size: 14px; border-top: 1px dashed {_BORDER}; padding-top: 8px;")
+        self._a_label.setStyleSheet(f"color: {_GOLD}; font-size: 14px; border: none; padding-top: 8px;")
         self._a_label.hide()
         recall_layout.addWidget(self._a_label)
 
@@ -312,7 +314,7 @@ class HomePage(QWidget):
         import threading
 
         def _bg():
-            proposals = _api_get("/introspection/proposals", timeout=8.0)
+            proposals = _api_get("/introspection/proposals", timeout=15.0)
             stats = _api_get("/stats", timeout=4.0)
             query = (
                 "surface one important relevant data point from recent work: "
@@ -420,7 +422,9 @@ class HomePage(QWidget):
         if not res:
             stats = _stats if pre is not None else _api_get("/stats")
             if stats:
-                text = "mind online; proactive-insights feed is not configured yet"
+                # The feed IS wired (mind_introspection + Hermes); a None here
+                # means the call was slow under RAM pressure, not unconfigured.
+                text = "proactive feed warming up — mind busy, retrying"
                 color = _WARN
             else:
                 text = "mind service unreachable"
@@ -437,7 +441,7 @@ class HomePage(QWidget):
                 p_widget = QFrame()
                 p_color = _WARN if p.get("severity") == "warning" else _OK if p.get("severity") == "info" else _ERR
                 p_widget.setStyleSheet(
-                    f"background-color: #16404F; border: 1px solid {_BORDER}; "
+                    f"background-color: #212328; border: 1px solid {_BORDER}; "
                     f"border-radius: 8px; padding: 10px;"
                 )
                 ph = QHBoxLayout(p_widget)
@@ -506,17 +510,25 @@ class HomePage(QWidget):
                 return "setup"
             if s == "off":
                 return "off"
+            # "stale"/"idle" are transient, NOT faults: a stale push means the
+            # source simply isn't live right now (Chrome closed, slow probe) —
+            # calling that "broken" made a healthy machine look alarming.
+            if s in ("stale", "idle", "pending", "timeout"):
+                return "stale"
             return "broken"
 
         n_ok = sum(1 for v in sources.values() if _bucket(v) == "ok")
         n_setup = sum(1 for v in sources.values() if _bucket(v) == "setup")
         n_off = sum(1 for v in sources.values() if _bucket(v) == "off")
-        n_bad = len(sources) - n_ok - n_setup - n_off
+        n_stale = sum(1 for v in sources.values() if _bucket(v) == "stale")
+        n_bad = len(sources) - n_ok - n_setup - n_off - n_stale
         parts = [f"{n_ok} healthy"]
         if n_setup:
             parts.append(f"{n_setup} awaiting setup (optional/tokens)")
         if n_off:
             parts.append(f"{n_off} off by choice")
+        if n_stale:
+            parts.append(f"{n_stale} idle/stale")
         if n_bad:
             parts.append(f"{n_bad} broken")
         self._subhead.setText(
@@ -537,8 +549,8 @@ class HomePage(QWidget):
         stats = [
             ("Sources healthy", f"{n_ok}/{len(sources)}",
              _OK if n_bad == 0 else _WARN,
-             f"{n_setup} optional/awaiting tokens · {n_bad} broken" if (n_setup or n_bad)
-             else "adapters reporting ok"),
+             f"{n_setup} optional · {n_stale} idle/stale · {n_bad} broken"
+             if (n_setup or n_stale or n_bad) else "adapters reporting ok"),
             ("Items indexed",   f"{total_items:,}" if total_items else "—", _ACCENT, "across all sources"),
             ("Last pass",       str(generated), _TEXT, f"{d.get('duration_seconds','—')}s"),
             ("MTD tokens",      _fmt_tok(ledger.get("mtd_tokens")), _GOLD,

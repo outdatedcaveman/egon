@@ -400,6 +400,7 @@ class NavigationPage(QWidget):
         self._init_logs_tab()
         self._init_sweep_tab()
         self._init_unsorted_tab()
+        self._init_chrome_tabs_tab()
         self._init_settings_tab()
         
         self._tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -1086,6 +1087,187 @@ class NavigationPage(QWidget):
         self._settings_list.setCurrentRow(0)
         self._tabs.addTab(tab, "⚙️ Settings")
 
+    def _init_chrome_tabs_tab(self) -> None:
+        """🌐 Chrome Open Tabs Tab"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(6)
+        
+        filter_bar = QHBoxLayout()
+        filter_bar.setSpacing(6)
+        
+        self._chrome_tabs_search = QLineEdit()
+        self._chrome_tabs_search.setPlaceholderText("🔍 Search open tabs...")
+        self._chrome_tabs_search.setStyleSheet(_INPUT_QSS)
+        self._chrome_tabs_search.textChanged.connect(self._apply_chrome_tabs_filters)
+        filter_bar.addWidget(self._chrome_tabs_search, 1)
+        
+        btn_clear = QPushButton("Clear")
+        btn_clear.setStyleSheet("""
+            QPushButton { background: #18181B; color: #E4E4E7; border: 1px solid #27272A; border-radius: 4px; font-size: 11px; padding: 4px 8px; }
+            QPushButton:hover { background: #27272A; color: white; }
+        """)
+        btn_clear.setFixedHeight(24)
+        btn_clear.clicked.connect(self._chrome_tabs_search.clear)
+        filter_bar.addWidget(btn_clear)
+        
+        btn_refresh = QPushButton("🔄 Refresh")
+        btn_refresh.setStyleSheet("""
+            QPushButton { background: #18181B; color: #E4E4E7; border: 1px solid #27272A; border-radius: 4px; font-size: 11px; padding: 4px 8px; }
+            QPushButton:hover { background: #27272A; color: white; }
+        """)
+        btn_refresh.setFixedHeight(24)
+        btn_refresh.clicked.connect(self._refresh_chrome_tabs)
+        filter_bar.addWidget(btn_refresh)
+        
+        layout.addLayout(filter_bar)
+        
+        action_bar = QHBoxLayout()
+        action_bar.setSpacing(8)
+        
+        self._lbl_chrome_sel_count = QLabel("0 tabs selected")
+        self._lbl_chrome_sel_count.setStyleSheet("color: #A1A1AA; font-size: 11px;")
+        action_bar.addWidget(self._lbl_chrome_sel_count)
+        
+        self._chk_chrome_select_all = QCheckBox("Select All")
+        self._chk_chrome_select_all.setStyleSheet("QCheckBox { color: #A1A1AA; font-size: 11px; }")
+        self._chk_chrome_select_all.stateChanged.connect(self._toggle_chrome_select_all)
+        action_bar.addWidget(self._chk_chrome_select_all)
+        action_bar.addStretch(1)
+        
+        btn_send_inbox = QPushButton("📥 Ingest Selected to Triage Queue")
+        btn_send_inbox.setStyleSheet("""
+            QPushButton { background: #EF4444; color: white; border-radius: 4px; font-weight: 700; font-size: 10px; padding: 4px 12px; border: none; }
+            QPushButton:hover { background: #B91C1C; }
+        """)
+        btn_send_inbox.setFixedHeight(24)
+        btn_send_inbox.clicked.connect(self._send_chrome_tabs_to_inbox)
+        action_bar.addWidget(btn_send_inbox)
+        
+        layout.addLayout(action_bar)
+        
+        self._chrome_tabs_table = _make_table([
+            ("✓", 30), ("Title", 350), ("URL", 300), ("Active", 60), ("Pinned", 60)
+        ])
+        self._chrome_tabs_table.itemChanged.connect(self._on_chrome_table_item_changed)
+        layout.addWidget(self._chrome_tabs_table, 1)
+        
+        self._tabs.addTab(tab, "🌐 Chrome Open Tabs")
+        self._raw_chrome_tabs = []
+        self._selected_chrome_urls = set()
+
+    def _refresh_chrome_tabs(self) -> None:
+        try:
+            from lib.adapters import chrome_tabs
+            snap = chrome_tabs.snapshot()
+            if snap.get("status") == "ok":
+                self._raw_chrome_tabs = snap.get("items") or []
+            else:
+                self._raw_chrome_tabs = []
+        except Exception:
+            self._raw_chrome_tabs = []
+        self._apply_chrome_tabs_filters()
+
+    def _apply_chrome_tabs_filters(self) -> None:
+        self._chrome_tabs_table.blockSignals(True)
+        self._chrome_tabs_table.setSortingEnabled(False)
+        self._chrome_tabs_table.setRowCount(0)
+        
+        search = self._chrome_tabs_search.text().strip().lower()
+        
+        filtered = []
+        for t in self._raw_chrome_tabs:
+            title = str(t.get("title", "")).lower()
+            url = str(t.get("url", "")).lower()
+            if search and (search not in title and search not in url):
+                continue
+            filtered.append(t)
+            
+        self._chrome_tabs_table.setRowCount(len(filtered))
+        for row_idx, t in enumerate(filtered):
+            # Checkbox column
+            chk_item = QTableWidgetItem()
+            chk_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            url = t.get("url", "")
+            is_checked = url in self._selected_chrome_urls
+            chk_item.setCheckState(Qt.Checked if is_checked else Qt.Unchecked)
+            self._chrome_tabs_table.setItem(row_idx, 0, chk_item)
+            
+            # Title
+            title_item = QTableWidgetItem(t.get("title", "untitled"))
+            self._chrome_tabs_table.setItem(row_idx, 1, title_item)
+            
+            # URL
+            url_item = QTableWidgetItem(url)
+            self._chrome_tabs_table.setItem(row_idx, 2, url_item)
+            
+            # Active
+            active_item = QTableWidgetItem("Yes" if t.get("active") else "No")
+            self._chrome_tabs_table.setItem(row_idx, 3, active_item)
+            
+            # Pinned
+            pinned_item = QTableWidgetItem("Yes" if t.get("pinned") else "No")
+            self._chrome_tabs_table.setItem(row_idx, 4, pinned_item)
+            
+        self._chrome_tabs_table.setSortingEnabled(True)
+        self._chrome_tabs_table.blockSignals(False)
+        self._update_chrome_selection_label()
+
+    def _toggle_chrome_select_all(self, state: int) -> None:
+        self._chrome_tabs_table.blockSignals(True)
+        checked = (state == 2)  # Qt.Checked is 2
+        for r in range(self._chrome_tabs_table.rowCount()):
+            chk_item = self._chrome_tabs_table.item(r, 0)
+            if chk_item:
+                chk_item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+                url_item = self._chrome_tabs_table.item(r, 2)
+                if url_item:
+                    url = url_item.text()
+                    if checked:
+                        self._selected_chrome_urls.add(url)
+                    else:
+                        self._selected_chrome_urls.discard(url)
+        self._chrome_tabs_table.blockSignals(False)
+        self._update_chrome_selection_label()
+
+    def _on_chrome_table_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() == 0:
+            row = item.row()
+            url_item = self._chrome_tabs_table.item(row, 2)
+            if url_item:
+                url = url_item.text()
+                if item.checkState() == Qt.Checked:
+                    self._selected_chrome_urls.add(url)
+                else:
+                    self._selected_chrome_urls.discard(url)
+            self._update_chrome_selection_label()
+
+    def _update_chrome_selection_label(self) -> None:
+        self._lbl_chrome_sel_count.setText(f"{len(self._selected_chrome_urls)} tabs selected")
+
+    def _send_chrome_tabs_to_inbox(self) -> None:
+        if not self._selected_chrome_urls:
+            QMessageBox.information(self, "No Selections", "Please select one or more Chrome tabs first.")
+            return
+            
+        # Map URL to title
+        url_to_title = {}
+        for t in self._raw_chrome_tabs:
+            url_to_title[t.get("url", "")] = t.get("title", "")
+            
+        success_count = 0
+        for url in list(self._selected_chrome_urls):
+            title = url_to_title.get(url, "")
+            res = routster.add_link(url, title)
+            if isinstance(res, dict) and "error" not in res:
+                success_count += 1
+                self._selected_chrome_urls.discard(url)
+                
+        self._refresh_chrome_tabs()
+        self._refresh_inbox_queue()
+        QMessageBox.information(self, "Tabs Ingested", f"Successfully sent {success_count} tabs to the Routster Triage Queue.")
+
     # ---------------------------------------------------------------------------
     # Data Refresh & Sync
     # ---------------------------------------------------------------------------
@@ -1096,6 +1278,7 @@ class NavigationPage(QWidget):
         self._refresh_flows()
         self._refresh_logs()
         self._refresh_unsorted()
+        self._refresh_chrome_tabs()
         self._refresh_settings()
 
     def _refresh_pills(self) -> None:

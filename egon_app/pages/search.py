@@ -34,11 +34,11 @@ class SearchPage(QWidget):
 
         # Title
         title = QLabel("🔍  Search")
-        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #F0E9D5;")
+        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #f5f5f7;")
         outer.addWidget(title)
 
         sub = QLabel("Query all snapshot databases simultaneously. Results are ranked by exact matches and token overlap.")
-        sub.setStyleSheet("color: #9CA3AF;")
+        sub.setStyleSheet("color: #76767f;")
         outer.addWidget(sub)
 
         # Search Bar
@@ -46,7 +46,7 @@ class SearchPage(QWidget):
         self._input = QLineEdit()
         self._input.setPlaceholderText("Enter query...")
         self._input.setStyleSheet(
-            "QLineEdit { background: #102F3C; color: #F0E9D5; border: 1px solid #1F4858; "
+            "QLineEdit { background: #0c0d0f; color: #f5f5f7; border: 1px solid #22252a; "
             "border-radius: 4px; padding: 8px 12px; font-size: 13px; }"
             "QLineEdit:focus { border-color: #60A5A8; }"
         )
@@ -57,7 +57,7 @@ class SearchPage(QWidget):
         self._btn.setStyleSheet(
             "QPushButton { background: #60A5A8; color: white; padding: 8px 20px; "
             "border-radius: 4px; font-weight: 600; border: none; }"
-            "QPushButton:hover { background: #7BC5C7; }"
+            "QPushButton:hover { background: #ff453a; }"
         )
         self._btn.clicked.connect(self._do_search)
         bar.addWidget(self._btn)
@@ -77,16 +77,16 @@ class SearchPage(QWidget):
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
         self._table.doubleClicked.connect(self._on_row_double_clicked)
         self._table.setStyleSheet(
-            "QTableWidget { background: #102F3C; color: #F0E9D5; gridline-color: #1F4858; "
-            "border: 1px solid #1F4858; border-radius: 6px; }"
-            "QHeaderView::section { background: #16404F; color: #9CA3AF; padding: 6px; "
-            "border: none; border-bottom: 1px solid #1F4858; font-weight: 600; }"
-            "QTableWidget::item:selected { background: #1F5366; }"
+            "QTableWidget { background: #0c0d0f; color: #f5f5f7; gridline-color: #22252a; "
+            "border: 1px solid #22252a; border-radius: 6px; }"
+            "QHeaderView::section { background: #212328; color: #76767f; padding: 6px; "
+            "border: none; border-bottom: 1px solid #22252a; font-weight: 600; }"
+            "QTableWidget::item:selected { background: #2a2d34; }"
         )
         outer.addWidget(self._table, 1)
 
         self._status = QLabel("Ready")
-        self._status.setStyleSheet("color: #9CA3AF; font-size: 11px;")
+        self._status.setStyleSheet("color: #76767f; font-size: 11px;")
         outer.addWidget(self._status)
 
         self._results: list[dict] = []

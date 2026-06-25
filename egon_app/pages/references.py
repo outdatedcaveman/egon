@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from egon_app.widgets import ItemListWidget
+from egon_app.pages.references_comparer_view import UberComparerWidget
 
 
 # ── per-source providers ───────────────────────────────────────────────────
@@ -168,24 +169,26 @@ class ReferencesPage(QWidget):
         outer.setSpacing(10)
 
         title = QLabel("References")
-        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #F0E9D5;")
+        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #f5f5f7;")
         outer.addWidget(title)
         sub = QLabel("Search, sort, multi-select, batch-open or batch-copy across "
                      "Zotero · Paperpile · Kindle · Mouseion. "
                      "Click a row to select; Ctrl-click and Shift-click for ranges; "
                      "or use the 'All filtered' checkbox.")
-        sub.setStyleSheet("color: #9CA3AF;")
+        sub.setStyleSheet("color: #76767f;")
         sub.setWordWrap(True)
         outer.addWidget(sub)
 
         tabs = QTabWidget()
         tabs.setStyleSheet(
-            "QTabWidget::pane { border: 1px solid #1F4858; background: #102F3C; border-radius: 4px; }"
-            "QTabBar::tab { background: #0B1F28; color: #9CA3AF; padding: 6px 14px; "
-            "border: 1px solid #1F4858; border-bottom: none; }"
-            "QTabBar::tab:selected { background: #16404F; color: #F0E9D5; font-weight: 600; }"
+            "QTabWidget::pane { border: 1px solid #22252a; background: #0c0d0f; border-radius: 4px; }"
+            "QTabBar::tab { background: #0c0d0f; color: #76767f; padding: 6px 14px; "
+            "border: 1px solid #22252a; border-bottom: none; }"
+            "QTabBar::tab:selected { background: #212328; color: #f5f5f7; font-weight: 600; }"
         )
         outer.addWidget(tabs, 1)
+
+        tabs.addTab(UberComparerWidget(), "⚖️ Uber-Comparer")
 
         tabs.addTab(ItemListWidget(
             provider=_zotero_items,

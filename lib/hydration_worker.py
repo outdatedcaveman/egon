@@ -56,14 +56,30 @@ def _extract_pdf(path: Path) -> str:
     from pypdf import PdfReader
     reader = PdfReader(str(path))
     parts = []
+    n_pages = 0
     for page in reader.pages[:_MAX_PAGES]:
+        n_pages += 1
         try:
             parts.append(page.extract_text() or "")
         except Exception:
             continue
         if sum(len(p) for p in parts) > _MAX_CHARS:
             break
-    return "\n".join(parts)[:_MAX_CHARS]
+    text = "\n".join(parts)[:_MAX_CHARS]
+    # Scanned PDF? Embedded text layer is empty/sparse — fall back to OCR
+    # (PP-OCRv6) so the doc's CONTENT still becomes searchable. ~<40 chars/page
+    # of extractable text is the tell. Graceful: returns the original text if OCR
+    # is unavailable. Set EGON_OCR_FALLBACK=0 to disable.
+    if os.environ.get("EGON_OCR_FALLBACK", "1") not in ("0", "false", "no"):
+        if len(text.strip()) < max(120, 40 * max(n_pages, 1)):
+            try:
+                from lib import ocr_extract
+                ocr_text = ocr_extract.ocr_pdf(path)
+                if len(ocr_text.strip()) > len(text.strip()):
+                    return ocr_text[:_MAX_CHARS]
+            except Exception:
+                pass
+    return text
 
 
 def _clean_markup(text: str) -> str:

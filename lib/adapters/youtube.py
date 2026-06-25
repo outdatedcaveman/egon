@@ -241,9 +241,52 @@ def snapshot() -> dict:
             if not page_token or len(subs) >= 5000:   # was 1000
                 break
 
-        # 4) Playlist CONTENTS — skipped/deprecated to keep snapshots fast.
+        # 4) Playlist CONTENTS — fetch items so they are indexed in Connect and shown in UI.
         for pl in playlists:
             pl["tracks"] = []
+            try:
+                pid = pl["id"]
+                page_token_pl = None
+                while True:
+                    pr = svc.playlistItems().list(
+                        part="snippet,contentDetails", playlistId=pid,
+                        maxResults=50, pageToken=page_token_pl).execute()
+                    for it in pr.get("items", []):
+                        sn = it.get("snippet", {})
+                        vid = (it.get("contentDetails") or {}).get("videoId") \
+                              or (sn.get("resourceId") or {}).get("videoId", "")
+                        if not vid:
+                            continue
+                        track_item = {
+                            "id": vid,
+                            "title": sn.get("title", ""),
+                            "channel": sn.get("videoOwnerChannelTitle", "") or sn.get("channelTitle", ""),
+                            "published": sn.get("publishedAt", ""),
+                            "thumbnail": (sn.get("thumbnails", {}).get("high", {}) or
+                                          sn.get("thumbnails", {}).get("default", {})).get("url", ""),
+                            "url": f"https://www.youtube.com/watch?v={vid}",
+                        }
+                        pl["tracks"].append(track_item)
+                        
+                        # Append to items list with type="playlist_video" so they are searchable/indexed
+                        is_music = "music" in pl["title"].lower() or track_item["channel"].endswith("- Topic")
+                        items.append({
+                            "type": "playlist_video",
+                            "id": vid,
+                            "title": track_item["title"],
+                            "channel": track_item["channel"],
+                            "published": track_item["published"],
+                            "is_music": is_music,
+                            "thumbnail": track_item["thumbnail"],
+                            "url": track_item["url"],
+                            "playlist_id": pid,
+                            "playlist_title": pl["title"]
+                        })
+                    page_token_pl = pr.get("nextPageToken")
+                    if not page_token_pl:
+                        break
+            except Exception:
+                pass
 
         return {
             "status": "ok",

@@ -208,6 +208,16 @@ def _log_mcp_activity(kind: str, payload: dict) -> None:
               timeout=1.5)
 
 
+def _requested_agent(args: dict) -> str | None:
+    agent = args.get("agent")
+    if agent:
+        return str(agent)
+    env_agent = os.environ.get("EGON_MCP_AGENT")
+    if env_agent and env_agent != "egon-mind-mcp":
+        return env_agent
+    return None
+
+
 def _ok_or_error(status: int, body) -> dict:
     if status == 200 and isinstance(body, dict):
         return body
@@ -231,15 +241,17 @@ def tool_mind_context(args: dict) -> dict:
                          "query": args.get("query"),
                          "limit_activity": args.get("limit_activity") or 30,
                          "limit_memory": args.get("limit_memory") or 20,
-                         "budget_chars": args.get("budget_chars") or 6000},
-                 timeout=4.0)
+                         "budget_chars": args.get("budget_chars") or 6000,
+                         "agent": _requested_agent(args)},
+                 timeout=10.0)
     out = _ok_or_error(s, b)
     if out.get("status") != "ok":
         s, b = _http("GET", "/context",
                      params={"project": args.get("project"),
                              "query": args.get("query"),
                              "limit_activity": args.get("limit_activity") or 30,
-                             "limit_memory": args.get("limit_memory") or 20})
+                             "limit_memory": args.get("limit_memory") or 20,
+                             "agent": _requested_agent(args)})
         out = _ok_or_error(s, b)
     if out.get("status") == "ok" and out.get("version") == "context-broker-v2":
         sections = out.get("sections") or {}
@@ -268,8 +280,9 @@ def tool_mind_context_v2(args: dict) -> dict:
                          "limit_activity": args.get("limit_activity") or 8,
                          "limit_memory": args.get("limit_memory") or 8,
                          "include_graph": args.get("include_graph"),
-                         "include_audit": args.get("include_audit")},
-                 timeout=4.0)
+                         "include_audit": args.get("include_audit"),
+                         "agent": _requested_agent(args)},
+                 timeout=10.0)
     out = _ok_or_error(s, b)
     if out.get("status") == "ok":
         _log_mcp_activity("mind_context", {
@@ -282,6 +295,115 @@ def tool_mind_context_v2(args: dict) -> dict:
             "approx_tokens": (out.get("budget") or {}).get("approx_tokens"),
         })
     return out
+
+
+def tool_mind_agent_failure(args: dict) -> dict:
+    body = {
+        "agent_name": args.get("agent_name") or args.get("agent") or _requested_agent(args),
+        "detail": args.get("detail") or args.get("error") or "",
+        "cooldown_seconds": args.get("cooldown_seconds") or 1800,
+    }
+    if not body["agent_name"] or not body["detail"]:
+        return {"status": "error", "error": "agent_name and detail required"}
+    s, b = _http("POST", "/agents/failure", body=body, timeout=2.0)
+    return _ok_or_error(s, b)
+
+
+def tool_mind_orchestrator_event(args: dict) -> dict:
+    task_id = args.get("task_id")
+    if task_id is None:
+        return {"status": "error", "error": "task_id required"}
+    body = {
+        "agent_name": args.get("agent_name") or args.get("agent") or _requested_agent(args),
+        "event_type": args.get("event_type") or args.get("kind") or "progress",
+        "content": args.get("content") or args.get("message") or "",
+        "payload": args.get("payload") or {},
+    }
+    s, b = _http("POST", f"/orchestrator/tasks/{int(task_id)}/events", body=body, timeout=2.0)
+    return _ok_or_error(s, b)
+
+
+def tool_mind_orchestrator_control(args: dict) -> dict:
+    task_id = args.get("task_id")
+    if task_id is None:
+        return {"status": "error", "error": "task_id required"}
+    if args.get("action"):
+        body = {
+            "action": args.get("action"),
+            "note": args.get("note") or args.get("clarification") or "",
+            "replacement_desc": args.get("replacement_desc") or args.get("prompt"),
+            "agent_name": args.get("agent_name") or args.get("agent") or _requested_agent(args),
+        }
+        s, b = _http("POST", f"/orchestrator/tasks/{int(task_id)}/control", body=body, timeout=2.0)
+    else:
+        s, b = _http("GET", f"/orchestrator/tasks/{int(task_id)}/control", timeout=2.0)
+    return _ok_or_error(s, b)
+
+
+def tool_mind_orchestrator_events(args: dict) -> dict:
+    task_id = args.get("task_id")
+    params = {
+        "since_id": args.get("since_id") or 0,
+        "limit": args.get("limit") or 200,
+    }
+    if task_id is None:
+        s, b = _http("GET", "/orchestrator/events", params=params, timeout=3.0)
+    else:
+        s, b = _http("GET", f"/orchestrator/tasks/{int(task_id)}/events", params=params, timeout=3.0)
+    return _ok_or_error(s, b)
+
+
+def tool_mind_agent_heartbeat(args: dict) -> dict:
+    body = {
+        "agent_name": args.get("agent_name") or args.get("agent") or _requested_agent(args),
+        "task_id": args.get("task_id"),
+        "status": args.get("status") or "active",
+        "detail": args.get("detail") or args.get("message") or "",
+    }
+    if not body["agent_name"]:
+        return {"status": "error", "error": "agent_name required"}
+    s, b = _http("POST", "/agents/heartbeat", body=body, timeout=2.0)
+    return _ok_or_error(s, b)
+
+
+def tool_mind_orchestrator_scheduler(_args: dict) -> dict:
+    s, b = _http("GET", "/orchestrator/scheduler/status", timeout=3.0)
+    return _ok_or_error(s, b)
+
+
+def tool_mind_orchestrator_mission(args: dict) -> dict:
+    s, b = _http("GET", "/orchestrator/mission-control",
+                 params={"limit_events": args.get("limit_events") or 80},
+                 timeout=5.0)
+    return _ok_or_error(s, b)
+
+
+def tool_mind_orchestrator_autonomy(args: dict) -> dict:
+    updates = {k: args[k] for k in (
+        "enabled", "mode", "stuck_after_seconds",
+        "auto_requeue_stuck", "wake_hermes", "wake_agents", "provider_hooks",
+    ) if k in args}
+    if updates:
+        s, b = _http("POST", "/orchestrator/autonomy/config", body=updates, timeout=3.0)
+    else:
+        s, b = _http("GET", "/orchestrator/autonomy/status", timeout=3.0)
+    return _ok_or_error(s, b)
+
+
+def tool_mind_provider_hooks(args: dict) -> dict:
+    if args.get("scan"):
+        s, b = _http("POST", "/orchestrator/provider-hooks/scan", timeout=5.0)
+    else:
+        s, b = _http("GET", "/orchestrator/provider-hooks/status", timeout=3.0)
+    return _ok_or_error(s, b)
+
+
+def tool_mind_orchestrator_wake(args: dict) -> dict:
+    if args.get("scan"):
+        s, b = _http("POST", "/orchestrator/wake/scan", timeout=5.0)
+    else:
+        s, b = _http("GET", "/orchestrator/wake/status", timeout=3.0)
+    return _ok_or_error(s, b)
 
 
 def tool_mind_activity_list(args: dict) -> dict:
@@ -384,6 +506,7 @@ TOOLS = [
             "properties": {
                 "project": {"type": "string", "description": "Project slug (e.g. 'egon')"},
                 "query":   {"type": "string", "description": "Free-text keywords to filter memory by"},
+                "agent":   {"type": "string", "description": "Optional requesting agent name; enables delegated_task delivery"},
                 "limit_activity": {"type": "integer", "default": 30},
                 "limit_memory":   {"type": "integer", "default": 20},
                 "budget_chars":   {"type": "integer", "default": 6000},
@@ -399,6 +522,7 @@ TOOLS = [
             "properties": {
                 "project": {"type": "string", "description": "Project slug (e.g. 'egon')"},
                 "query": {"type": "string", "description": "Free-text query or current user request"},
+                "agent": {"type": "string", "description": "Optional requesting agent name; enables delegated_task delivery"},
                 "budget_chars": {"type": "integer", "default": 6000},
                 "limit_activity": {"type": "integer", "default": 8},
                 "limit_memory": {"type": "integer", "default": 8},
@@ -407,6 +531,145 @@ TOOLS = [
             },
         },
         "fn": tool_mind_context_v2,
+    },
+    {
+        "name": "mind_agent_failure",
+        "description": "Report an agent runtime failure. Quota or rate-limit shaped details automatically cool down that agent and reroute its pending/assigned orchestrator tasks.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_name": {"type": "string", "description": "Agent that hit the failure, e.g. claude-code, codex, antigravity, hermes"},
+                "agent": {"type": "string", "description": "Alias for agent_name"},
+                "detail": {"type": "string", "description": "Failure text, stderr, or API error detail"},
+                "error": {"type": "string", "description": "Alias for detail"},
+                "cooldown_seconds": {"type": "integer", "default": 1800},
+            },
+            "required": ["detail"],
+        },
+        "fn": tool_mind_agent_failure,
+    },
+    {
+        "name": "mind_orchestrator_event",
+        "description": "Append live progress/output/control evidence to an orchestrator task. Agents should call this while working and before final completion.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "integer"},
+                "agent_name": {"type": "string"},
+                "agent": {"type": "string"},
+                "event_type": {"type": "string", "description": "progress | output | decision | blocked | final | control_acknowledged"},
+                "kind": {"type": "string", "description": "Alias for event_type"},
+                "content": {"type": "string"},
+                "message": {"type": "string", "description": "Alias for content"},
+                "payload": {"type": "object"},
+            },
+            "required": ["task_id", "content"],
+        },
+        "fn": tool_mind_orchestrator_event,
+    },
+    {
+        "name": "mind_orchestrator_control",
+        "description": "Get or set a control action for an orchestrator task. Omit action to read current control; set action to pause, resume, stop, cancel, clarify, edit, or requeue.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "integer"},
+                "action": {"type": "string"},
+                "note": {"type": "string"},
+                "clarification": {"type": "string"},
+                "replacement_desc": {"type": "string"},
+                "prompt": {"type": "string", "description": "Alias for replacement_desc"},
+                "agent_name": {"type": "string"},
+                "agent": {"type": "string"},
+            },
+            "required": ["task_id"],
+        },
+        "fn": tool_mind_orchestrator_control,
+    },
+    {
+        "name": "mind_orchestrator_events",
+        "description": "Read recent orchestrator task events, optionally scoped to a task_id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "integer"},
+                "since_id": {"type": "integer", "default": 0},
+                "limit": {"type": "integer", "default": 200},
+            },
+        },
+        "fn": tool_mind_orchestrator_events,
+    },
+    {
+        "name": "mind_agent_heartbeat",
+        "description": "Report that an agent is alive, idle, polling, working, blocked, or finishing a specific orchestrator task.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_name": {"type": "string"},
+                "agent": {"type": "string"},
+                "task_id": {"type": "integer"},
+                "status": {"type": "string"},
+                "detail": {"type": "string"},
+                "message": {"type": "string"},
+            },
+        },
+        "fn": tool_mind_agent_heartbeat,
+    },
+    {
+        "name": "mind_orchestrator_scheduler",
+        "description": "Return orchestrator utilization status: active work, paused/clarification counts, cooldowns, stuck tasks, idle agents, and recent agent state.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "fn": tool_mind_orchestrator_scheduler,
+    },
+    {
+        "name": "mind_orchestrator_mission",
+        "description": "Return the shared mission-control view: agent states, current tasks, latest outputs, pending controls, cooldowns, leases, and recent orchestrator events.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit_events": {"type": "integer", "default": 80},
+            },
+        },
+        "fn": tool_mind_orchestrator_mission,
+    },
+    {
+        "name": "mind_orchestrator_autonomy",
+        "description": "Inspect or update the always-on orchestrator autonomy loop. Safe mode requeues/reroutes stale work and wakes Hermes without inventing new tasks.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean"},
+                "mode": {"type": "string", "description": "supervise_only or off"},
+                "stuck_after_seconds": {"type": "integer"},
+                "auto_requeue_stuck": {"type": "boolean"},
+                "wake_hermes": {"type": "boolean"},
+                "wake_agents": {"type": "boolean"},
+                "provider_hooks": {"type": "boolean"},
+            },
+        },
+        "fn": tool_mind_orchestrator_autonomy,
+    },
+    {
+        "name": "mind_provider_hooks",
+        "description": "Inspect or run native provider transcript hooks for Claude Code, Codex, and Antigravity. These hooks forward local transcript/protobuf activity and quota signals into the orchestrator.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scan": {"type": "boolean", "default": False, "description": "When true, run one hook scan now; otherwise return status."},
+            },
+        },
+        "fn": tool_mind_provider_hooks,
+    },
+    {
+        "name": "mind_orchestrator_wake",
+        "description": "Inspect or run the native wake bridge for orchestrator tasks. Starts Claude/Codex local runners when available and records queue-only handoffs for agents without a runner.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scan": {"type": "boolean", "default": False, "description": "When true, run one wake scan now; otherwise return wake status."},
+            },
+        },
+        "fn": tool_mind_orchestrator_wake,
     },
     {
         "name": "mind_activity_list",

@@ -254,10 +254,10 @@ def _set_dotted(cfg: dict, path: str, value: str) -> None:
 
 def _status_color(s: str) -> str:
     return {
-        "ok": "#7FB069", "alive": "#7FB069",
-        "unconfigured": "#9CA3AF", "warming": "#D4A24C", "stale": "#D4A24C",
-        "timeout": "#D67A6A", "error": "#D67A6A",
-    }.get(str(s).lower(), "#9CA3AF")
+        "ok": "#30d158", "alive": "#30d158",
+        "unconfigured": "#76767f", "warming": "#ff9f0a", "stale": "#ff9f0a",
+        "timeout": "#ff453a", "error": "#ff453a",
+    }.get(str(s).lower(), "#76767f")
 
 
 # ── worker that confirms cached-data counts off the UI thread ──────────────
@@ -355,7 +355,7 @@ class _ConnectionCard(QFrame):
 
         # ── header (always visible) ──
         header = QFrame()
-        header.setStyleSheet("QFrame:hover { background: #16404F; }")
+        header.setStyleSheet("QFrame:hover { background: #212328; }")
         h = QHBoxLayout(header)
         h.setContentsMargins(14, 10, 14, 10)
         h.setSpacing(10)
@@ -365,7 +365,7 @@ class _ConnectionCard(QFrame):
         h.addWidget(icon)
 
         title = QLabel(spec["label"])
-        title.setStyleSheet("color: #F0E9D5; font-weight: 600; font-size: 13px;")
+        title.setStyleSheet("color: #f5f5f7; font-weight: 600; font-size: 13px;")
         h.addWidget(title, 1)
 
         self._status_lbl = QLabel("…")
@@ -377,7 +377,7 @@ class _ConnectionCard(QFrame):
         self._toggle.setText("▾")
         self._toggle.setCheckable(True)
         self._toggle.setStyleSheet(
-            "QToolButton { color: #9CA3AF; background: transparent; border: none; "
+            "QToolButton { color: #76767f; background: transparent; border: none; "
             "font-size: 14px; padding: 0 6px; }"
         )
         self._toggle.toggled.connect(self._on_toggle)
@@ -389,7 +389,7 @@ class _ConnectionCard(QFrame):
 
         # ── body (hidden by default) ──
         self._body = QFrame()
-        self._body.setStyleSheet("QFrame { background: #0B1F28; border-top: 1px solid #1F4858; }")
+        self._body.setStyleSheet("QFrame { background: #0c0d0f; border-top: 1px solid #22252a; }")
         self._body.setVisible(False)
         bv = QVBoxLayout(self._body)
         bv.setContentsMargins(16, 12, 16, 14)
@@ -399,7 +399,7 @@ class _ConnectionCard(QFrame):
         if spec.get("help"):
             help_lbl = QLabel(spec["help"])
             help_lbl.setWordWrap(True)
-            help_lbl.setStyleSheet("color: #9CA3AF; font-size: 12px; line-height: 1.5;")
+            help_lbl.setStyleSheet("color: #76767f; font-size: 12px; line-height: 1.5;")
             bv.addWidget(help_lbl)
 
         # field inputs
@@ -411,7 +411,7 @@ class _ConnectionCard(QFrame):
             grid.setSpacing(8)
             for i, (path, label, secret, placeholder) in enumerate(spec["fields"]):
                 lab = QLabel(label)
-                lab.setStyleSheet("color: #9CA3AF; font-size: 11px;")
+                lab.setStyleSheet("color: #76767f; font-size: 11px;")
                 grid.addWidget(lab, i*2, 0, 1, 2)
                 inp = QLineEdit()
                 inp.setText(_get_dotted(cfg, path))
@@ -419,8 +419,8 @@ class _ConnectionCard(QFrame):
                 if secret:
                     inp.setEchoMode(QLineEdit.Password)
                 inp.setStyleSheet(
-                    "QLineEdit { background: #102F3C; color: #F0E9D5; "
-                    "border: 1px solid #1F4858; border-radius: 3px; padding: 6px 8px; }"
+                    "QLineEdit { background: #0c0d0f; color: #f5f5f7; "
+                    "border: 1px solid #22252a; border-radius: 3px; padding: 6px 8px; }"
                     "QLineEdit:focus { border-color: #60A5A8; }"
                 )
                 self._inputs[path] = inp
@@ -433,7 +433,7 @@ class _ConnectionCard(QFrame):
                         lambda checked, inp=inp: inp.setEchoMode(
                             QLineEdit.Normal if checked else QLineEdit.Password))
                     show_btn.setStyleSheet(
-                        "QToolButton { color: #9CA3AF; background: transparent; "
+                        "QToolButton { color: #76767f; background: transparent; "
                         "border: none; padding: 4px 8px; }"
                     )
                     grid.addWidget(show_btn, i*2 + 1, 1)
@@ -442,9 +442,9 @@ class _ConnectionCard(QFrame):
                 elif path.endswith("_path") or "export" in path:
                     browse = QPushButton("Browse…")
                     browse.setStyleSheet(
-                        "QPushButton { background: #16404F; color: #F0E9D5; "
-                        "border: 1px solid #1F4858; border-radius: 3px; padding: 6px 12px; }"
-                        "QPushButton:hover { background: #1F5366; }")
+                        "QPushButton { background: #212328; color: #f5f5f7; "
+                        "border: 1px solid #22252a; border-radius: 3px; padding: 6px 12px; }"
+                        "QPushButton:hover { background: #2a2d34; }")
                     def _pick(_=False, inp=inp):
                         fn, _f = QFileDialog.getOpenFileName(
                             self, "Select file", "",
@@ -461,7 +461,7 @@ class _ConnectionCard(QFrame):
             mode_row = QHBoxLayout()
             mode_row.setContentsMargins(0, 4, 0, 0)
             mode_lbl = QLabel("Access mode:")
-            mode_lbl.setStyleSheet("color: #9CA3AF; font-size: 11px;")
+            mode_lbl.setStyleSheet("color: #76767f; font-size: 11px;")
             mode_row.addWidget(mode_lbl)
             self._mode_cb = QComboBox()
             self._mode_cb.addItem("🛡 Read-only", "read")
@@ -484,13 +484,13 @@ class _ConnectionCard(QFrame):
             up = spec["extra_uploader"]
             up_row = QHBoxLayout()
             up_lbl = QLabel(up["label"])
-            up_lbl.setStyleSheet("color: #9CA3AF; font-size: 11px;")
+            up_lbl.setStyleSheet("color: #76767f; font-size: 11px;")
             up_row.addWidget(up_lbl)
             from lib.ledger import load_config
             cfg2 = load_config() or {}
             current = _get_dotted(cfg2, up["config_key"]) or "(none)"
             self._uploader_path_lbl = QLabel(current)
-            self._uploader_path_lbl.setStyleSheet("color: #F0E9D5; font-size: 11px;")
+            self._uploader_path_lbl.setStyleSheet("color: #f5f5f7; font-size: 11px;")
             up_row.addWidget(self._uploader_path_lbl, 1)
             up_btn = QPushButton("Choose file…")
             up_btn.clicked.connect(lambda _=False, u=up: self._choose_file(u))
@@ -507,7 +507,7 @@ class _ConnectionCard(QFrame):
             b_save.setStyleSheet(
                 "QPushButton { background: #60A5A8; color: white; padding: 6px 14px; "
                 "border-radius: 3px; font-weight: 600; border: none; }"
-                "QPushButton:hover { background: #7BC5C7; }"
+                "QPushButton:hover { background: #ff453a; }"
             )
             b_save.clicked.connect(self._save_fields)
             btn_row.addWidget(b_save)
@@ -520,7 +520,7 @@ class _ConnectionCard(QFrame):
             b_auth.setStyleSheet(
                 "QPushButton { background: #60A5A8; color: white; padding: 6px 14px; "
                 "border-radius: 3px; font-weight: 600; border: none; }"
-                "QPushButton:hover { background: #7BC5C7; }"
+                "QPushButton:hover { background: #ff453a; }"
             )
             b_auth.clicked.connect(self._google_authorize)
             btn_row.addWidget(b_auth)
@@ -532,7 +532,7 @@ class _ConnectionCard(QFrame):
             b_login.setStyleSheet(
                 "QPushButton { background: #60A5A8; color: white; padding: 6px 14px; "
                 "border-radius: 3px; font-weight: 600; border: none; }"
-                "QPushButton:hover { background: #7BC5C7; }"
+                "QPushButton:hover { background: #ff453a; }"
             )
             b_login.clicked.connect(self._browser_login)
             btn_row.addWidget(b_login)
@@ -541,7 +541,7 @@ class _ConnectionCard(QFrame):
             b_ext.setStyleSheet(
                 "QPushButton { background: #60A5A8; color: white; padding: 6px 14px; "
                 "border-radius: 3px; font-weight: 600; border: none; }"
-                "QPushButton:hover { background: #7BC5C7; }"
+                "QPushButton:hover { background: #ff453a; }"
             )
             b_ext.clicked.connect(self._open_extension_folder)
             btn_row.addWidget(b_ext)
@@ -552,9 +552,9 @@ class _ConnectionCard(QFrame):
             # the bot defender will trust.
             b_ext_chrome = QPushButton("Open in my Chrome")
             b_ext_chrome.setStyleSheet(
-                "QPushButton { background: #16404F; color: #F0E9D5; padding: 6px 14px; "
-                "border-radius: 3px; font-weight: 600; border: 1px solid #1F4858; }"
-                "QPushButton:hover { background: #1F5366; }"
+                "QPushButton { background: #212328; color: #f5f5f7; padding: 6px 14px; "
+                "border-radius: 3px; font-weight: 600; border: 1px solid #22252a; }"
+                "QPushButton:hover { background: #2a2d34; }"
             )
             b_ext_chrome.clicked.connect(self._open_in_real_chrome)
             btn_row.addWidget(b_ext_chrome)
@@ -566,7 +566,7 @@ class _ConnectionCard(QFrame):
             b_pull.setStyleSheet(
                 "QPushButton { background: #60A5A8; color: white; padding: 6px 14px; "
                 "border-radius: 3px; font-weight: 600; border: none; }"
-                "QPushButton:hover { background: #7BC5C7; }"
+                "QPushButton:hover { background: #ff453a; }"
             )
             b_pull.clicked.connect(self._pull_library_via_extension)
             btn_row.addWidget(b_pull)
@@ -604,7 +604,7 @@ class _ConnectionCard(QFrame):
         sources with real data show 'unconfigured'. This corrects that."""
         if count and count > 0:
             self._status_lbl.setText(
-                f"<span style='color:#7FB069;'>●</span>  <b>ready</b> · {count:,} items")
+                f"<span style='color:#30d158;'>●</span>  <b>ready</b> · {count:,} items")
 
     def _save_fields(self) -> None:
         try:
@@ -907,10 +907,10 @@ class SettingsPage(QWidget):
         v.setSpacing(14)
 
         title = QLabel("Settings")
-        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #F0E9D5;")
+        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #f5f5f7;")
         v.addWidget(title)
         sub = QLabel("Plan mode · per-adapter configuration · system state · maintenance.")
-        sub.setStyleSheet("color: #9CA3AF;")
+        sub.setStyleSheet("color: #76767f;")
         v.addWidget(sub)
 
         # ── Chrome extension status banner ──
@@ -923,7 +923,7 @@ class SettingsPage(QWidget):
         eb = QHBoxLayout(self._ext_banner)
         eb.setContentsMargins(16, 10, 16, 10)
         self._ext_status_lbl = QLabel("checking Chrome extension…")
-        self._ext_status_lbl.setStyleSheet("color: #F0E9D5; font-weight: 600;")
+        self._ext_status_lbl.setStyleSheet("color: #f5f5f7; font-weight: 600;")
         self._ext_status_lbl.setTextFormat(Qt.RichText)
         self._ext_status_lbl.setWordWrap(True)
         eb.addWidget(self._ext_status_lbl, 1)
@@ -967,8 +967,8 @@ class SettingsPage(QWidget):
         self._sys_text.setFont(QFont("Cascadia Mono", 9))
         self._sys_text.setMaximumHeight(220)
         self._sys_text.setStyleSheet(
-            "QPlainTextEdit { background: #0B1F28; color: #9CA3AF; "
-            "border: 1px solid #1F4858; border-radius: 4px; padding: 8px; }"
+            "QPlainTextEdit { background: #0c0d0f; color: #76767f; "
+            "border: 1px solid #22252a; border-radius: 4px; padding: 8px; }"
         )
         card_sys.layout().addWidget(self._sys_text)
 
@@ -1006,7 +1006,7 @@ class SettingsPage(QWidget):
         w = QFrame()
         h = QHBoxLayout(w); h.setContentsMargins(16, 8, 16, 8); h.setSpacing(14)
         l = QLabel(label); l.setMinimumWidth(160)
-        l.setStyleSheet("color: #F0E9D5; font-weight: 600;")
+        l.setStyleSheet("color: #f5f5f7; font-weight: 600;")
         h.addWidget(l); h.addWidget(widget, 1)
         if hint:
             hh = QLabel(hint); hh.setStyleSheet("color: #6B7280; font-size: 11px;")
@@ -1054,9 +1054,9 @@ class SettingsPage(QWidget):
             f"({count} tabs seen).")
 
     def _ext_banner_set(self, level: str, html: str) -> None:
-        bg = {"green": "#16404F", "amber": "#3A2E1B", "red": "#3A1B1B"}.get(level, "#16404F")
-        border = {"green": "#1F4858", "amber": "#7A5A2E", "red": "#7A2E2E"}.get(level, "#1F4858")
-        dot = {"green": "#7FB069", "amber": "#D4A24C", "red": "#D67A6A"}.get(level, "#9CA3AF")
+        bg = {"green": "#212328", "amber": "#3A2E1B", "red": "#3A1B1B"}.get(level, "#212328")
+        border = {"green": "#22252a", "amber": "#7A5A2E", "red": "#7A2E2E"}.get(level, "#22252a")
+        dot = {"green": "#30d158", "amber": "#ff9f0a", "red": "#ff453a"}.get(level, "#76767f")
         self._ext_banner.setStyleSheet(
             f"QFrame#card {{ background: {bg}; border: 1px solid {border}; "
             f"border-radius: 6px; }}"

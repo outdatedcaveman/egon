@@ -318,7 +318,7 @@ def mirror_to_notion(source: str, snapshot: dict, max_items: int = 500,
             with cl:
                 counts["errors"] += 1
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=12) as pool:
         list(pool.map(_one, items_to_process))
 
     return {

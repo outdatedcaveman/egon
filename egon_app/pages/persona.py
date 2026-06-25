@@ -14,8 +14,8 @@ from PySide6.QtWidgets import (
     QPushButton, QScrollArea, QComboBox, QLineEdit,
 )
 
-_TEXT = "#F0E9D5"; _MUTED = "#9CA3AF"; _GOLD = "#D4A24C"; _ACCENT = "#7BC5C7"
-_CARD = "#0E2630"; _BORDER = "#1F4858"; _OK = "#7FB069"; _VIO = "#9D7BD8"
+_TEXT = "#f5f5f7"; _MUTED = "#76767f"; _GOLD = "#ff9f0a"; _ACCENT = "#ff453a"
+_CARD = "#16181c"; _BORDER = "#22252a"; _OK = "#30d158"; _VIO = "#9D7BD8"
 
 
 class _InterestRow(QFrame):
@@ -27,7 +27,7 @@ class _InterestRow(QFrame):
         self.setObjectName("intRow")
         self.setStyleSheet(
             f"#intRow {{ background:transparent; border-bottom:1px solid "
-            f"#16323d; }}")
+            f"{_BORDER}; }}")
         h = QHBoxLayout(self); h.setContentsMargins(6, 3, 6, 3); h.setSpacing(8)
 
         pinned = row.get("pinned")
@@ -37,17 +37,16 @@ class _InterestRow(QFrame):
         star.setToolTip("Pin / unpin")
         star.setStyleSheet(
             f"QPushButton {{ border:none; background:transparent; font-size:16px; "
+            f"padding:0px; "
             f"color:{_GOLD if pinned else _MUTED}; }}"
             f"QPushButton:hover {{ color:{_GOLD}; }}")
         star.clicked.connect(lambda: on_pin(self._name))
         h.addWidget(star)
 
         self._field = QLineEdit(row["name"])
+        self._field.setObjectName("intField")
         self._field.setFrame(False)
-        self._field.setStyleSheet(
-            f"QLineEdit {{ background:transparent; color:{_TEXT}; border:none; "
-            f"font-size:13px; }} QLineEdit:focus {{ background:#16404F; "
-            f"border:1px solid {_BORDER}; border-radius:3px; }}")
+        self._field.setStyleSheet("")
         self._field.editingFinished.connect(self._commit)
         h.addWidget(self._field, 1)
 
@@ -66,7 +65,8 @@ class _InterestRow(QFrame):
         x.setToolTip("Remove")
         x.setStyleSheet(
             f"QPushButton {{ border:none; background:transparent; color:{_MUTED}; "
-            f"font-size:14px; }} QPushButton:hover {{ color:#D67A6A; }}")
+            f"padding:0px; "
+            f"font-size:14px; }} QPushButton:hover {{ color:#ff453a; }}")
         x.clicked.connect(lambda: on_remove(self._name))
         h.addWidget(x)
 
@@ -112,7 +112,7 @@ class PersonaPage(QWidget):
         head.addWidget(self._status)
         self._gen = QPushButton("✨ Generate summary")
         self._gen.setStyleSheet(
-            f"QPushButton {{ background:{_GOLD}; color:#102F3C; padding:7px 14px; "
+            f"QPushButton {{ background:{_GOLD}; color:#0c0d0f; padding:7px 14px; "
             f"border-radius:4px; font-weight:700; border:none; }}")
         self._gen.clicked.connect(self._generate)
         head.addWidget(self._gen)
@@ -132,7 +132,7 @@ class PersonaPage(QWidget):
         self._prose = QLabel("")
         self._prose.setWordWrap(True)
         self._prose.setStyleSheet(
-            f"color:{_GOLD}; background:{_CARD}; border:1px solid {_VIO}; "
+            f"color:{_GOLD}; background:{_CARD}; border:none; "
             f"border-radius:8px; padding:14px; font-size:14px;")
         self._prose.hide()
         self._v.addWidget(self._prose)
@@ -146,7 +146,7 @@ class PersonaPage(QWidget):
         self._v.addLayout(self._health_grid)
 
         # interests — editable + sortable
-        ih = QLabel("🧭 Interests  ·  edit the text inline · ☆ pin · ✕ remove")
+        ih = QLabel("🧭 Interests")
         ih.setStyleSheet(f"color:{_TEXT}; font-size:15px; font-weight:700; "
                          f"margin-top:6px;")
         self._v.addWidget(ih)
@@ -159,17 +159,27 @@ class PersonaPage(QWidget):
         self._sort.addItem("Pinned first", "pinned")
         self._sort.currentIndexChanged.connect(self._reload_interests)
         self._sort.setStyleSheet(
-            "QComboBox { background:#102F3C; color:#F0E9D5; border:1px solid "
-            "#1F4858; border-radius:4px; padding:4px 8px; }")
+            "QComboBox { background:#0c0d0f; color:#f5f5f7; border:1px solid "
+            "#22252a; border-radius:4px; padding:4px 8px; }")
         bar.addWidget(QLabel("Sort:"))
         bar.addWidget(self._sort)
         self._add = QLineEdit()
-        self._add.setPlaceholderText("add an interest and press Enter…")
+        self._add.setPlaceholderText("Type an interest to add...")
         self._add.returnPressed.connect(self._add_interest)
         self._add.setStyleSheet(
-            "QLineEdit { background:#102F3C; color:#F0E9D5; border:1px solid "
-            "#1F4858; border-radius:4px; padding:5px 8px; }")
+            "QLineEdit { background:#0c0d0f; color:#f5f5f7; border:1px solid "
+            "#22252a; border-radius:4px; padding:5px 8px; }")
         bar.addWidget(self._add, 1)
+
+        self._add_btn = QPushButton("Add")
+        self._add_btn.setCursor(Qt.PointingHandCursor)
+        self._add_btn.setStyleSheet(
+            "QPushButton { background:#212328; color:#f5f5f7; border:1px solid #22252a; "
+            "border-radius:4px; padding:5px 12px; font-weight:600; } "
+            "QPushButton:hover { background:#ff453a; color:white; border-color:#ff453a; }")
+        self._add_btn.clicked.connect(self._add_interest)
+        bar.addWidget(self._add_btn)
+
         self._count = QLabel("")
         self._count.setStyleSheet(f"color:{_MUTED}; font-size:11px;")
         bar.addWidget(self._count)
@@ -178,7 +188,7 @@ class PersonaPage(QWidget):
         # scrollable container of editable rows (each with real ★ / ✕ buttons)
         listwrap = QFrame()
         listwrap.setStyleSheet(
-            f"QFrame {{ background:#102F3C; border:1px solid {_BORDER}; "
+            f"QFrame {{ background:#0c0d0f; border:none; "
             f"border-radius:6px; }}")
         lw = QVBoxLayout(listwrap); lw.setContentsMargins(2, 2, 2, 2)
         inner_scroll = QScrollArea(); inner_scroll.setWidgetResizable(True)

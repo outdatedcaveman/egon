@@ -4,10 +4,10 @@ THE BIG PLAY, tier 1 (Bruno 2026-06-12: "we'll move into integrating my
 files from Drive and the PC into the flow"). Survey findings that shaped
 this design:
 
-  * C:/Users/bruno/Google Drive  — 43,476 PDFs / 57 GB: the paper+book
+  * ~/Google Drive               — 43,476 PDFs / 57 GB: the paper+book
     library. These are Drive File Stream CLOUD PLACEHOLDERS: os.walk sees
     names/sizes for free, but READING CONTENT FORCE-DOWNLOADS the file.
-  * C:/Users/bruno/Documents     — ~30k files, mostly code trees; only
+  * ~/Documents                  — ~30k files, mostly code trees; only
     curated extensions are worth indexing.
   * My Drive / EgonVault         — placeholder roots, nearly empty locally.
 
@@ -39,16 +39,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 OUT_PATH = ROOT / "state" / "files_index.jsonl"
 
+_HOME = Path.home()
 _DEFAULT_ROOTS = [
     str(ROOT / "state" / "exports"),   # extracted vendor data exports
-    r"C:\Users\bruno\Google Drive",
-    r"C:\Users\bruno\My Drive",
-    r"C:\Users\bruno\EgonVault",
-    r"C:\Users\bruno\Documents",
+    str(_HOME / "Google Drive"),
+    str(_HOME / "My Drive"),
+    str(_HOME / "EgonVault"),
+    str(_HOME / "Documents"),
 ]
 # Knowledge-bearing formats only — code trees and binaries stay out.
 _DEFAULT_EXTS = {".pdf", ".md", ".txt", ".docx", ".doc", ".epub", ".rtf",
-                 ".tex", ".odt", ".pptx", ".csv", ".org"}
+                 ".tex", ".odt", ".pptx", ".csv", ".org", ".json",
+                 ".jsonl", ".yaml", ".yml", ".xml", ".html", ".htm",
+                 ".log"}
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv",
               "AppData", ".obsidian", ".trash", "$RECYCLE.BIN",
               # Fit raw export dirs — daily metrics become clean entities via

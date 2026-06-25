@@ -25,12 +25,12 @@ def _make_card(title: str, body_html: str) -> QFrame:
     v.setContentsMargins(16, 12, 16, 12)
     v.setSpacing(4)
     t = QLabel(title)
-    t.setStyleSheet("font-size: 14px; font-weight: 600; color: #F0E9D5;")
+    t.setStyleSheet("font-size: 14px; font-weight: 600; color: #f5f5f7;")
     v.addWidget(t)
     b = QLabel(body_html)
     b.setTextFormat(Qt.RichText)
     b.setWordWrap(True)
-    b.setStyleSheet("color: #9CA3AF; font-size: 12px; line-height: 1.5;")
+    b.setStyleSheet("color: #76767f; font-size: 12px; line-height: 1.5;")
     v.addWidget(b)
     return f
 
@@ -65,10 +65,10 @@ class SourceListPage(QWidget):
         v.setSpacing(14)
 
         t = QLabel(title)
-        t.setStyleSheet("font-size: 22px; font-weight: 700; color: #F0E9D5;")
+        t.setStyleSheet("font-size: 22px; font-weight: 700; color: #f5f5f7;")
         v.addWidget(t)
         s = QLabel(subtitle)
-        s.setStyleSheet("color: #9CA3AF;")
+        s.setStyleSheet("color: #76767f;")
         s.setWordWrap(True)
         v.addWidget(s)
 
@@ -154,29 +154,29 @@ def _generic_body(_sid: str, info: dict) -> str:
 
     parts: list[str] = []
     status = info.get("status", "—")
-    colour = {"ok": "#7FB069", "alive": "#7FB069",
-              "unconfigured": "#9CA3AF", "warming": "#D4A24C",
-              "stale": "#D4A24C", "timeout": "#D67A6A",
-              "error": "#D67A6A"}.get(str(status).lower(), "#9CA3AF")
+    colour = {"ok": "#30d158", "alive": "#30d158",
+              "unconfigured": "#76767f", "warming": "#ff9f0a",
+              "stale": "#ff9f0a", "timeout": "#ff453a",
+              "error": "#ff453a"}.get(str(status).lower(), "#76767f")
     parts.append(f"<span style='color:{colour};'>●</span>  <b>{status}</b>")
 
     # Prioritised keys first, then any leftovers we haven't hidden
     seen = set(_HIDDEN_KEYS) | {"error", "note"}
     for k, label in _PRIORITY_KEYS:
         if k in info and info[k] is not None:
-            parts.append(f"{label}: <b style='color:#F0E9D5;'>{_fmt_value(info[k])}</b>")
+            parts.append(f"{label}: <b style='color:#f5f5f7;'>{_fmt_value(info[k])}</b>")
             seen.add(k)
     for k, v in info.items():
         if k in seen or v is None:
             continue
         # Render any unlisted key still meaningful (skip ID-like or huge values)
         label = k.replace("_", " ")
-        parts.append(f"{label}: <b style='color:#F0E9D5;'>{_fmt_value(v)}</b>")
+        parts.append(f"{label}: <b style='color:#f5f5f7;'>{_fmt_value(v)}</b>")
 
     if "note" in info and info["note"]:
         parts.append(f"<span style='color:#6B7280; font-style:italic;'>{info['note'][:120]}</span>")
     if "error" in info and info["error"]:
-        parts.append(f"<span style='color:#D67A6A;'>{info['error'][:140]}</span>")
+        parts.append(f"<span style='color:#ff453a;'>{info['error'][:140]}</span>")
     return "<br>".join(parts)
 
 

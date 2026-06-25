@@ -27,11 +27,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / "state" / "mirror_runner.json"
 
-# Sources to mirror, in priority order: zotero first (the big one), then a
-# curated order, then ANYTHING ELSE cross_search discovers, then the mind's
-# own entities — Bruno 2026-06-12: full and comprehensive on BOTH mirrors.
-_PRIORITY = ["zotero", "paperpile", "chrome_bookmarks", "letterboxd",
-             "instapaper", "notion_workspace"]
+# Sources to mirror, in priority order: mind sources and curated items first,
+# and Zotero last to prevent it from starving smaller, high-priority databases.
+_PRIORITY = ["paperpile", "chrome_bookmarks", "letterboxd",
+             "instapaper", "notion_workspace", "unified_resources"]
 _MIND_SOURCES = ["mind_sessions", "mind_projects", "mind_memories",
                  "mind_skills"]
 
@@ -49,7 +48,7 @@ def _all_sources() -> list[str]:
     # in the Obsidian mirror (free local writes); everything durable goes to
     # both. "Efficiently yet thoroughly" — Bruno 2026-06-12.
     extra = [x for x in extra if x != "chrome_tabs"]
-    return _PRIORITY + sorted(extra) + _MIND_SOURCES
+    return _MIND_SOURCES + _PRIORITY + sorted(extra) + ["zotero"]
 
 # Notion budget per run. At ~1.33s/item (3 parallel workers) a 500-item
 # run is ~11min; the runner's _mirror_running guard lets it span core

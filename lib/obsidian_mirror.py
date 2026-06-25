@@ -29,7 +29,7 @@ import re
 import time
 from pathlib import Path
 
-VAULT = Path(r"C:\Users\bruno\Documents\Obsidian Vault")
+VAULT = Path.home() / "Documents" / "Obsidian Vault"
 MIRROR_DIR = VAULT / "050 - Mirrors"
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -128,7 +128,7 @@ def _mind_entities() -> dict[str, list[dict]]:
     try:
         out["mind_sessions"] = [{
             "id": f"session:{r['id']}",
-            "title": f"{r['agent']} session {r['external_id'][:18]} ({r['day']})",
+            "title": f"{r['agent']} session {(r['external_id'] or str(r['id']))[:18]} ({r['day']})",
             "agent": r["agent"], "project": r["project"] or "",
             "started": r["day"], "events": r["n_events"],
             "summary": (r["summary"] or "")[:3000],

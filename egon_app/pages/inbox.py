@@ -1986,6 +1986,10 @@ class _CategoriesRulesTab(QWidget):
         layout.addLayout(toolbar)
 
         split = QSplitter(Qt.Horizontal)
+        split.setStyleSheet(
+            "QSplitter::handle { background: #22252a; width: 1px; }"
+            "QSplitter::handle:hover { background: #ff453a; }"
+        )
         layout.addWidget(split, 1)
 
         left = QFrame()

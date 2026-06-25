@@ -169,16 +169,16 @@ class _ConnectDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"🔗 Connected to: {filename[:60]}")
         self.resize(680, 460)
-        self.setStyleSheet("background: #0B1F28; color: #F0E9D5;")
+        self.setStyleSheet("background: #0c0d0f; color: #f5f5f7;")
         v = QVBoxLayout(self)
         self._status = QLabel("searching the archives…")
-        self._status.setStyleSheet("color: #9CA3AF;")
+        self._status.setStyleSheet("color: #76767f;")
         v.addWidget(self._status)
         self._list = QListWidget()
         self._list.setStyleSheet(
-            "QListWidget { background: #102F3C; border: 1px solid #1F4858; "
+            "QListWidget { background: #0c0d0f; border: 1px solid #22252a; "
             "border-radius: 6px; } QListWidget::item { padding: 7px; }"
-            "QListWidget::item:selected { background: #1F5366; }")
+            "QListWidget::item:selected { background: #2a2d34; }")
         self._list.itemActivated.connect(self._open_item)
         v.addWidget(self._list, 1)
 
@@ -250,11 +250,11 @@ class ArtifactsPage(QWidget):
 
         headrow = QHBoxLayout()
         head = QLabel("🗂  Artifacts — every file, every device")
-        head.setStyleSheet("color: #F0E9D5; font-size: 20px; font-weight: 700;")
+        head.setStyleSheet("color: #f5f5f7; font-size: 20px; font-weight: 700;")
         headrow.addWidget(head)
         headrow.addStretch(1)
         self._import_status = QLabel("")
-        self._import_status.setStyleSheet("color: #9CA3AF; font-size: 11px;")
+        self._import_status.setStyleSheet("color: #76767f; font-size: 11px;")
         headrow.addWidget(self._import_status)
         imp = QPushButton("📥 Import data export…")
         imp.setToolTip(
@@ -262,7 +262,7 @@ class ArtifactsPage(QWidget):
             "Egon detects the vendor, extracts it, and merges everything in "
             "(YouTube history, Fit, Discover, Gemini, Kindle, episodes…).")
         imp.setStyleSheet(
-            "QPushButton { background: #D4A24C; color: #102F3C; padding: 7px 14px; "
+            "QPushButton { background: #ff9f0a; color: #0c0d0f; padding: 7px 14px; "
             "border-radius: 4px; font-weight: 700; border: none; }"
             "QPushButton:hover { background: #E0B45E; }")
         imp.clicked.connect(self._import_export)
@@ -273,7 +273,7 @@ class ArtifactsPage(QWidget):
             "relates to across ALL your archives; 📌 Pin queues Drive "
             "placeholders for text extraction. 📥 Import pulls in vendor data "
             "exports (Takeout etc.). Newest first; filter to dig.")
-        sub.setStyleSheet("color: #9CA3AF; font-size: 12px;")
+        sub.setStyleSheet("color: #76767f; font-size: 12px;")
         sub.setWordWrap(True)
         v.addWidget(sub)
 

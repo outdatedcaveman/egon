@@ -26,10 +26,10 @@ from PySide6.QtWidgets import (
 )
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-OBSIDIAN_VAULT = Path(r"C:\Users\bruno\Documents\Obsidian Vault")
+OBSIDIAN_VAULT = Path.home() / "Documents" / "Obsidian Vault"
 
-_TEXT = "#F0E9D5"; _MUTED = "#9CA3AF"; _GOLD = "#D4A24C"
-_OK = "#7FB069"; _ERR = "#D67A6A"; _BORDER = "#1F4858"; _CARD = "#0E2630"
+_TEXT = "#f5f5f7"; _MUTED = "#76767f"; _GOLD = "#ff9f0a"
+_OK = "#30d158"; _ERR = "#ff453a"; _BORDER = "#22252a"; _CARD = "#16181c"
 
 
 def _card(title: str, value: str, hint: str, accent: str = _GOLD) -> QFrame:
@@ -204,10 +204,10 @@ class DatabasesPage(QWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.setStyleSheet(
-            f"QTableWidget {{ background: #102F3C; color: {_TEXT}; "
+            f"QTableWidget {{ background: #0c0d0f; color: {_TEXT}; "
             f"gridline-color: {_BORDER}; border: 1px solid {_BORDER}; "
             f"border-radius: 6px; }}"
-            f"QHeaderView::section {{ background: #16404F; color: {_MUTED}; "
+            f"QHeaderView::section {{ background: #212328; color: {_MUTED}; "
             f"padding: 6px; border: none; font-weight: 600; }}")
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.setMinimumHeight(260)
@@ -251,7 +251,7 @@ class DatabasesPage(QWidget):
              _GOLD),
             ("📁 File index",
              f"{d.get('files_n', 0):,}",
-             "files across PC + Drive (+ phone on demand)", "#7BC5C7"),
+             "files across PC + Drive (+ phone on demand)", "#ff453a"),
             ("🟣 Obsidian vault",
              f"{ob.get('notes', 0):,}" if ob.get("ok") else "—",
              (f"notes · {ob.get('attachments', 0)} attachments · "

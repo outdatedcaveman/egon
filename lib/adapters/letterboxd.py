@@ -503,6 +503,21 @@ def snapshot() -> dict:
     export_data = None
     if export_path:
         p = Path(export_path)
+        # Auto-detect newer ZIP exports in the same folder
+        try:
+            parent = p.parent
+            if parent.exists():
+                zips = sorted(parent.glob("letterboxd-*.zip"), key=lambda x: x.stat().st_mtime, reverse=True)
+                valid_zips = [z for z in zips if z.stat().st_size > 1000]
+                if valid_zips and valid_zips[0].resolve() != p.resolve():
+                    p = valid_zips[0]
+                    secrets.set("letterboxd.export_path", str(p.resolve()))
+                    cfg = load_config()
+                    cfg.setdefault("letterboxd", {})["export_path"] = str(p.resolve())
+                    save_config(cfg)
+        except Exception:
+            pass
+
         if p.exists():
             export_data = _load_export_zip(p)
             if "error" in export_data:
@@ -549,14 +564,27 @@ def snapshot() -> dict:
         pass
 
     if export_data:
+        merged_films = list(export_data["films"])
+        inserted = 0
+        if films:
+            existing_keys = {f"{f.get('title', '').strip().lower()}|{f.get('year', '')}" for f in merged_films}
+            for f in reversed(films):
+                t = f.get("title", "").strip().lower()
+                y = f.get("year", "")
+                key = f"{t}|{y}"
+                if key not in existing_keys:
+                    merged_films.insert(0, f)
+                    inserted += 1
+                    
         return {
             "status": "ok",
-            "source": "export_zip",
+            "source": "export_zip" + (f" + merged {inserted} scraped films" if inserted else ""),
             "synced_at": datetime.now().isoformat(),
-            "count": len(export_data["films"]),
+            "count": len(merged_films),
             "lists_count": len(export_data["lists"]),
-            "items":  export_data["films"],
+            "items":  merged_films,
             "lists":  export_data["lists"],
+            "grey_status": None,
             "diary_entries": len(export_data["diary"]),
             "recent_scrape": films,
         }
@@ -576,9 +604,10 @@ _ZIP_LISTS_CACHE: dict[str, tuple[float, list[dict]]] = {}
 
 
 def items(limit: int = 5000) -> list[dict]:
-    """Full film library. Reads the export ZIP DIRECTLY (live) when configured
-    — that's the complete ~2.7k corpus with ratings/likes/watched-dates — and
-    falls back to the snapshot store otherwise. Bruno 2026-05-22."""
+    """Full film library. Reads the export ZIP DIRECTLY (live) when configured,
+    merges any newly scraped films from the latest snapshot, and falls back to
+    the snapshot store otherwise."""
+    films = []
     export_path = secrets.get("letterboxd.export_path")
     if export_path:
         p = Path(export_path)
@@ -586,16 +615,29 @@ def items(limit: int = 5000) -> list[dict]:
             mtime = p.stat().st_mtime
             cache_key = str(p.resolve())
             if cache_key in _ZIP_FILMS_CACHE and _ZIP_FILMS_CACHE[cache_key][0] == mtime:
-                return _ZIP_FILMS_CACHE[cache_key][1][:limit]
-            data = _load_export_zip(p)
-            if "error" not in data:
-                films = data.get("films") or []
-                _ZIP_FILMS_CACHE[cache_key] = (mtime, films)
-                return films[:limit]
+                films = list(_ZIP_FILMS_CACHE[cache_key][1])
+            else:
+                data = _load_export_zip(p)
+                if "error" not in data:
+                    f_list = data.get("films") or []
+                    _ZIP_FILMS_CACHE[cache_key] = (mtime, f_list)
+                    films = list(f_list)
+                    
     snap = latest_snapshot(META["id"])
-    if not snap or snap.get("status") != "ok":
-        return []
-    return snap.get("items", [])[:limit]
+    if snap and snap.get("status") == "ok":
+        scraped = snap.get("recent_scrape") or snap.get("items") or []
+        if scraped and films:
+            existing_keys = {f"{f.get('title', '').strip().lower()}|{f.get('year', '')}" for f in films}
+            for f in reversed(scraped):
+                t = f.get("title", "").strip().lower()
+                y = f.get("year", "")
+                key = f"{t}|{y}"
+                if key not in existing_keys:
+                    films.insert(0, f)
+        elif not films:
+            films = snap.get("items", [])
+            
+    return films[:limit]
 
 
 def lists(limit: int = 1000) -> list[dict]:

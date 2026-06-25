@@ -1472,9 +1472,33 @@ def mind_introspection_proposals():
     try:
         from lib.mind_introspection import analyze_mind
         props = analyze_mind()
-        return {"status": "ok", "proposals": props}
     except Exception as e:
-        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+        props = []
+        analyze_err = f"{type(e).__name__}: {str(e)[:120]}"
+    else:
+        analyze_err = None
+    # Fold in the always-on Hermes oversight so the proactive feed surfaces
+    # stuck/failed work and idle-quota opportunities the orchestrator found.
+    try:
+        from lib import hermes_monitor
+        hp = hermes_monitor.get_proposals() or {}
+        for p in (hp.get("proposals") or [])[:6]:
+            tier = p.get("masterlaw_tier", "allow")
+            props.append({
+                "id": f"hermes_{p.get('kind','')}_{p.get('task_id','')}",
+                "title": f"Hermes: resume {p.get('agent','agent')} work",
+                "description": f"{p.get('desc','')} — {p.get('why','')}"
+                               + (f"  [MASTERLAW: {tier}]" if tier and tier != "allow" else ""),
+                "severity": "error" if tier == "block" else "warning",
+                "category": "orchestrator",
+                "project": "egon",
+                "ts": 0,
+            })
+    except Exception:
+        pass
+    if not props and analyze_err:
+        return {"status": "error", "error": analyze_err}
+    return {"status": "ok", "proposals": props}
 
 
 @app.post("/api/v1/mind/introspection/run")
@@ -1483,6 +1507,25 @@ def mind_introspection_run():
         from lib.mind_introspection import run_introspection
         res = run_introspection()
         return res
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@app.get("/api/v1/mind/concept_graph")
+def mind_concept_graph(rebuild: bool = False, k: int = 200, sample: int | None = None):
+    """Higher-order concepts clustered from the embedded vault + their morphisms
+    (the data behind the Categorical Mind / CatColab graphic home). Returns the
+    cached graph; rebuild=true forces a fresh clustering (heavy — prefer the
+    idle-gated egon_core rebuild)."""
+    try:
+        from lib import concept_graph
+        if rebuild:
+            return concept_graph.build_concept_graph(k=k, sample=sample)
+        g = concept_graph.load_concept_graph()
+        if g is None:
+            return {"status": "empty",
+                    "detail": "concept graph not built yet — runs idle-gated via egon_core"}
+        return g
     except Exception as e:
         return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
 

@@ -173,3 +173,10 @@ def get(path: str, default: Any = None) -> Any:
 def has(path: str) -> bool:
     return get(path) is not None
 
+
+def set(path: str, value: Any) -> None:
+    """Set or override a secret/config value in memory for the current process."""
+    env_key = path.upper().replace(".", "_")
+    os.environ[env_key] = str(value)
+
+

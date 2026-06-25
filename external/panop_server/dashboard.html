@@ -21,45 +21,70 @@
     </script>
     <style>
         body {
-            background-color: #09090b;
-            color: #fafafa;
+            background-color: #07080a;
+            color: #f5f5f7;
+            overflow-x: hidden;
         }
         /* Custom scrollbar */
         ::-webkit-scrollbar {
-            width: 6px;
+            width: 8px;
         }
         ::-webkit-scrollbar-track {
-            background: #18181b;
+            background: #0d0f12;
         }
         ::-webkit-scrollbar-thumb {
-            background: #3f3f46;
-            border-radius: 3px;
+            background: #22252a;
+            border-radius: 4px;
         }
         ::-webkit-scrollbar-thumb:hover {
-            background: #52525b;
+            background: #3a3f47;
         }
+        
         /* Glassmorphism utility */
         .glass-card {
-            background: rgba(24, 24, 27, 0.65);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid rgba(63, 63, 70, 0.4);
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+            background: rgba(18, 20, 26, 0.7);
+            backdrop-filter: blur(20px) saturate(180%);
+            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.5);
         }
-        .glow-green {
-            box-shadow: 0 0 25px rgba(16, 185, 129, 0.2);
+        
+        /* Ambient blur glow layers */
+        .glow-blob-1 {
+            position: absolute;
+            top: 10%;
+            left: 5%;
+            width: 40vw;
+            height: 40vw;
+            background: radial-gradient(circle, rgba(99, 102, 241, 0.1) 0%, rgba(99, 102, 241, 0) 70%);
+            z-index: -1;
+            pointer-events: none;
+            filter: blur(80px);
         }
-        .glow-indigo {
-            box-shadow: 0 0 25px rgba(99, 102, 241, 0.2);
+        .glow-blob-2 {
+            position: absolute;
+            bottom: 10%;
+            right: 5%;
+            width: 40vw;
+            height: 40vw;
+            background: radial-gradient(circle, rgba(20, 184, 166, 0.08) 0%, rgba(20, 184, 166, 0) 70%);
+            z-index: -1;
+            pointer-events: none;
+            filter: blur(80px);
         }
-        /* Card flip / slide transitions */
+        
+        .score-glow {
+            filter: drop-shadow(0 0 12px rgba(99, 102, 241, 0.5));
+        }
+        
+        /* Card slide transitions */
         .slide-in {
-            animation: slideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            animation: slideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
         }
         @keyframes slideIn {
             from {
                 opacity: 0;
-                transform: translateY(12px);
+                transform: translateY(8px);
             }
             to {
                 opacity: 1;
@@ -68,17 +93,21 @@
         }
     </style>
 </head>
-<body class="min-h-screen flex flex-col antialiased">
+<body class="min-h-screen flex flex-col antialiased relative">
+    
+    <!-- Background glows -->
+    <div class="glow-blob-1"></div>
+    <div class="glow-blob-2"></div>
 
     <!-- Top Navigation Header -->
-    <header class="glass-card sticky top-0 z-50 border-b border-zinc-800/80 bg-zinc-950/80 px-6 py-4 flex items-center justify-between">
+    <header class="glass-card sticky top-0 z-50 border-b border-white/5 bg-zinc-950/40 px-6 py-4 flex items-center justify-between">
         <div class="flex items-center gap-3">
-            <span class="text-2xl">🛰️</span>
+            <img src="/api/v1/mind/logo.png" class="h-8 w-8 rounded-lg object-contain" alt="Egon Logo" />
             <div>
                 <h1 class="text-xl font-bold tracking-tight text-white flex items-center gap-2">
                     Egon Mind Control Panel
                 </h1>
-                <p class="text-xs text-zinc-500 font-medium">Shared multi-agent operating engine</p>
+                <p class="text-xs text-zinc-400 font-medium">Shared multi-agent operating engine</p>
             </div>
         </div>
         <div class="flex items-center gap-4">
@@ -90,19 +119,19 @@
     </header>
 
     <!-- Main Dashboard Body -->
-    <main class="flex-1 max-w-7xl w-full mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+    <main class="flex-1 max-w-7xl w-full mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 z-10">
         
         <!-- Left Column: Metrics & Scorecard (4 cols) -->
         <section class="lg:col-span-4 flex flex-col gap-6">
             <!-- Score Card panel -->
             <div class="glass-card rounded-2xl p-6 flex flex-col items-center justify-center text-center relative overflow-hidden">
                 <div class="absolute -right-16 -top-16 h-36 w-36 rounded-full bg-indigo-500/10 blur-3xl"></div>
-                <h2 class="text-sm font-semibold tracking-wide uppercase text-zinc-400 self-start mb-4">Meta-Harness Health</h2>
+                <h2 class="text-xs font-bold tracking-wide uppercase text-zinc-400 self-start mb-4">Meta-Harness Health</h2>
                 <div class="relative flex items-center justify-center mb-4">
                     <svg class="h-36 w-36 transform -rotate-90">
-                        <circle cx="72" cy="72" r="62" stroke="#27272a" stroke-width="12" fill="transparent" />
-                        <circle id="score-circle" cx="72" cy="72" r="62" stroke="url(#indigoGrad)" stroke-width="12" fill="transparent"
-                                stroke-dasharray="390" stroke-dashoffset="390" class="transition-all duration-1000 ease-out" />
+                        <circle cx="72" cy="72" r="62" stroke="rgba(255,255,255,0.05)" stroke-width="10" fill="transparent" />
+                        <circle id="score-circle" cx="72" cy="72" r="62" stroke="url(#indigoGrad)" stroke-width="10" fill="transparent"
+                                stroke-dasharray="390" stroke-dashoffset="390" class="transition-all duration-1000 ease-out score-glow" />
                         <defs>
                             <linearGradient id="indigoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
                                 <stop offset="0%" stop-color="#818cf8" />
@@ -122,7 +151,7 @@
 
             <!-- Detailed Metrics panel -->
             <div class="glass-card rounded-2xl p-6 flex flex-col gap-4">
-                <h3 class="text-sm font-semibold text-zinc-400 mb-2 uppercase tracking-wider">Harness Coverage Indicators</h3>
+                <h3 class="text-xs font-bold text-zinc-400 mb-2 uppercase tracking-wider">Harness Coverage Indicators</h3>
                 
                 <!-- Indicators -->
                 <div class="space-y-4">
@@ -131,7 +160,7 @@
                             <span>Context Coverage</span>
                             <span id="ctx-cov-val">0%</span>
                         </div>
-                        <div class="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                        <div class="w-full bg-white/5 rounded-full h-1.5 overflow-hidden">
                             <div id="ctx-cov-bar" class="bg-indigo-500 h-1.5 rounded-full transition-all duration-700" style="width: 0%"></div>
                         </div>
                     </div>
@@ -140,7 +169,7 @@
                             <span>Context Broker v2 Adoption</span>
                             <span id="v2-adopt-val">0%</span>
                         </div>
-                        <div class="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                        <div class="w-full bg-white/5 rounded-full h-1.5 overflow-hidden">
                             <div id="v2-adopt-bar" class="bg-violet-500 h-1.5 rounded-full transition-all duration-700" style="width: 0%"></div>
                         </div>
                     </div>
@@ -149,7 +178,7 @@
                             <span>Durable Memory Coverage</span>
                             <span id="mem-cov-val">0%</span>
                         </div>
-                        <div class="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                        <div class="w-full bg-white/5 rounded-full h-1.5 overflow-hidden">
                             <div id="mem-cov-bar" class="bg-teal-500 h-1.5 rounded-full transition-all duration-700" style="width: 0%"></div>
                         </div>
                     </div>
@@ -158,7 +187,7 @@
                             <span>Token ROI Savings</span>
                             <span id="token-roi-val">0%</span>
                         </div>
-                        <div class="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                        <div class="w-full bg-white/5 rounded-full h-1.5 overflow-hidden">
                             <div id="token-roi-bar" class="bg-emerald-500 h-1.5 rounded-full transition-all duration-700" style="width: 0%"></div>
                         </div>
                     </div>
@@ -169,14 +198,18 @@
         <!-- Center Column: Spaced Repetition Card Deck (4 cols) -->
         <section class="lg:col-span-4 flex flex-col gap-6">
             <div class="glass-card rounded-2xl p-6 flex-1 flex flex-col justify-between min-h-[400px]">
-                <div class="flex justify-between items-center border-b border-zinc-800/80 pb-3 mb-4">
-                    <div class="flex gap-2">
-                        <button id="tab-memory" class="text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg bg-zinc-800 text-white border border-zinc-700/60" onclick="switchTab('memory')">Memory</button>
-                        <button id="tab-classifier" class="text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg text-zinc-400 hover:text-white" onclick="switchTab('classifier')">Classifier</button>
-                        <button id="tab-rag" class="text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg text-zinc-400 hover:text-white" onclick="switchTab('rag')">RAG Sandbox</button>
-                        <button id="tab-orchestrator" class="text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg text-zinc-400 hover:text-white" onclick="switchTab('orchestrator')">Orchestrator</button>
+                <div class="flex flex-col gap-3 border-b border-white/5 pb-4 mb-4">
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs font-bold tracking-wide uppercase text-zinc-400">Workspace Deck</span>
+                        <span id="recall-badge" class="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">Spaced SM-2</span>
                     </div>
-                    <span id="recall-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">Spaced SM-2</span>
+                    <!-- Apple-style Segmented Control Tab Bar -->
+                    <div class="flex p-0.5 rounded-lg bg-black/40 border border-white/5 w-full">
+                        <button id="tab-memory" class="flex-1 text-[11px] font-bold tracking-wide uppercase py-1.5 rounded-md bg-zinc-800 text-white transition-all duration-200" onclick="switchTab('memory')">Memory</button>
+                        <button id="tab-classifier" class="flex-1 text-[11px] font-bold tracking-wide uppercase py-1.5 rounded-md text-zinc-400 hover:text-white transition-all duration-200" onclick="switchTab('classifier')">Classifier</button>
+                        <button id="tab-rag" class="flex-1 text-[11px] font-bold tracking-wide uppercase py-1.5 rounded-md text-zinc-400 hover:text-white transition-all duration-200" onclick="switchTab('rag')">RAG</button>
+                        <button id="tab-orchestrator" class="flex-1 text-[11px] font-bold tracking-wide uppercase py-1.5 rounded-md text-zinc-400 hover:text-white transition-all duration-200" onclick="switchTab('orchestrator')">Orch</button>
+                    </div>
                 </div>
                 
                 <!-- Memory Tab Content -->
@@ -184,30 +217,30 @@
                     <!-- Card Inner (Changes on State) -->
                     <div class="flex-1 flex flex-col justify-center items-center text-center slide-in" id="card-stage">
                         <div id="card-prompt-wrapper" class="w-full">
-                            <span class="text-zinc-600 font-semibold text-xs tracking-wider uppercase" id="card-kind">FACT</span>
-                            <h3 class="text-lg font-semibold text-white mt-2 leading-snug px-2" id="card-content">
-                                Loading next review concept...
+                            <span class="text-zinc-500 font-bold text-[10px] tracking-wider uppercase" id="card-kind">FACT</span>
+                            <h3 class="text-lg font-bold text-white mt-2 leading-snug px-2" id="card-content">
+                                Loading next concept...
                             </h3>
                         </div>
-                        <div id="card-answer-wrapper" class="w-full hidden mt-4 pt-4 border-t border-zinc-800/60 text-sm text-zinc-300 leading-relaxed max-h-[220px] overflow-y-auto text-left px-2">
+                        <div id="card-answer-wrapper" class="w-full hidden mt-4 pt-4 border-t border-white/5 text-xs text-zinc-300 leading-relaxed max-h-[200px] overflow-y-auto text-left px-2">
                             <!-- Answer markdown rendered here -->
                         </div>
                     </div>
 
                     <!-- Card Controls -->
-                    <div class="border-t border-zinc-800/80 pt-4 mt-4">
-                        <button id="btn-show" class="w-full py-2.5 rounded-xl font-semibold bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white transition duration-200">
+                    <div class="border-t border-white/5 pt-4 mt-4">
+                        <button id="btn-show" class="w-full py-2.5 rounded-xl font-semibold bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white transition duration-200 text-xs shadow-lg shadow-indigo-500/10">
                             Reveal Memory Details
                         </button>
                         <div id="btn-ratings" class="hidden flex flex-col gap-2">
-                            <p class="text-[10px] text-zinc-500 font-semibold uppercase tracking-wider text-center mb-1">Rate your retention (0-5)</p>
+                            <p class="text-[10px] text-zinc-500 font-bold uppercase tracking-wider text-center mb-1">Rate your retention (0-5)</p>
                             <div class="grid grid-cols-6 gap-1">
-                                <button onclick="submitReview(0)" class="py-2 rounded-lg bg-zinc-800 hover:bg-red-500/20 hover:text-red-400 border border-zinc-700 text-xs font-semibold transition">0</button>
-                                <button onclick="submitReview(1)" class="py-2 rounded-lg bg-zinc-800 hover:bg-orange-500/20 hover:text-orange-400 border border-zinc-700 text-xs font-semibold transition">1</button>
-                                <button onclick="submitReview(2)" class="py-2 rounded-lg bg-zinc-800 hover:bg-amber-500/20 hover:text-amber-400 border border-zinc-700 text-xs font-semibold transition">2</button>
-                                <button onclick="submitReview(3)" class="py-2 rounded-lg bg-zinc-800 hover:bg-yellow-500/20 hover:text-yellow-400 border border-zinc-700 text-xs font-semibold transition">3</button>
-                                <button onclick="submitReview(4)" class="py-2 rounded-lg bg-zinc-800 hover:bg-emerald-500/20 hover:text-emerald-400 border border-zinc-700 text-xs font-semibold transition">4</button>
-                                <button onclick="submitReview(5)" class="py-2 rounded-lg bg-zinc-800 hover:bg-green-500/20 hover:text-green-400 border border-zinc-700 text-xs font-semibold transition">5</button>
+                                <button onclick="submitReview(0)" class="py-2 rounded-lg bg-white/5 hover:bg-red-500/20 hover:text-red-400 border border-white/5 text-xs font-semibold transition">0</button>
+                                <button onclick="submitReview(1)" class="py-2 rounded-lg bg-white/5 hover:bg-orange-500/20 hover:text-orange-400 border border-white/5 text-xs font-semibold transition">1</button>
+                                <button onclick="submitReview(2)" class="py-2 rounded-lg bg-white/5 hover:bg-amber-500/20 hover:text-amber-400 border border-white/5 text-xs font-semibold transition">2</button>
+                                <button onclick="submitReview(3)" class="py-2 rounded-lg bg-white/5 hover:bg-yellow-500/20 hover:text-yellow-400 border border-white/5 text-xs font-semibold transition">3</button>
+                                <button onclick="submitReview(4)" class="py-2 rounded-lg bg-white/5 hover:bg-emerald-500/20 hover:text-emerald-400 border border-white/5 text-xs font-semibold transition">4</button>
+                                <button onclick="submitReview(5)" class="py-2 rounded-lg bg-white/5 hover:bg-green-500/20 hover:text-green-400 border border-white/5 text-xs font-semibold transition">5</button>
                             </div>
                         </div>
                     </div>
@@ -217,24 +250,24 @@
                 <div id="panel-classifier" class="hidden flex-1 flex flex-col justify-between">
                     <div class="flex-1 flex flex-col justify-center items-center text-center slide-in" id="classifier-stage">
                         <div class="w-full">
-                            <span class="text-indigo-400 font-semibold text-xs tracking-wider uppercase" id="cls-suggest">k-NN SUGGESTION</span>
+                            <span class="text-indigo-400 font-bold text-[10px] tracking-wider uppercase" id="cls-suggest">k-NN SUGGESTION</span>
                             <h3 class="text-sm font-semibold text-white mt-2 leading-snug px-2 line-clamp-3" id="cls-title">
-                                Loading next classification candidate...
+                                Loading next candidate...
                             </h3>
-                            <a href="" target="_blank" rel="noopener" id="cls-url" class="text-xs text-indigo-400 hover:underline mt-2 truncate w-full px-4 block"></a>
+                            <a href="" target="_blank" rel="noopener" id="cls-url" class="text-xs text-indigo-400 hover:text-indigo-300 hover:underline mt-2 truncate w-full px-4 block"></a>
                         </div>
                     </div>
 
                     <!-- Category Buttons -->
-                    <div class="border-t border-zinc-800/80 pt-4 mt-4 flex flex-col gap-2">
-                        <p class="text-[10px] text-zinc-500 font-semibold uppercase tracking-wider text-center mb-1">Select correct category</p>
+                    <div class="border-t border-white/5 pt-4 mt-4 flex flex-col gap-2">
+                        <p class="text-[10px] text-zinc-500 font-bold uppercase tracking-wider text-center mb-1">Select correct category</p>
                         <div class="grid grid-cols-2 gap-2">
-                            <button onclick="submitClassification('articles')" class="py-2 rounded-lg bg-zinc-800 hover:bg-indigo-500/20 hover:text-indigo-400 border border-zinc-700 text-xs font-semibold transition">articles (paper)</button>
-                            <button onclick="submitClassification('books')" class="py-2 rounded-lg bg-zinc-800 hover:bg-violet-500/20 hover:text-violet-400 border border-zinc-700 text-xs font-semibold transition">books</button>
-                            <button onclick="submitClassification('science_longform')" class="py-2 rounded-lg bg-zinc-800 hover:bg-teal-500/20 hover:text-teal-400 border border-zinc-700 text-xs font-semibold transition">science_longform</button>
-                            <button onclick="submitClassification('science_news')" class="py-2 rounded-lg bg-zinc-800 hover:bg-emerald-500/20 hover:text-emerald-400 border border-zinc-700 text-xs font-semibold transition">science_news</button>
+                            <button onclick="submitClassification('articles')" class="py-2 rounded-lg bg-white/5 hover:bg-indigo-500/20 hover:text-indigo-400 border border-white/5 text-xs font-semibold transition">articles (paper)</button>
+                            <button onclick="submitClassification('books')" class="py-2 rounded-lg bg-white/5 hover:bg-violet-500/20 hover:text-violet-400 border border-white/5 text-xs font-semibold transition">books</button>
+                            <button onclick="submitClassification('science_longform')" class="py-2 rounded-lg bg-white/5 hover:bg-teal-500/20 hover:text-teal-400 border border-white/5 text-xs font-semibold transition">science_longform</button>
+                            <button onclick="submitClassification('science_news')" class="py-2 rounded-lg bg-white/5 hover:bg-emerald-500/20 hover:text-emerald-400 border border-white/5 text-xs font-semibold transition">science_news</button>
                         </div>
-                        <button onclick="submitClassification('reject')" class="w-full py-2.5 rounded-xl font-semibold bg-red-900/40 hover:bg-red-900/60 text-red-300 border border-red-800/60 transition duration-200 mt-1 text-xs">
+                        <button onclick="submitClassification('reject')" class="w-full py-2 rounded-lg font-semibold bg-red-900/30 hover:bg-red-900/50 text-red-300 border border-red-500/10 transition mt-1 text-xs">
                             reject (discard)
                         </button>
                     </div>
@@ -243,9 +276,9 @@
                 <!-- RAG Sandbox Tab Content -->
                 <div id="panel-rag" class="hidden flex-1 flex flex-col justify-between">
                     <div class="flex-1 flex flex-col justify-start slide-in" id="rag-stage">
-                        <span class="text-indigo-400 font-semibold text-xs tracking-wider uppercase mb-2">PERSONAL OPERATING RAG</span>
+                        <span class="text-indigo-400 font-bold text-[10px] tracking-wider uppercase mb-2">PERSONAL OPERATING RAG</span>
                         <textarea id="rag-input" placeholder="Type a concept or paste your writing to search or synthesize..." 
-                                  class="w-full h-24 bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-indigo-500 transition resize-none"></textarea>
+                                  class="w-full h-24 bg-black/30 border border-white/5 rounded-xl p-3 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-indigo-500 transition resize-none"></textarea>
                         
                         <div class="flex gap-2 mt-2">
                             <button id="btn-connect" onclick="runConnect()" class="flex-1 py-2 rounded-xl font-semibold bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white text-xs transition duration-200">
@@ -257,7 +290,7 @@
                         </div>
                         
                         <!-- RAG Output Area -->
-                        <div id="rag-output-wrapper" class="flex-1 mt-4 pt-4 border-t border-zinc-800/60 overflow-y-auto max-h-[190px] text-xs">
+                        <div id="rag-output-wrapper" class="flex-1 mt-4 pt-4 border-t border-white/5 overflow-y-auto max-h-[190px] text-xs">
                             <div id="rag-results" class="space-y-3 pr-1 text-zinc-400">
                                 <p class="italic text-zinc-500 text-center py-4">Enter query and click Connect or Synthesize.</p>
                             </div>
@@ -268,40 +301,40 @@
                 <!-- Orchestrator Tab Content -->
                 <div id="panel-orchestrator" class="hidden flex-1 flex flex-col justify-between">
                     <div class="flex-1 flex flex-col justify-start slide-in" id="orchestrator-stage">
-                        <span class="text-violet-400 font-semibold text-xs tracking-wider uppercase mb-2">AI TASK ORCHESTRATOR</span>
+                        <span class="text-violet-400 font-bold text-[10px] tracking-wider uppercase mb-2">AI TASK ORCHESTRATOR</span>
                         <textarea id="orch-input" placeholder="Enter high-level command to decompose and delegate to AIs..." 
-                                  class="w-full h-20 bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-violet-500 transition resize-none mb-2"></textarea>
+                                  class="w-full h-20 bg-black/30 border border-white/5 rounded-xl p-3 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-violet-500 transition resize-none mb-2"></textarea>
                         
-                        <button id="btn-orch-dispatch" onclick="runOrchDispatch()" class="w-full py-2 rounded-xl font-semibold bg-violet-600 hover:bg-violet-500 active:bg-violet-700 text-white text-xs transition duration-200 shadow-lg shadow-violet-500/10">
+                        <button id="btn-orch-dispatch" onclick="runOrchDispatch()" class="w-full py-2.5 rounded-xl font-semibold bg-violet-600 hover:bg-violet-500 active:bg-violet-700 text-white text-xs transition duration-200 shadow-lg shadow-violet-500/10">
                             Decompose & Dispatch
                         </button>
                         
                         <!-- Agent Status Grid -->
-                        <div class="mt-4 border-t border-zinc-800/60 pt-3">
+                        <div class="mt-4 border-t border-white/5 pt-3">
                             <span class="text-[10px] text-zinc-500 font-bold uppercase tracking-wider block mb-2">Agent Assignments</span>
                             <div class="grid grid-cols-2 gap-2" id="orch-agents-grid">
-                                <div class="p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800/60 text-left">
+                                <div class="p-2.5 rounded-xl bg-black/30 border border-white/5 text-left">
                                     <div class="flex justify-between items-center mb-1">
                                         <span class="text-xs font-semibold text-zinc-300">claude-code</span>
                                         <span class="text-[9px] text-zinc-500">idle</span>
                                     </div>
                                     <p class="text-[10px] text-zinc-600 italic">No assigned task</p>
                                 </div>
-                                <div class="p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800/60 text-left">
+                                <div class="p-2.5 rounded-xl bg-black/30 border border-white/5 text-left">
                                     <div class="flex justify-between items-center mb-1">
                                         <span class="text-xs font-semibold text-zinc-300">antigravity</span>
                                         <span class="text-[9px] text-zinc-500">idle</span>
                                     </div>
                                     <p class="text-[10px] text-zinc-600 italic">No assigned task</p>
                                 </div>
-                                <div class="p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800/60 text-left">
+                                <div class="p-2.5 rounded-xl bg-black/30 border border-white/5 text-left">
                                     <div class="flex justify-between items-center mb-1">
                                         <span class="text-xs font-semibold text-zinc-300">hermes</span>
                                         <span class="text-[9px] text-zinc-500">idle</span>
                                     </div>
                                     <p class="text-[10px] text-zinc-600 italic">No assigned task</p>
                                 </div>
-                                <div class="p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800/60 text-left">
+                                <div class="p-2.5 rounded-xl bg-black/30 border border-white/5 text-left">
                                     <div class="flex justify-between items-center mb-1">
                                         <span class="text-xs font-semibold text-zinc-300">codex</span>
                                         <span class="text-[9px] text-zinc-500">idle</span>
@@ -312,7 +345,7 @@
                         </div>
 
                         <!-- Active tasks history/queue -->
-                        <div id="orch-queue-wrapper" class="flex-1 mt-3 pt-3 border-t border-zinc-800/60 overflow-y-auto max-h-[120px] text-[10px]">
+                        <div id="orch-queue-wrapper" class="flex-1 mt-3 pt-3 border-t border-white/5 overflow-y-auto max-h-[120px] text-[10px]">
                             <div id="orch-tasks-queue" class="space-y-1.5 text-zinc-400">
                                 <p class="italic text-zinc-500 text-center py-2">No active tasks in queue.</p>
                             </div>
@@ -326,7 +359,7 @@
         <section class="lg:col-span-4 flex flex-col gap-6">
             <!-- Active Sessions List -->
             <div class="glass-card rounded-2xl p-6 flex flex-col max-h-[220px]">
-                <h2 class="text-sm font-semibold tracking-wide uppercase text-zinc-400 border-b border-zinc-800/80 pb-4 mb-4">Active Sessions</h2>
+                <h2 class="text-xs font-bold tracking-wide uppercase text-zinc-400 border-b border-white/5 pb-4 mb-4">Active Sessions</h2>
                 <div class="flex-1 overflow-y-auto space-y-3 pr-1" id="sessions-container">
                     <p class="text-xs text-zinc-500 italic">Querying active sessions...</p>
                 </div>
@@ -334,7 +367,7 @@
 
             <!-- Active File Leases List -->
             <div class="glass-card rounded-2xl p-6 flex flex-col max-h-[220px]">
-                <h2 class="text-sm font-semibold tracking-wide uppercase text-zinc-400 border-b border-zinc-800/80 pb-4 mb-4">Active File Leases</h2>
+                <h2 class="text-xs font-bold tracking-wide uppercase text-zinc-400 border-b border-white/5 pb-4 mb-4">Active File Leases</h2>
                 <div class="flex-1 overflow-y-auto space-y-3 pr-1" id="leases-container">
                     <p class="text-xs text-zinc-500 italic">No active file leases.</p>
                 </div>
@@ -342,7 +375,7 @@
 
             <!-- Recent Activity Stream -->
             <div class="glass-card rounded-2xl p-6 flex-1 flex flex-col max-h-[300px]">
-                <h2 class="text-sm font-semibold tracking-wide uppercase text-zinc-400 border-b border-zinc-800/80 pb-4 mb-4">Recent Activity Logs</h2>
+                <h2 class="text-xs font-bold tracking-wide uppercase text-zinc-400 border-b border-white/5 pb-4 mb-4">Recent Activity Logs</h2>
                 <div class="flex-1 overflow-y-auto space-y-4 pr-1" id="activity-container">
                     <p class="text-xs text-zinc-500 italic">Querying activity stream...</p>
                 </div>
@@ -352,7 +385,7 @@
     </main>
 
     <!-- Footer -->
-    <footer class="text-center py-6 text-xs text-zinc-600 font-medium">
+    <footer class="text-center py-6 text-xs text-zinc-500 font-semibold">
         Egon Unified Mind v0.2 · 100% Local Sandbox
     </footer>
 
@@ -424,7 +457,7 @@
                     
                     // Simple markdown parsing for memory content body
                     const contentBody = currentCard.content;
-                    answerWrapper.innerHTML = contentBody.replace(/\n/g, '<br>').replace(/`([^`]+)`/g, '<code class="bg-zinc-800 text-indigo-400 px-1 py-0.5 rounded font-mono text-xs">$1</code>');
+                    answerWrapper.innerHTML = contentBody.replace(/\n/g, '<br>').replace(/`([^`]+)`/g, '<code class="bg-black/40 text-indigo-400 px-1.5 py-0.5 rounded font-mono text-xs border border-white/5">$1</code>');
                 } else {
                     document.getElementById('card-kind').innerText = 'STATUS';
                     document.getElementById('card-content').innerText = 'No memory cards found in database.';
@@ -520,13 +553,13 @@
                     container.innerHTML = '';
                     uniqueSessionsMap.forEach(s => {
                         const item = document.createElement('div');
-                        item.className = 'flex items-center justify-between p-3 rounded-xl bg-zinc-900 border border-zinc-800/60';
+                        item.className = 'flex items-center justify-between p-3 rounded-xl bg-black/20 border border-white/5 hover:border-white/10 transition-all duration-200';
                         item.innerHTML = `
                             <div class="flex items-center gap-3">
                                 <span class="text-lg">🤖</span>
                                 <div>
                                     <h4 class="text-xs font-semibold text-white">${s.agent}</h4>
-                                    <p class="text-[10px] text-zinc-500">project: <span class="text-indigo-400 font-semibold">${s.project}</span></p>
+                                    <p class="text-[10px] text-zinc-500">project: <span class="text-indigo-450 font-semibold">${s.project}</span></p>
                                 </div>
                             </div>
                             <span class="text-[10px] text-zinc-500 font-medium">${s.age_m > 60 ? Math.round(s.age_m/60) + 'h' : s.age_m + 'm'} ago</span>
@@ -548,7 +581,7 @@
             container.innerHTML = '';
             activities.slice(0, 7).forEach(a => {
                 const item = document.createElement('div');
-                item.className = 'flex gap-3 text-xs leading-relaxed';
+                item.className = 'flex gap-3 text-xs leading-relaxed slide-in';
                 
                 let icon = '⚡';
                 if (a.kind === 'tool_use') icon = '🛠️';
@@ -560,10 +593,10 @@
                 
                 item.innerHTML = `
                     <span class="text-sm shrink-0">${icon}</span>
-                    <div class="flex-1 border-b border-zinc-900 pb-2.5">
+                    <div class="flex-1 border-b border-white/5 pb-2.5">
                         <div class="flex justify-between mb-0.5 text-zinc-400">
-                            <span class="font-semibold text-zinc-300">${a.agent_name || 'body'} <span class="text-zinc-600 font-medium">(${a.kind})</span></span>
-                            <span class="text-[10px] text-zinc-600">${new Date(a.ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                            <span class="font-semibold text-zinc-300">${a.agent_name || 'body'} <span class="text-zinc-650 font-medium">(${a.kind})</span></span>
+                            <span class="text-[10px] text-zinc-650">${new Date(a.ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
                         </div>
                         <p class="text-zinc-500 line-clamp-2">${summary}</p>
                     </div>
@@ -593,33 +626,33 @@
 
             // Reset active classes
             [tabMemory, tabClassifier, tabRag, tabOrchestrator].forEach(t => {
-                if (t) t.className = 'text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg text-zinc-400 hover:text-white';
+                if (t) t.className = 'flex-1 text-[11px] font-bold tracking-wide uppercase py-1.5 rounded-md text-zinc-450 hover:text-white transition-all duration-200';
             });
             [panelMemory, panelClassifier, panelRag, panelOrchestrator].forEach(p => {
                 if (p) p.classList.add('hidden');
             });
 
             if (tab === 'memory') {
-                tabMemory.className = 'text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg bg-zinc-800 text-white border border-zinc-700/60';
+                tabMemory.className = 'flex-1 text-[11px] font-bold tracking-wide uppercase py-1.5 rounded-md bg-zinc-800 text-white transition-all duration-200';
                 panelMemory.classList.remove('hidden');
                 recallBadge.innerText = 'Spaced SM-2';
-                recallBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20';
+                recallBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20';
             } else if (tab === 'classifier') {
-                tabClassifier.className = 'text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg bg-zinc-800 text-white border border-zinc-700/60';
+                tabClassifier.className = 'flex-1 text-[11px] font-bold tracking-wide uppercase py-1.5 rounded-md bg-zinc-800 text-white transition-all duration-200';
                 panelClassifier.classList.remove('hidden');
                 recallBadge.innerText = 'KMS Feedback';
-                recallBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20';
+                recallBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20';
                 fetchLowConf();
             } else if (tab === 'rag') {
-                tabRag.className = 'text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg bg-zinc-800 text-white border border-zinc-700/60';
+                tabRag.className = 'flex-1 text-[11px] font-bold tracking-wide uppercase py-1.5 rounded-md bg-zinc-800 text-white transition-all duration-200';
                 panelRag.classList.remove('hidden');
                 recallBadge.innerText = 'RAG Sandbox';
-                recallBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-teal-500/10 text-teal-400 border border-teal-500/20';
+                recallBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-teal-500/10 text-teal-400 border border-teal-500/20';
             } else if (tab === 'orchestrator') {
-                tabOrchestrator.className = 'text-xs font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg bg-zinc-800 text-white border border-zinc-700/60';
+                tabOrchestrator.className = 'flex-1 text-[11px] font-bold tracking-wide uppercase py-1.5 rounded-md bg-zinc-800 text-white transition-all duration-200';
                 panelOrchestrator.classList.remove('hidden');
                 recallBadge.innerText = 'Orchestrator';
-                recallBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-violet-500/10 text-violet-400 border border-violet-500/20';
+                recallBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-violet-500/10 text-violet-400 border border-violet-500/20';
                 fetchOrchStatus();
             }
         }
@@ -703,7 +736,7 @@
             container.innerHTML = '';
             leases.forEach(l => {
                 const item = document.createElement('div');
-                item.className = 'flex items-center justify-between p-3 rounded-xl bg-zinc-900 border border-zinc-800/60 text-xs';
+                item.className = 'flex items-center justify-between p-3 rounded-xl bg-black/20 border border-white/5 text-xs';
                 
                 // Show short filename and truncate path in hover
                 const pathParts = l.path.split('/');
@@ -712,7 +745,7 @@
                 item.innerHTML = `
                     <div class="flex-1 min-w-0 pr-2">
                         <h4 class="font-semibold text-white truncate" title="${l.path}">${filename}</h4>
-                        <p class="text-[10px] text-zinc-500 truncate">agent: <span class="text-indigo-400 font-semibold">${l.agent_name || 'unknown'}</span> · project: <span class="text-teal-400 font-semibold">${l.project_slug || 'shared'}</span></p>
+                        <p class="text-[10px] text-zinc-500 truncate">agent: <span class="text-indigo-400 font-semibold">${l.agent_name || 'unknown'}</span> · project: <span class="text-teal-405 font-semibold">${l.project_slug || 'shared'}</span></p>
                     </div>
                     <span class="text-[10px] text-zinc-500 font-medium shrink-0">${l.expires_in}s left</span>
                 `;
@@ -780,7 +813,7 @@
             div.innerHTML = '';
             connections.forEach((c) => {
                 const item = document.createElement('div');
-                item.className = 'p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800/40 hover:border-zinc-700/60 transition text-left mt-2';
+                item.className = 'p-2.5 rounded-xl bg-black/20 border border-white/5 hover:border-white/10 transition text-left mt-2';
                 
                 let sourceIcon = '📄';
                 if (c.source === 'zotero') sourceIcon = '📚';
@@ -791,9 +824,9 @@
                 
                 const titleText = c.title || 'Untitled';
                 const snippetText = c.snippet ? c.snippet.slice(0, 300) + (c.snippet.length > 300 ? '...' : '') : '';
-                const whyText = c.why && c.why.length > 0 ? `<div class="mt-1.5 flex flex-wrap gap-1"><span class="text-[9px] text-zinc-500 self-center">matched:</span> ${c.why.map(w => `<span class="bg-indigo-500/10 text-indigo-400 px-1 py-0.5 rounded text-[9px] font-mono">${w}</span>`).join('')}</div>` : '';
-                const scoreText = c.score ? `<span class="text-[9px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded font-mono">score: ${c.score}</span>` : '';
-                const linkHref = c.url ? `<a href="${c.url}" target="_blank" class="text-indigo-400 hover:text-indigo-300 transition font-medium">${titleText}</a>` : `<span class="text-zinc-300">${titleText}</span>`;
+                const whyText = c.why && c.why.length > 0 ? `<div class="mt-1.5 flex flex-wrap gap-1"><span class="text-[9px] text-zinc-500 self-center">matched:</span> ${c.why.map(w => `<span class="bg-indigo-500/10 text-indigo-400 px-1 py-0.5 rounded text-[9px] font-mono border border-white/5">${w}</span>`).join('')}</div>` : '';
+                const scoreText = c.score ? `<span class="text-[9px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded font-mono border border-white/5">score: ${c.score}</span>` : '';
+                const linkHref = c.url ? `<a href="${c.url}" target="_blank" class="text-indigo-450 hover:text-indigo-300 transition font-semibold">${titleText}</a>` : `<span class="text-zinc-300">${titleText}</span>`;
                 
                 item.innerHTML = `
                     <div class="flex justify-between items-start gap-2 mb-1">
@@ -826,10 +859,10 @@
                 .replace(/\n/g, '<br>')
                 .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
                 .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-                .replace(/`([^`]+)`/g, '<code class="bg-zinc-800 text-teal-400 px-1 py-0.5 rounded font-mono text-[10px]">$1</code>');
+                .replace(/`([^`]+)`/g, '<code class="bg-black/35 text-teal-400 px-1.5 py-0.5 rounded font-mono text-[10px] border border-white/5">$1</code>');
 
             const insightCard = document.createElement('div');
-            insightCard.className = 'p-3 rounded-xl bg-teal-500/5 border border-teal-500/20 text-[11px] text-zinc-300 leading-relaxed mb-4 text-left';
+            insightCard.className = 'p-3 rounded-xl bg-teal-500/5 border border-teal-500/10 text-[11px] text-zinc-300 leading-relaxed mb-4 text-left';
             insightCard.innerHTML = `
                 <div class="font-bold text-teal-400 mb-1 flex items-center gap-1.5">
                     <span>🧠</span> Local LLM Synthesis Insight
@@ -856,7 +889,7 @@
             }
             data.connections.forEach((c) => {
                 const item = document.createElement('div');
-                item.className = 'p-2.5 rounded-xl bg-zinc-900/40 border border-zinc-800/40 text-[10px] text-left';
+                item.className = 'p-2.5 rounded-xl bg-black/20 border border-white/5 text-[10px] text-left hover:border-white/10 transition-all duration-200';
                 
                 let sourceIcon = '📄';
                 if (c.source === 'zotero') sourceIcon = '📚';
@@ -866,7 +899,7 @@
                 if (c.source === 'files') sourceIcon = '📁';
                 
                 const titleText = c.title || 'Untitled';
-                const linkHref = c.url ? `<a href="${c.url}" target="_blank" class="text-indigo-400 hover:text-indigo-300 transition font-medium">${titleText}</a>` : `<span class="text-zinc-300">${titleText}</span>`;
+                const linkHref = c.url ? `<a href="${c.url}" target="_blank" class="text-indigo-405 hover:text-indigo-305 transition font-semibold">${titleText}</a>` : `<span class="text-zinc-300">${titleText}</span>`;
                 const snippetText = c.snippet ? c.snippet.slice(0, 180) + (c.snippet.length > 180 ? '...' : '') : '';
                 
                 item.innerHTML = `
@@ -886,7 +919,7 @@
                 const response = await fetch('/api/v1/mind/orchestrator/status');
                 const data = await response.json();
                 if (data.status === 'ok') {
-                    updateOrchUI(data.tasks);
+                    updateOrchUI(data.tasks, data.cooldowns || {}, data.routing || {});
                 }
             } catch (err) {
                 console.error("Orchestrator status query failed:", err);
@@ -900,7 +933,7 @@
 
             btn.disabled = true;
             btn.innerText = 'Decomposing & Dispatching...';
-            btn.className = 'w-full py-2 rounded-xl font-semibold bg-violet-850 text-violet-400 text-xs transition cursor-not-allowed';
+            btn.className = 'w-full py-2.5 rounded-xl font-semibold bg-violet-950 text-violet-400 text-xs transition cursor-not-allowed border border-violet-500/10';
 
             try {
                 const response = await fetch('/api/v1/mind/orchestrator/dispatch', {
@@ -920,7 +953,7 @@
             } finally {
                 btn.disabled = false;
                 btn.innerText = 'Decompose & Dispatch';
-                btn.className = 'w-full py-2 rounded-xl font-semibold bg-violet-600 hover:bg-violet-500 active:bg-violet-700 text-white text-xs transition duration-200 shadow-lg shadow-violet-500/10';
+                btn.className = 'w-full py-2.5 rounded-xl font-semibold bg-violet-600 hover:bg-violet-500 active:bg-violet-700 text-white text-xs transition duration-200 shadow-lg shadow-violet-500/10';
             }
         }
 
@@ -940,7 +973,7 @@
             }
         }
 
-        function updateOrchUI(tasks) {
+        function updateOrchUI(tasks, cooldowns = {}, routing = {}) {
             const agentStatus = {
                 'claude-code': null,
                 'antigravity': null,
@@ -961,36 +994,45 @@
 
             agents.forEach(name => {
                 const t = agentStatus[name];
+                const cooldown = cooldowns[name] || (routing[name] && routing[name].cooldown);
                 let status = 'idle';
                 let desc = 'No assigned task';
-                let statusClass = 'text-zinc-500';
-                let cardClass = 'bg-zinc-900/60 border-zinc-800/60';
+                let statusClass = 'text-zinc-550';
+                let cardClass = 'bg-black/20 border-white/5';
                 let actionBtn = '';
 
-                if (t) {
+                if (cooldown) {
+                    const until = cooldown.cooldown_until
+                        ? new Date(cooldown.cooldown_until * 1000).toLocaleTimeString()
+                        : 'soon';
+                    status = 'cooldown';
+                    desc = `${cooldown.reason || 'quota/rate-limit cooldown'} until ${until}`;
+                    statusClass = 'text-amber-400 font-semibold';
+                    cardClass = 'bg-amber-500/5 border-amber-500/10';
+                } else if (t) {
                     status = t.status;
                     desc = t.sub_task_desc;
                     if (status === 'pending') {
                         statusClass = 'text-amber-400 font-semibold';
-                        cardClass = 'bg-amber-500/5 border-amber-500/20';
+                        cardClass = 'bg-amber-500/5 border-amber-500/10';
                     } else if (status === 'assigned') {
                         statusClass = 'text-indigo-400 font-semibold animate-pulse';
-                        cardClass = 'bg-indigo-500/5 border-indigo-500/20';
+                        cardClass = 'bg-indigo-500/5 border-indigo-500/10';
                     } else if (status === 'completed') {
                         statusClass = 'text-emerald-400 font-semibold';
-                        cardClass = 'bg-emerald-500/5 border-emerald-500/20';
+                        cardClass = 'bg-emerald-500/5 border-emerald-500/10';
                     } else if (status === 'failed') {
                         statusClass = 'text-red-400 font-semibold';
-                        cardClass = 'bg-red-500/5 border-red-500/20';
+                        cardClass = 'bg-red-500/5 border-red-500/10';
                     }
 
                     if (status === 'pending' || status === 'assigned') {
-                        actionBtn = `<button onclick="completeOrchTask(${t.id})" class="text-[9px] bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-1 py-0.5 rounded transition">Resolve</button>`;
+                        actionBtn = `<button onclick="completeOrchTask(${t.id})" class="text-[9px] bg-white/5 hover:bg-white/10 hover:text-white text-zinc-300 px-2 py-0.5 rounded border border-white/5 transition">Resolve</button>`;
                     }
                 }
 
                 const card = document.createElement('div');
-                card.className = `p-2.5 rounded-xl border text-left flex flex-col justify-between min-h-[75px] ${cardClass}`;
+                card.className = `p-2.5 rounded-xl border text-left flex flex-col justify-between min-h-[75px] transition-all duration-200 ${cardClass}`;
                 card.innerHTML = `
                     <div>
                         <div class="flex justify-between items-center mb-1">
@@ -1014,13 +1056,13 @@
             queueList.innerHTML = '';
             activeTasks.forEach(t => {
                 const item = document.createElement('div');
-                item.className = 'flex items-center justify-between p-2 rounded-lg bg-zinc-900 border border-zinc-800/40 mt-1';
+                item.className = 'flex items-center justify-between p-2 rounded-lg bg-black/20 border border-white/5 mt-1';
                 item.innerHTML = `
                     <div class="truncate mr-2 flex-1">
                         <span class="font-semibold text-zinc-300">[${t.agent_name}]</span>
                         <span class="text-zinc-400 text-[10px]" title="${t.sub_task_desc}">${t.sub_task_desc}</span>
                     </div>
-                    <button onclick="completeOrchTask(${t.id})" class="text-[9px] bg-zinc-800 hover:bg-zinc-700 hover:text-emerald-400 text-zinc-400 px-1.5 py-0.5 rounded shrink-0 transition">Done</button>
+                    <button onclick="completeOrchTask(${t.id})" class="text-[9px] bg-white/5 hover:bg-white/10 hover:text-emerald-400 text-zinc-400 px-2 py-0.5 rounded border border-white/5 shrink-0 transition">Done</button>
                 `;
                 queueList.appendChild(item);
             });

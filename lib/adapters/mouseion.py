@@ -153,13 +153,12 @@ def snapshot() -> dict:
         return {"status": "error", "error": str(e)}
 
 
-def items(limit: int = 5000) -> list[dict]:
+def items(limit: int = 5000, sort_by_date: bool = True) -> list[dict]:
     """Direct read from refs.db. Bypasses snapshot_store so the UI always
-    sees the live DB. Normalises field names to the References-page schema
-    (title/authors/year/publication/doi/url/added/tags). Bruno 2026-05-20:
-    items() used to require a snapshot() pre-run; now it just reads."""
-    # Try Flask first — gives the freshest data
-    if _flask_up():
+    sees the live DB. Normalises field names to the References-page schema.
+    """
+    # Try Flask first — gives the freshest data (only if sort_by_date is True/default)
+    if sort_by_date and _flask_up():
         try:
             r = httpx.get(f"{FLASK_URL}/api/refs?limit={limit}", timeout=10)
             if r.status_code == 200:
@@ -173,21 +172,35 @@ def items(limit: int = 5000) -> list[dict]:
     if not p.exists():
         return []
     try:
-        c = sqlite3.connect(f"file:{p}?mode=ro&immutable=1", uri=True, timeout=3)
+        c = sqlite3.connect(f"file:{p}?mode=ro&immutable=1", uri=True, timeout=10.0)
         tables = [r[0] for r in c.execute(
             "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
         # Try common table names — first one that has rows wins
         for t in ("refs", "references", "items", "papers"):
             if t not in tables:
                 continue
-            try:
-                cur = c.execute(f'SELECT * FROM "{t}" '
-                                f'ORDER BY COALESCE(created_at, "") DESC LIMIT ?',
-                                (limit,))
-            except sqlite3.OperationalError:
-                cur = c.execute(f'SELECT * FROM "{t}" LIMIT ?', (limit,))
+            
+            # Determine existing columns to avoid SELECT *
+            cur = c.execute(f'SELECT * FROM "{t}" LIMIT 1')
             cols = [d[0] for d in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+            
+            target_cols = ['id', 'title', 'authors', 'year', 'doi', 'url', 'journal', 'container_title', 'publication', 'created_at', 'date_added', 'added']
+            selected_cols = [col for col in target_cols if col in cols]
+            selected_cols_str = ",".join(f'"{col}"' for col in selected_cols)
+            if 'abstract' in cols:
+                selected_cols_str += ',SUBSTR("abstract", 1, 300) AS "abstract"'
+                selected_cols.append('abstract')
+
+            sql = f'SELECT {selected_cols_str} FROM "{t}"'
+            if sort_by_date:
+                try:
+                    sql += ' ORDER BY COALESCE(created_at, "") DESC'
+                except sqlite3.OperationalError:
+                    pass
+            sql += ' LIMIT ?'
+            
+            cur = c.execute(sql, (limit,))
+            rows = [dict(zip(selected_cols, row)) for row in cur.fetchall()]
             c.close()
             return [_normalize(r) for r in rows]
         c.close()
@@ -196,11 +209,15 @@ def items(limit: int = 5000) -> list[dict]:
     return []
 
 
+_j = None
+
+
 def _clean_authors(val) -> str:
     """Mouseion stores authors as a JSON array of {family, given} objects
     (often as a TEXT column). Render it as 'Family G., Family2 G2.'.
     Falls back to the raw string if it isn't parseable. Bruno 2026-05-22:
     the table was showing raw JSON instead of names."""
+    global _j
     if not val:
         return ""
     data = val
@@ -208,7 +225,8 @@ def _clean_authors(val) -> str:
         s = val.strip()
         if s.startswith("["):
             try:
-                import json as _j
+                if _j is None:
+                    import json as _j
                 data = _j.loads(s)
             except Exception:
                 return s[:200]
