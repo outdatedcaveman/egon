@@ -41,8 +41,10 @@ DB_PATH = ROOT / "state" / "mind.db"
 # drive. Defaults to the local state dir. Bruno 2026-06-24.
 try:
     from lib.egon_paths import CONNECT_INDEX_DIR as INDEX_DIR
+    from lib.egon_paths import FILE_EXTRACTS_DIR as _EXTRACT_DIR
 except Exception:
     INDEX_DIR = ROOT / "state" / "connect_index"
+    _EXTRACT_DIR = ROOT / "state" / "file_extracts"
 VEC_PATH = INDEX_DIR / "vectors.npy"
 META_PATH = INDEX_DIR / "meta.json"
 
@@ -296,8 +298,9 @@ def _file_items() -> list[dict]:
 
                 meta_text = " ".join(part for part in (name, stem, parents, ext) if part)
                 
-                # Check for extracted text
-                xp = ROOT / "state" / "file_extracts" / f"{digest}.txt"
+                # Check for extracted text (same configurable dir the hydration
+                # worker writes to — may live on Drive, not local state/).
+                xp = _EXTRACT_DIR / f"{digest}.txt"
                 file_text = ""
                 if xp.exists():
                     try:

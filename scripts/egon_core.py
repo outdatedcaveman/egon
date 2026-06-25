@@ -324,10 +324,29 @@ _index_building = False
 _index_last = 0.0
 _hydrating = False
 _reembed_proc = None
-# Presence of this file = "run the bge-base re-embed in idle windows". Removed
-# (or auto-cleared on completion+swap) to stop. Lets a one-time, heavy, multi-
-# hour model upgrade run hands-off + abortable without a daemon. Bruno 2026-06-24.
+_reembed_last_swap = 0.0
+# Re-embed the WHOLE corpus at most this often — model2vec is cheap (minutes),
+# so a periodic full pass keeps picking up newly hydrated document text with no
+# incremental-build complexity. 12h.
+REEMBED_COOLDOWN_S = int(os.environ.get("EGON_REEMBED_COOLDOWN_S", str(12 * 3600)))
+# Presence of this file = "keep the model2vec index fresh in idle windows".
+# Delete it to stop. The cycle is hands-off + abortable; no daemon. Bruno 2026-06-24.
 REEMBED_TRIGGER = ROOT / "state" / "reembed_active.json"
+
+
+def _prune_old_index_backups(keep: int = 2) -> None:
+    """Bound Drive usage: keep only the `keep` newest connect_index_bak_* dirs
+    (old model-index snapshots are regenerable, not user data)."""
+    try:
+        import shutil
+        from lib.egon_paths import CONNECT_INDEX_DIR as _idx
+        parent = Path(_idx).parent
+        baks = sorted(parent.glob(Path(_idx).name + "_bak_*"),
+                      key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in baks[keep:]:
+            shutil.rmtree(old, ignore_errors=True)
+    except Exception:
+        pass
 
 
 def check_reembed(u: "Unit") -> None:
@@ -347,14 +366,34 @@ def check_reembed(u: "Unit") -> None:
         u.ok = True
         u.detail = f"err {str(e)[:60]}"
         return
+    global _reembed_last_swap
     prog = f"[{st.get('done', 0)}/{st.get('total', '?')}]"
     if st.get("state") == "complete":
-        u.ok = True
-        u.detail = f"COMPLETE ({st.get('items')} items) — ready to swap"
+        # AUTONOMOUS swap: promote the freshly-built index live (mind_service
+        # auto-reloads it via meta.json mtime), back up the old one, drop staging
+        # so a later cycle re-embeds again — folding in newly hydrated document
+        # text. 100% local (no quota), so the vault keeps deepening hands-off.
+        try:
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            res = reembed.swap_in(ts)
+            _prune_old_index_backups(keep=2)
+            _reembed_last_swap = time.time()
+            log("info", "reembed_swapped", **res)
+            u.ok = True
+            u.detail = f"swapped live ({st.get('items')} items) @ {ts}"
+        except Exception as e:
+            u.ok = True
+            u.detail = f"swap failed: {str(e)[:60]}"
         return
     if _reembed_proc is not None and _reembed_proc.poll() is None:
         u.ok = True
         u.detail = f"embedding… {prog}"
+        return
+    # Cooldown between full re-embed passes (a fresh pass picks up new doc text).
+    since = time.time() - _reembed_last_swap
+    if _reembed_last_swap and since < REEMBED_COOLDOWN_S:
+        u.ok = True
+        u.detail = f"fresh (next pass in {int((REEMBED_COOLDOWN_S - since)/3600)}h)"
         return
     allowed, why = _heavy_allowed()
     if not allowed:
