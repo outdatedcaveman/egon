@@ -233,6 +233,48 @@ def live_status() -> dict:
 
 
 def snapshot() -> dict:
+    from lib.ledger import load_config, save_config
+    
+    # Auto-detect Kindle ZIP in configured export path parent OR Downloads folder
+    path_s = secrets.get("kindle.export_path") or ""
+    p = None
+    if path_s:
+        p = Path(path_s)
+        if not p.exists():
+            p = None
+            
+    if not p:
+        # Fallback to Downloads
+        try:
+            dl_dir = Path("C:/Users/bruno/Downloads")
+            if dl_dir.exists():
+                zips = sorted(dl_dir.glob("*.zip"), key=lambda x: x.stat().st_mtime, reverse=True)
+                valid_zips = [z for z in zips if z.stat().st_size > 1000 and any(t in z.name.lower() for t in ("kindle", "amazon"))]
+                if valid_zips:
+                    p = valid_zips[0]
+        except Exception:
+            pass
+            
+    if p:
+        try:
+            # Check for newer zip in the same folder
+            parent = p.parent
+            if parent.exists():
+                zips = sorted(parent.glob("*.zip"), key=lambda x: x.stat().st_mtime, reverse=True)
+                valid_zips = [z for z in zips if z.stat().st_size > 1000 and any(t in z.name.lower() for t in ("kindle", "amazon"))]
+                if valid_zips and valid_zips[0].resolve() != p.resolve():
+                    p = valid_zips[0]
+            
+            # Save if changed/newly found
+            current_configured = secrets.get("kindle.export_path") or ""
+            if not current_configured or Path(current_configured).resolve() != p.resolve():
+                secrets.set("kindle.export_path", str(p.resolve()))
+                cfg = load_config()
+                cfg.setdefault("kindle", {})["export_path"] = str(p.resolve())
+                save_config(cfg)
+        except Exception:
+            pass
+
     harvest = _harvest_items()
     zip_items = _export_zip_items()
     
@@ -255,6 +297,19 @@ def snapshot() -> dict:
             kind = it.get("kind") or ""
             acquired = it.get("acquired") or ""
             source = it.get("source") or default_source
+
+            # PDOC detection (#70): the harvest tags everything "Ebook", but
+            # personal documents (PDFs, Word/text files you side-loaded) are
+            # distinguishable by a file-extension title, a pdoc_ asin, or a
+            # personal/pdoc source. Type them as "Document" so they're separable.
+            _tl = title.lower()
+            if (str(asin).startswith("pdoc_")
+                    or _tl.endswith((".pdf", ".doc", ".docx", ".txt", ".rtf",
+                                     ".epub", ".mobi", ".azw3"))
+                    or "personal" in source.lower() or "pdoc" in source.lower()):
+                kind = "Document"
+            elif not kind:
+                kind = "Ebook"
             
             if existing:
                 if not existing.get("cover") and cover:
