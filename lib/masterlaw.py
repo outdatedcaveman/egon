@@ -45,11 +45,19 @@ _PII_EGRESS = re.compile(
     r"sync\s+to)\b.{0,40}\b(password|cpf|ssn|passport|bank|credit\s*card|"
     r"address|phone|personal|private|secret|token|api[_\s-]?key|credential)\b",
     re.I)
-_ACCESS_CONTROL = re.compile(
+# HARD masterlaw block — disabling protection enables other catastrophes.
+_DISABLE_PROTECTION = re.compile(
+    r"\bdisable\s+(antivirus|firewall|bitdefender|defender|protection|"
+    r"secure\s*boot|encryption)\b", re.I)
+
+# NOT a masterlaw catastrophe — these are reversible/outward actions that are
+# fine WITH Bruno's say-so (he's OSS-first; making a repo public is routine and
+# undoable). So they don't BLOCK; they require his confirmation before an
+# autonomous dispatch runs them. "if I directly allow it" = this confirm gate.
+_NEEDS_CONFIRM = re.compile(
     r"\b(make|set|turn|change|flip)\b.{0,30}\bpublic\b|"
-    r"\b(share\s+with|grant\s+access|change\s+permission|add\s+collaborator|"
-    r"disable\s+(antivirus|firewall|bitdefender|protection)|publish|"
-    r"public(ly)?\s+(post|share|release))\b", re.I)
+    r"\b(publish|deploy\s+to\s+prod|share\s+with|grant\s+access|"
+    r"add\s+collaborator|change\s+permission|send\s+(email|message|dm))\b", re.I)
 
 _PII_HINT = re.compile(
     r"\b(cpf|ssn|passport\s*(no|number)|credit\s*card|bank\s*account|"
@@ -76,21 +84,28 @@ def task_contract() -> list[str]:
 
 def check_dispatch(task_desc: str, agent: str | None = None) -> dict:
     """Screen a task BEFORE autonomous dispatch. Returns
-    {allowed: bool, reason: str, code: str}. Fail-closed: any match blocks."""
+    {allowed, code, tier, reason}.
+      tier='block'   → a MASTERLAW catastrophe (unfixable): never auto-runs.
+      tier='confirm' → reversible/outward action: fine WITH Bruno's say-so, so it
+                       waits for his confirmation (not a violation).
+    Both land as needs_clarification so Bruno decides; only 'block' is alarming."""
     text = task_desc or ""
+    if len(text.strip()) < 3:
+        return {"allowed": False, "code": "empty", "tier": "block", "reason": "empty task"}
     for rx, code, why in (
         (_IRREVERSIBLE_DELETE, "irreversible_delete",
-         "involves irreversible deletion/overwrite/force-push"),
+         "irreversible deletion/overwrite/force-push (unrecoverable)"),
         (_PII_EGRESS, "pii_egress", "may transmit personal data externally"),
-        (_ACCESS_CONTROL, "access_control",
-         "changes access/permissions or disables protection"),
+        (_DISABLE_PROTECTION, "disable_protection", "disables security protection"),
     ):
         if rx.search(text):
-            return {"allowed": False, "code": code,
-                    "reason": f"MASTERLAW block: task {why} — requires Bruno."}
-    if len(text.strip()) < 3:
-        return {"allowed": False, "code": "empty", "reason": "empty task"}
-    return {"allowed": True, "code": "ok", "reason": "passes masterlaw screen"}
+            return {"allowed": False, "code": code, "tier": "block",
+                    "reason": f"MASTERLAW block: {why} — forbidden for autonomous run."}
+    if _NEEDS_CONFIRM.search(text):
+        return {"allowed": False, "code": "needs_confirm", "tier": "confirm",
+                "reason": "reversible outward action (e.g. make-public/share/send) "
+                          "— fine once you confirm it; awaiting your OK."}
+    return {"allowed": True, "code": "ok", "tier": "ok", "reason": "passes masterlaw screen"}
 
 
 def redact(text: str) -> str:
