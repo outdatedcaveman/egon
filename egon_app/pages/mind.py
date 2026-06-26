@@ -108,6 +108,17 @@ def _lock_pill(lease: dict) -> QFrame:
     return pill
 
 
+def _mind_port_open(host: str = "127.0.0.1", port: int = 8000) -> bool:
+    """True if mind_service is bound to :8000 (process alive) even if /stats is
+    momentarily unresponsive — i.e. warming, not offline."""
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=1.0):
+            return True
+    except Exception:
+        return False
+
+
 def _api_get(path: str, params: dict | None = None,
              timeout: float = 1.5) -> dict | None:
     try:
@@ -1193,8 +1204,15 @@ class MindPage(QWidget):
         
         stats = _api_get("/stats")
         if stats is None or stats.get("status") != "ok":
-            self._status.setText("● mind offline — open Egon's Panop")
-            self._status.setStyleSheet(f"color: {_ERR};")
+            # Distinguish WARMING (process up on :8000 but the probe timed out
+            # during a GIL-heavy index load — common under low RAM) from a true
+            # outage. It should never say "offline" while the service is alive.
+            if _mind_port_open():
+                self._status.setText("● mind warming up — loading index (slow under low RAM)")
+                self._status.setStyleSheet(f"color: {_GOLD};")
+            else:
+                self._status.setText("● mind offline — open Egon's Panop")
+                self._status.setStyleSheet(f"color: {_ERR};")
             return
         
         self._status.setText(f"● live — schema v{stats.get('schema_version')}")

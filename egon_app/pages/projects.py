@@ -384,8 +384,18 @@ class ProjectsPage(QWidget):
             # running an older version without the batch endpoint).
             projects_resp = _api_get("/projects")
             if projects_resp is None:
-                self._status.setText("● mind offline — restart Egon so Panop binds :8000")
-                self._status.setStyleSheet(f"color: {_ERR};")
+                import socket
+                try:
+                    with socket.create_connection(("127.0.0.1", 8000), timeout=1.0):
+                        warming = True
+                except Exception:
+                    warming = False
+                if warming:
+                    self._status.setText("● mind warming up — loading index (slow under low RAM)")
+                    self._status.setStyleSheet(f"color: {_GOLD};")
+                else:
+                    self._status.setText("● mind offline — restart Egon so Panop binds :8000")
+                    self._status.setStyleSheet(f"color: {_ERR};")
                 self._render_empty(
                     "No connection to Egon's mind on :8000.\n\n"
                     "If Egon is open, give it ~30 s to bind. If it's not, "
