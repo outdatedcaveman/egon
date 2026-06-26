@@ -46,7 +46,12 @@ _DEFAULT_ROOTS = [
     str(_HOME / "My Drive"),
     str(_HOME / "EgonVault"),
     str(_HOME / "Documents"),
-]
+    # Reference-manager PDF attachments — the actual article full text, not just
+    # metadata. Zotero stores one folder per attachment under storage/; Paperpile
+    # syncs PDFs to a Drive folder (cloud placeholders → cloud-hydration guard).
+    str(_HOME / "Zotero" / "storage"),
+    r"G:\My Drive\Paperpile",
+] + [r for r in os.environ.get("EGON_EXTRA_FILE_ROOTS", "").split(os.pathsep) if r.strip()]
 # Knowledge-bearing formats only — code trees and binaries stay out.
 _DEFAULT_EXTS = {".pdf", ".md", ".txt", ".docx", ".doc", ".epub", ".rtf",
                  ".tex", ".odt", ".pptx", ".csv", ".org", ".json",
