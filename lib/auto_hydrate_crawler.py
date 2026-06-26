@@ -11,6 +11,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -20,6 +21,21 @@ ROOT = Path(__file__).resolve().parent.parent
 FILES_INDEX_PATH = ROOT / "state" / "files_index.jsonl"
 MAX_EXTRACTS_PER_RUN = 50
 MAX_BYTES_PER_RUN = int(250e6)
+
+# Opt-in cloud-paper-library hydration: when state/hydrate_cloud.json exists, the
+# crawler ALSO extracts cloud-backed Drive PDFs (reading them force-downloads the
+# placeholder). Hard-guarded by a disk floor so it can never fill the disk while
+# unattended — it self-throttles and lets Drive's LRU cache recycle. Bruno 2026-06-26.
+_CLOUD_HYDRATE_FLAG = ROOT / "state" / "hydrate_cloud.json"
+_CLOUD_DISK_FLOOR_GB = float(os.environ.get("EGON_CLOUD_HYDRATE_FLOOR_GB", "18"))
+
+
+def _free_gb(path: str) -> float:
+    try:
+        drive = os.path.splitdrive(os.path.abspath(path))[0] + os.sep
+        return shutil.disk_usage(drive).free / 1e9
+    except Exception:
+        return 0.0
 
 FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000
 _CLOUD_MARKERS = ("google drive", "my drive", "egonvault")
@@ -77,6 +93,7 @@ def run_crawler(max_extracts: int = MAX_EXTRACTS_PER_RUN,
     errors = 0
     spent = 0
     scanned_drive_pdfs = 0
+    cloud_enabled = _CLOUD_HYDRATE_FLAG.exists()
 
     try:
         with FILES_INDEX_PATH.open(encoding="utf-8") as f:
@@ -100,8 +117,15 @@ def run_crawler(max_extracts: int = MAX_EXTRACTS_PER_RUN,
                     scanned_drive_pdfs += 1
 
                 if is_cloud_backed_path(path_str) and not is_locally_available(path_str):
-                    cloud_deferred += 1
-                    continue
+                    # Cloud paper library: extract its full text too, but ONLY when
+                    # opted in AND disk stays safely above the floor on both the
+                    # source drive and C: (reading force-downloads the file).
+                    if (not cloud_enabled
+                            or _free_gb(path_str) < _CLOUD_DISK_FLOOR_GB
+                            or _free_gb(str(ROOT)) < _CLOUD_DISK_FLOOR_GB):
+                        cloud_deferred += 1
+                        continue
+                    # opted-in + disk OK → fall through to download + extract
 
                 p = Path(path_str)
                 if not p.exists():
