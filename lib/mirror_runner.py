@@ -48,7 +48,15 @@ def _all_sources() -> list[str]:
     # in the Obsidian mirror (free local writes); everything durable goes to
     # both. "Efficiently yet thoroughly" — Bruno 2026-06-12.
     extra = [x for x in extra if x != "chrome_tabs"]
-    return _MIND_SOURCES + _PRIORITY + sorted(extra) + ["zotero"]
+    out = _MIND_SOURCES + _PRIORITY + sorted(extra) + ["zotero"]
+    return [s for s in out if s not in _EXCLUDE_NOTION]
+
+
+# High-volume, low-value-as-Notion-pages sources: 50k YouTube tracks / 39k OAuth
+# rows are noise as Notion pages, and notion_workspace is already IN Notion
+# (mirroring it back is circular). They stay in the Obsidian mirror. Excluding
+# them cuts the backfill from ~452k to ~315k. Bruno 2026-06-26.
+_EXCLUDE_NOTION = {"youtube_music", "youtube_oauth", "notion_workspace"}
 
 # Notion budget per run. At ~1.33s/item (3 parallel workers) a 500-item
 # run is ~11min; the runner's _mirror_running guard lets it span core
@@ -317,6 +325,7 @@ def status() -> dict:
     except Exception:
         targets = set(notion_counts)
     targets |= set(notion_counts)
+    targets -= _EXCLUDE_NOTION          # don't count sources we deliberately skip
     per_source = {}
     total_pushed = total_items = 0
     for src in sorted(targets):
