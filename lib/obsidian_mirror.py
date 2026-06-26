@@ -222,12 +222,21 @@ def mirror_all(sources: list[str] | None = None) -> dict:
     return {"status": "ok", "total_written": total, "by_source": results}
 
 
-def stats() -> dict:
-    """Note counts per mirrored source (for the Databases observatory)."""
+_STATS_CACHE: tuple = (0.0, {})  # (ts, counts) — globbing 258k+ notes is slow
+
+
+def stats(ttl: float = 120.0) -> dict:
+    """Note counts per mirrored source (for the Databases observatory). Cached
+    for `ttl` s — counting 258k+ Zotero notes per call would stall callers."""
+    import time
+    global _STATS_CACHE
+    if _STATS_CACHE[1] and (time.time() - _STATS_CACHE[0]) < ttl:
+        return _STATS_CACHE[1]
     if not MIRROR_DIR.is_dir():
         return {}
     out = {}
     for d in MIRROR_DIR.iterdir():
         if d.is_dir():
             out[d.name] = sum(1 for _ in d.glob("*.md"))
+    _STATS_CACHE = (time.time(), out)
     return out

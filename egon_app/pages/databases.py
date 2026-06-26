@@ -159,8 +159,10 @@ def _gather() -> dict:
         progress = mirror_runner.status()
     except Exception:
         pass
+    # Drift is loaded separately (slow Notion network call) so the cheap cards +
+    # progress bar render immediately instead of waiting ~20s for it.
     return {"mind": mind, "files_n": files_n, "obsidian": _obsidian_stats(),
-            "notion": notion, "drift": _mirror_drift(), "progress": progress}
+            "notion": notion, "progress": progress}
 
 
 class DatabasesPage(QWidget):
@@ -259,9 +261,14 @@ class DatabasesPage(QWidget):
 
         def _bg():
             try:
-                self._ready.emit(_gather())
+                self._ready.emit(_gather())          # fast: cards + progress
             except Exception as e:
                 self._ready.emit({"error": str(e)[:200]})
+            try:
+                self._ready.emit({"drift": _mirror_drift()})  # slow: network
+            except Exception as e:
+                self._ready.emit({"drift": [{"source": "notion", "local": "",
+                    "mirrored": "", "drift": "", "note": f"drift failed: {str(e)[:60]}"}]})
 
         threading.Thread(target=_bg, daemon=True, name="db-observatory").start()
 
@@ -269,8 +276,12 @@ class DatabasesPage(QWidget):
         if d.get("error"):
             self._status.setText(f"load failed: {d['error']}")
             return
-        self._status.setText(
-            time.strftime("updated %H:%M", time.localtime()))
+        # Phase 2: drift-only payload (slow Notion call finished) — fill table.
+        if "drift" in d and "mind" not in d:
+            self._fill_drift(d.get("drift") or [])
+            self._status.setText(time.strftime("updated %H:%M", time.localtime()))
+            return
+        self._status.setText("loading Notion drift (~20s)…")
         while self._cards.count():
             it = self._cards.takeAt(0)
             if it.widget():
@@ -319,7 +330,13 @@ class DatabasesPage(QWidget):
             self._prog_pct.setText("—")
             self._prog_detail.setText("no mirror progress data yet")
 
-        drift = d.get("drift") or []
+        # The drift table fills in phase 2 (slow Notion call); show a hint now.
+        self._table.setRowCount(1)
+        self._table.setItem(0, 0, QTableWidgetItem("loading mirror drift from Notion (~20s)…"))
+        for c in range(1, 5):
+            self._table.setItem(0, c, QTableWidgetItem(""))
+
+    def _fill_drift(self, drift: list) -> None:
         self._table.setRowCount(0)
         for i, row in enumerate(drift):
             self._table.insertRow(i)
