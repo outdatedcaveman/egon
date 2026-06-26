@@ -39,13 +39,16 @@ if sys.platform == "win32":
 import requests
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 PID_FILE = ROOT / ".watchdog.pid"
 LOG_FILE = ROOT / "logs" / f"watchdog-{datetime.now():%Y-%m}.log"
 # After 2026-05-20 migration to native PySide6 app: launcher is the venv's
 # pythonw.exe running the egon_app package. No more .vbs / .bat shim, no
 # more browser window — direct module invocation, console hidden by virtue
 # of pythonw.exe (not python.exe).
-NATIVE_PY = ROOT / ".venv" / "Scripts" / "pythonw.exe"
+from lib.python_runtime import base_python, runtime_env  # noqa: E402
+
+NATIVE_PY = base_python(ROOT, windowed=True)
 
 HEALTH_URL = "http://127.0.0.1:8088/health"
 # Fallback ports — launcher rotates through these if 8088 is wedged by a
@@ -162,6 +165,7 @@ def _launch_egon() -> None:
             cwd=str(ROOT),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=runtime_env(ROOT),
             creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP
                            | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)),
         )

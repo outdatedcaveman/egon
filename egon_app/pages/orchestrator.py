@@ -230,6 +230,9 @@ class OrchestratorPage(QWidget):
         for idx, name in enumerate(agents):
             card = QFrame()
             card.setObjectName("agentCard")
+            # Floor the height so idle cards stay readable instead of collapsing
+            # into thin bars when nothing is in flight (2026-06-25).
+            card.setMinimumHeight(104)
             card.setStyleSheet(
                 f"QFrame#agentCard {{ background:{_BG_CARD}; border:1px solid {_BORDER}; border-radius:8px; }}")
             card_lay = QVBoxLayout(card)

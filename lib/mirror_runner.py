@@ -114,6 +114,33 @@ def _item_hash(item: dict) -> str:
     return hashlib.md5(blob.encode("utf-8", "ignore")).hexdigest()[:10]
 
 
+# In-process keyed-snapshot cache. egon_core runs Notion catchup every cycle;
+# without this, each batch RE-LOADS + RE-HASHES the entire source snapshot
+# (Zotero = 258k items) just to find the next 500 to push — pure CPU/RAM waste
+# that made "always-on" expensive. We cache (items + key→hash) per source for a
+# TTL, so the heavy pass runs once per window and each batch is then ~free.
+# Bruno 2026-06-25.
+_KEYED_CACHE: dict[str, tuple] = {}
+_KEYED_TTL = 900.0  # seconds
+# Network full-DB reconcile only when this many entries still lack a page id,
+# and at most once per source per process (avoids re-scanning a 30k-page DB to
+# match a handful of stragglers — the bug that hung catchup).
+_RECONCILE_MIN = 200
+_RECONCILED: set = set()
+
+
+def _keyed_snapshot(source: str):
+    """Return (items, {key: hash}) for a source, cached in-process for _KEYED_TTL."""
+    hit = _KEYED_CACHE.get(source)
+    if hit and (time.time() - hit[0]) < _KEYED_TTL:
+        return hit[1], hit[2]
+    snap = _snapshot_for(source)
+    items = (snap or {}).get("items") or []
+    khash = {_item_key(it): _item_hash(it) for it in items}
+    _KEYED_CACHE[source] = (time.time(), items, khash)
+    return items, khash
+
+
 def reconcile_existing() -> dict:
     """One-time: import every page already in the Notion mirror DBs into the
     page map (key→{pid,hash}), matched to current snapshot items by title.
@@ -175,18 +202,23 @@ def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
     for source in _all_sources():
         if spent >= batch:
             break
-        snap = _snapshot_for(source)
-        items = (snap or {}).get("items") or []
+        items, khash = _keyed_snapshot(source)
         if not items:
             report[source] = "no items"
             continue
         pm = pages_map.setdefault(source, {})
 
-        # Reconcile any entries we pushed before we tracked page ids (the
-        # migrated set): look up their existing Notion pages by title ONCE so
-        # we PATCH them instead of creating duplicates. Runs only while no-pid
-        # entries remain; cheap because those DBs are still small.
-        if any(rec.get("pid") is None for rec in pm.values()):
+        # Reconcile entries pushed before we tracked page ids: match them to
+        # existing Notion pages by title so we PATCH instead of duplicating.
+        # `_existing_keys` reads the WHOLE source DB over the network, so it is
+        # only worth it when a meaningful chunk is still un-pid'd (a fresh
+        # migration). For a handful of stragglers it would re-scan tens of
+        # thousands of pages every batch — the hang that stalled catchup. Skip
+        # below the threshold (those few just re-create; negligible dup risk).
+        # Also reconcile each source at most once per process. Bruno 2026-06-25.
+        no_pid = sum(1 for rec in pm.values() if rec.get("pid") is None)
+        if no_pid > _RECONCILE_MIN and source not in _RECONCILED:
+            _RECONCILED.add(source)
             try:
                 from lib import notion_mirror
                 db_id = notion_mirror._find_or_create_source_db(source)
@@ -209,7 +241,7 @@ def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
         for it in items:
             k = _item_key(it)
             rec = pm.get(k)
-            if rec is None or rec.get("h") != _item_hash(it):
+            if rec is None or rec.get("h") != khash.get(k):
                 pending.append(it)
         if not pending:
             report[source] = f"in sync ({len(pm)})"

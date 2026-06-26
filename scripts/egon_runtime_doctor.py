@@ -89,6 +89,8 @@ $procs | ConvertTo-Json -Depth 3
 
 def _role(command: str) -> str | None:
     cmd = command.lower()
+    if "scripts\\egon_core.py" in cmd or "scripts/egon_core.py" in cmd:
+        return "egon_core"
     if "scripts\\mind_service.py" in cmd or "scripts/mind_service.py" in cmd:
         return "mind_service"
     if "egon_app.main" in cmd:
@@ -152,10 +154,13 @@ def main() -> int:
         issues.append("gui_health_not_ok")
     if not mcp_config_ok:
         issues.append("codex_egon_mind_mcp_not_registered")
-    for role in ("mind_service", "gui", "mcp"):
+    for role in ("egon_core", "mind_service", "gui", "watchdog", "mcp"):
         count = groups.get(role, {}).get("logical_count", 0)
         if count > 1:
             issues.append(f"duplicate_logical_{role}:{count}")
+        wrappers = len(groups.get(role, {}).get("wrappers", []))
+        if wrappers:
+            issues.append(f"venv_redirector_wrapper_{role}:{wrappers}")
 
     result = {
         "status": "ok" if not issues else "degraded",
@@ -174,7 +179,7 @@ def main() -> int:
             "logical_processes": groups.get("mcp", {}),
         },
         "process_groups": groups,
-        "note": "Venv launcher parent plus base Python child counts as one logical process.",
+        "note": "Core roles should run under base Python with venv site-packages on PYTHONPATH, not .venv launcher stubs.",
     }
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0 if not issues else 1

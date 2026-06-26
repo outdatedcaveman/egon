@@ -17,6 +17,7 @@ __pycache__/
 *.pyc
 logs/
 build/
+bin/
 dist/
 
 # Machine-local browser/app state and generated snapshots

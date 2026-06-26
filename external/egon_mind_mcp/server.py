@@ -40,6 +40,7 @@ SERVER_NAME = "egon-mind"
 SERVER_VERSION = "1.0.0"
 PROTOCOL_VERSION = "2025-06-18"  # MCP spec date
 ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT))
 SERVICE_SCRIPT = ROOT / "scripts" / "mind_service.py"
 DEFAULT_API_BASE = "http://127.0.0.1:8000/api/v1/mind"
 _LAST_AUTOSTART_AT = 0.0
@@ -99,17 +100,8 @@ def _raw_http(method: str, path: str, body: dict | None = None,
 
 
 def _service_python() -> str:
-    if sys.platform == "win32":
-        pyw = ROOT / ".venv" / "Scripts" / "pythonw.exe"
-        if pyw.exists():
-            return str(pyw)
-        py = ROOT / ".venv" / "Scripts" / "python.exe"
-        if py.exists():
-            return str(py)
-    py = ROOT / ".venv" / "bin" / "python"
-    if py.exists():
-        return str(py)
-    return sys.executable
+    from lib.python_runtime import base_python
+    return str(base_python(ROOT, windowed=True))
 
 
 def _autostart_enabled() -> bool:
@@ -129,9 +121,8 @@ def _start_mind_service() -> bool:
         return True
     _LAST_AUTOSTART_AT = now
 
-    env = os.environ.copy()
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    from lib.python_runtime import runtime_env
+    env = runtime_env(ROOT)
 
     kwargs = {
         "cwd": str(ROOT),

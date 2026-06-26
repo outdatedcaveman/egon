@@ -24,7 +24,6 @@ import webbrowser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-VENV_PY = ROOT / ".venv" / "Scripts" / "pythonw.exe"
 APP = ROOT / "egon.py"
 HOST = "127.0.0.1"
 # Port can be overridden via EGON_PORT env var; egon.py reads the same var.
@@ -37,6 +36,7 @@ PORT = PREFERRED_PORT  # resolved in _ensure_backend
 URL = f"http://{HOST}:{PORT}"
 PID_FILE = ROOT / ".egon.pid"
 CREATE_NO_WINDOW = 0x08000000
+from lib.python_runtime import base_python, runtime_env
 
 
 def _port_open(timeout: float = 0.5, port: int | None = None) -> bool:
@@ -89,7 +89,7 @@ def _ensure_backend() -> None:
         print(f"[egon_launcher] no free port among {PORT_CANDIDATES}", flush=True)
         return
     os.environ["EGON_PORT"] = str(PORT)
-    py = str(VENV_PY) if VENV_PY.exists() else sys.executable
+    py = str(base_python(ROOT, windowed=True))
     # Detached subprocess — survives the launcher exiting.
     flags = CREATE_NO_WINDOW
     if sys.platform == "win32":
@@ -99,6 +99,7 @@ def _ensure_backend() -> None:
         cwd=str(ROOT),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=runtime_env(ROOT),
         creationflags=flags,
         close_fds=True,
     )

@@ -86,6 +86,44 @@ PROGRESS_FILE = STAGING_DIR / "progress.json"
 COMPLETE_FILE = STAGING_DIR / "COMPLETE.json"
 
 
+def _read_complete(directory: Path) -> dict | None:
+    try:
+        p = directory / "COMPLETE.json"
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return None
+
+
+def _validate_index_dir(directory: Path) -> tuple[bool, str]:
+    """Verify an index directory is self-consistent before it can be live.
+
+    This intentionally checks the raw matrix even when turbovec exists because
+    vectors.npy is also the incremental reuse store. Google Drive once removed
+    that file after a swap, leaving an unusable "complete" live folder.
+    """
+    complete = _read_complete(directory)
+    if not complete:
+        return False, "missing COMPLETE.json"
+    required = ("vectors.npy", "meta.json", "turbo.idx", "model.json")
+    missing = [name for name in required if not (directory / name).exists()]
+    if missing:
+        return False, "missing " + ",".join(missing)
+    try:
+        meta = json.loads((directory / "meta.json").read_text(encoding="utf-8"))
+        vec = np.lib.format.open_memmap(directory / "vectors.npy", mode="r")
+    except Exception as e:
+        return False, f"unreadable index: {str(e)[:80]}"
+    items = int(complete.get("items") or 0)
+    dim = int(complete.get("dim") or 0)
+    if len(meta) != items:
+        return False, f"meta/items mismatch {len(meta)} != {items}"
+    if len(vec.shape) != 2 or vec.shape[0] != items or vec.shape[1] != dim:
+        return False, f"vectors shape mismatch {tuple(vec.shape)} != ({items}, {dim})"
+    return True, "ok"
+
+
 def _idle_seconds() -> float:
     """Seconds since the last keyboard/mouse input (Windows)."""
     try:
@@ -234,6 +272,13 @@ def _finalize(n: int) -> dict:
     COMPLETE_FILE.write_text(json.dumps({
         "model": MODEL_NAME, "dim": DIM, "items": n,
         "at": time.strftime("%Y-%m-%dT%H:%M:%S")}))
+    ok, reason = _validate_index_dir(STAGING_DIR)
+    if not ok:
+        try:
+            COMPLETE_FILE.unlink()
+        except Exception:
+            pass
+        return {"status": "finalize_invalid", "error": reason}
     return {"status": "ok", "items": n}
 
 
@@ -244,24 +289,38 @@ def swap_in(timestamp: str) -> dict:
 
     Safety: verifies every required part is present before touching the live dir;
     if anything's missing it refuses and leaves the live index untouched."""
-    import shutil
     if not COMPLETE_FILE.exists():
         return {"status": "not_complete"}
-    for f in (VEC_FILE, META_FILE, TURBO_FILE, STAGING_DIR / "model.json"):
-        if not f.exists():
-            return {"status": "incomplete_staging", "missing": f.name}
+    ok, reason = _validate_index_dir(STAGING_DIR)
+    if not ok:
+        return {"status": "incomplete_staging", "error": reason}
     bak = Path(str(LIVE_DIR) + f"_bak_{timestamp}")
+    restore = False
     if LIVE_DIR.exists():
         LIVE_DIR.rename(bak)                 # reversible: old index preserved
-    STAGING_DIR.rename(LIVE_DIR)
-    # drop the now-redundant build artifacts from the live dir (the corpus
-    # snapshot is large; the index files are what search reads).
-    for junk in ("corpus.jsonl", "progress.json"):
-        try:
-            (LIVE_DIR / junk).unlink()
-        except Exception:
-            pass
-    return {"status": "swapped", "live": str(LIVE_DIR), "backup": str(bak)}
+        restore = True
+    try:
+        STAGING_DIR.rename(LIVE_DIR)
+        # drop the now-redundant build artifacts from the live dir (the corpus
+        # snapshot is large; the index files are what search reads).
+        for junk in ("corpus.jsonl", "progress.json"):
+            try:
+                (LIVE_DIR / junk).unlink()
+            except Exception:
+                pass
+        ok, reason = _validate_index_dir(LIVE_DIR)
+        if not ok:
+            raise RuntimeError(reason)
+        return {"status": "swapped", "live": str(LIVE_DIR), "backup": str(bak)}
+    except Exception as e:
+        failed = Path(str(LIVE_DIR) + f"_failed_{timestamp}")
+        if LIVE_DIR.exists():
+            LIVE_DIR.rename(failed)
+        if restore and bak.exists():
+            bak.rename(LIVE_DIR)
+        return {"status": "swap_failed_rolled_back", "error": str(e)[:120],
+                "live": str(LIVE_DIR), "backup": str(bak),
+                "failed": str(failed) if failed.exists() else None}
 
 
 def status() -> dict:

@@ -16,6 +16,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from lib.python_runtime import base_python, runtime_env
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTabWidget,
 )
@@ -68,12 +70,12 @@ class ConnectSearchPage(QWidget):
         v.addWidget(tabs, 1)
 
     def _launch_capturer(self) -> None:
-        pyw = ROOT / ".venv" / "Scripts" / "pythonw.exe"
         script = ROOT / "scripts" / "connect_widget.py"
         try:
             subprocess.Popen(
-                [str(pyw), str(script)], cwd=str(ROOT),
+                [str(base_python(ROOT, windowed=True)), str(script)], cwd=str(ROOT),
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=runtime_env(ROOT),
                 creationflags=0x08000008)  # no window, detached
             self._cap_status.setText(
                 "capturer up — press Ctrl+Alt+E over anything")

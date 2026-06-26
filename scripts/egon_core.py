@@ -21,7 +21,7 @@ exception to the no-daemons rule — it IS the coordination substrate). Single
 instance enforced by kernel mutex. Check cycle every 30 s, restart backoff per
 unit so a crash-looping service can't spin the CPU.
 
-Run:  .venv\\Scripts\\pythonw.exe scripts\\egon_core.py
+Run:  pythonw.exe scripts\\egon_core.py
 """
 from __future__ import annotations
 
@@ -42,28 +42,12 @@ try:
 except Exception:
     pass
 
-# Launch services with the BASE interpreter, NOT the .venv redirector stub: that
-# stub re-execs a child interpreter, so every service showed as TWO pythonw of
-# the same name. Base interp + the venv's site-packages on PYTHONPATH = exactly
-# ONE process per service, full deps. Bruno 2026-06-17: never two of a type.
-_VENV = ROOT / ".venv"
-_SITE = _VENV / "Lib" / "site-packages"
+# Launch services with the BASE interpreter, NOT the .venv redirector stub.
+# Bruno 2026-06-25: core roles must not be loose wrapper-parent processes.
+from lib.python_runtime import base_python, runtime_env  # noqa: E402
 
-
-def _base_pyw() -> Path:
-    try:
-        for line in (_VENV / "pyvenv.cfg").read_text(encoding="utf-8").splitlines():
-            if line.lower().replace(" ", "").startswith("home="):
-                p = Path(line.split("=", 1)[1].strip()) / "pythonw.exe"
-                if p.exists():
-                    return p
-    except Exception:
-        pass
-    return _VENV / "Scripts" / "pythonw.exe"
-
-
-PYW = _base_pyw()
-SPAWN_ENV = {**os.environ, "PYTHONPATH": str(_SITE)}
+PYW = base_python(ROOT, windowed=True)
+SPAWN_ENV = runtime_env(ROOT)
 LOG = ROOT / "logs" / "egon-core.log"
 HEALTH = ROOT / "state" / "core_health.json"
 

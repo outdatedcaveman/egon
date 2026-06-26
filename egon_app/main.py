@@ -95,13 +95,8 @@ def _mind_ready(timeout_s: float = 2.0) -> bool:
 
 
 def _mind_service_python() -> str:
-    pyw = _ROOT / ".venv" / "Scripts" / "pythonw.exe"
-    if pyw.exists():
-        return str(pyw)
-    py = _ROOT / ".venv" / "Scripts" / "python.exe"
-    if py.exists():
-        return str(py)
-    return sys.executable
+    from lib.python_runtime import base_python
+    return str(base_python(_ROOT, windowed=True))
 
 
 def _start_mind_service(log_fn=None) -> bool:
@@ -114,10 +109,10 @@ def _start_mind_service(log_fn=None) -> bool:
         return False
     try:
         import subprocess
-        env = os.environ.copy()
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        env["PYTHONPATH"] = str(_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
-        env["EGON_MIND_SERVICE_FORCE"] = "1"
+        from lib.python_runtime import runtime_env
+        env = runtime_env(_ROOT, {
+            "EGON_MIND_SERVICE_FORCE": "1",
+        })
         kwargs = {
             "cwd": str(_ROOT),
             "stdin": subprocess.DEVNULL,

@@ -15,5 +15,23 @@
 ' To auto-start at login, copy this file into:
 '   %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\
 Set sh = CreateObject("WScript.Shell")
-sh.CurrentDirectory = "C:\Users\bruno\Claude Code\egon"
-sh.Run """C:\Users\bruno\Claude Code\egon\.venv\Scripts\pythonw.exe"" ""C:\Users\bruno\Claude Code\egon\scripts\connect_widget.py""", 0, False
+Set fso = CreateObject("Scripting.FileSystemObject")
+root = fso.GetParentFolderName(WScript.ScriptFullName)
+sh.CurrentDirectory = root
+py = root & "\.venv\Scripts\pythonw.exe"
+cfg = root & "\.venv\pyvenv.cfg"
+If fso.FileExists(cfg) Then
+  Set file = fso.OpenTextFile(cfg, 1)
+  Do Until file.AtEndOfStream
+    line = Trim(file.ReadLine)
+    If LCase(Replace(line, " ", "")) Like "home=*" Then
+      home = Trim(Split(line, "=", 2)(1))
+      basePy = home & "\pythonw.exe"
+      If fso.FileExists(basePy) Then py = basePy
+      Exit Do
+    End If
+  Loop
+  file.Close
+End If
+env = "set PYTHONPATH=" & root & "\.venv\Lib\site-packages;%PYTHONPATH% && set PYTHONDONTWRITEBYTECODE=1 && "
+sh.Run "cmd /c " & env & """" & py & """ """ & root & "\scripts\connect_widget.py""", 0, False

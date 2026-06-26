@@ -1,4 +1,13 @@
 @echo off
 REM Silent launcher for the phone-keepalive daemon. Installed in the
 REM Windows Startup folder so it runs on every logon.
-start "" /B "%~dp0..\.venv\Scripts\pythonw.exe" "%~dp0phone_keepalive.py"
+set "ROOT=%~dp0.."
+set "PY="
+set "PYHOME="
+for /f "tokens=1,* delims==" %%A in ('findstr /b /i "home" "%ROOT%\.venv\pyvenv.cfg" 2^>nul') do set "PYHOME=%%B"
+for /f "tokens=* delims= " %%A in ("%PYHOME%") do set "PYHOME=%%A"
+if not "%PYHOME%"=="" set "PY=%PYHOME%\pythonw.exe"
+if not exist "%PY%" set "PY=%ROOT%\.venv\Scripts\pythonw.exe"
+set "PYTHONPATH=%ROOT%\.venv\Lib\site-packages;%PYTHONPATH%"
+set "PYTHONDONTWRITEBYTECODE=1"
+start "" /B "%PY%" "%~dp0phone_keepalive.py"

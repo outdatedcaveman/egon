@@ -1,14 +1,12 @@
 @echo off
-REM Watchdog launcher — runs the Egon health watchdog detached.
-REM Invoked by scheduled task "Egon-Watchdog" at logon.
-cd /d "%~dp0.."
+setlocal
 set "ROOT=%~dp0.."
 set "PY="
 set "PYHOME="
 for /f "tokens=1,* delims==" %%A in ('findstr /b /i "home" "%ROOT%\.venv\pyvenv.cfg" 2^>nul') do set "PYHOME=%%B"
 for /f "tokens=* delims= " %%A in ("%PYHOME%") do set "PYHOME=%%A"
-if not "%PYHOME%"=="" set "PY=%PYHOME%\pythonw.exe"
-if not exist "%PY%" set "PY=%ROOT%\.venv\Scripts\pythonw.exe"
+if not "%PYHOME%"=="" set "PY=%PYHOME%\python.exe"
+if not exist "%PY%" set "PY=%ROOT%\.venv\Scripts\python.exe"
 set "PYTHONPATH=%ROOT%\.venv\Lib\site-packages;%PYTHONPATH%"
 set "PYTHONDONTWRITEBYTECODE=1"
-start "" /B "%PY%" "%~dp0watchdog.py"
+"%PY%" "%ROOT%\scripts\mind_hook.py" %*

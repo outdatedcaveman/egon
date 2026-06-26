@@ -361,8 +361,10 @@ def build(force: bool = False) -> dict:
         prev_vecs, prev_by_uid = None, {}
         if not force and VEC_PATH.exists() and META_PATH.exists():
             try:
-                prev_vecs = np.load(VEC_PATH)
+                prev_vecs = np.load(VEC_PATH, mmap_mode="r")
                 prev_meta = json.loads(META_PATH.read_text(encoding="utf-8"))
+                if len(prev_meta) != prev_vecs.shape[0]:
+                    raise ValueError("vectors/meta row mismatch")
                 for i, m in enumerate(prev_meta):
                     prev_by_uid[m["uid"]] = (i, m.get("h"))
             except Exception:
@@ -489,16 +491,31 @@ def _load_index():
         return _vecs, meta
     try:
         _vecs = np.load(VEC_PATH)
+        if _vecs.shape[0] != len(meta):
+            _vecs = None
+            return None, None
         return _vecs, meta
     except Exception:
         return None, None
+
+
+def _vector_shape() -> tuple[int, ...] | None:
+    try:
+        return tuple(np.lib.format.open_memmap(VEC_PATH, mode="r").shape)
+    except Exception:
+        return None
 
 
 def is_ready() -> bool:
     meta = _load_meta()
     if not meta:
         return False
-    return TURBO_PATH.exists() or VEC_PATH.exists()
+    shape = _vector_shape()
+    if not shape or len(shape) != 2 or shape[0] != len(meta):
+        return False
+    if TURBO_PATH.exists() and _load_turbo(len(meta)) is None:
+        return False
+    return True
 
 
 def search(query: str, top_k: int = 40, min_score: float = 0.18) -> list[dict]:
