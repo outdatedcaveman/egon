@@ -199,6 +199,14 @@ def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
 
     spent = 0
     report = {}
+    # Guarantee the bulk backfill (zotero — ~222k still to push) a share of
+    # every batch. Otherwise last-priority ordering + small-DB hash churn (e.g.
+    # paperpile's perpetually-"pending" items) eats the whole budget and zotero
+    # never advances. Non-bulk sources spend at most SMALL_CAP combined; zotero
+    # gets the rest. Bruno 2026-06-26.
+    _BULK = {"zotero"}
+    SMALL_CAP = max(40, batch // 5)
+    small_spent = 0
     for source in _all_sources():
         if spent >= batch:
             break
@@ -246,7 +254,14 @@ def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
         if not pending:
             report[source] = f"in sync ({len(pm)})"
             continue
-        take = min(batch - spent, len(pending))
+        if source in _BULK:
+            avail = batch - spent
+        else:
+            avail = min(batch - spent, SMALL_CAP - small_spent)
+        if avail <= 0:
+            report[source] = f"deferred ({len(pending)} pending)"
+            continue
+        take = min(avail, len(pending))
         window_items = []
         for it in pending[:take]:
             k = _item_key(it)
@@ -264,13 +279,17 @@ def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
                 pid = new_ids.get(k) or (pm.get(k) or {}).get("pid")
                 pm[k] = {"pid": pid, "h": _item_hash(it)}
             spent += take
+            if source not in _BULK:
+                small_spent += take
             report[source] = (
                 f"+{res.get('inserted',0)} new / {res.get('updated',0)} upd "
                 f"({len(pm)}/{len(items)}, {len(pending)-take} pending)"
                 + (f" {res.get('errors')} err" if res.get("errors") else ""))
         except Exception as e:
+            # Skip a failing source — never let it halt the loop before the bulk
+            # backfill (zotero) gets its turn. Bruno 2026-06-26.
             report[source] = f"error: {str(e)[:80]}"
-            break
+            continue
     _save(state)
     return {"status": "ok", "pushed": spent, "by_source": report,
             "ts": int(time.time())}
