@@ -204,9 +204,12 @@ def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
     # paperpile's perpetually-"pending" items) eats the whole budget and zotero
     # never advances. Non-bulk sources spend at most SMALL_CAP combined; zotero
     # gets the rest. Bruno 2026-06-26.
-    _BULK = {"zotero"}
+    _BULK = {"zotero", "chrome_bookmarks"}
     SMALL_CAP = max(40, batch // 5)
     small_spent = 0
+    # Split the reserved bulk budget evenly across the big backfills so the first
+    # one in priority order can't grab it all. Bruno 2026-06-26.
+    _bulk_share = max(1, (batch - SMALL_CAP) // len(_BULK))
     for source in _all_sources():
         if spent >= batch:
             break
@@ -255,7 +258,7 @@ def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
             report[source] = f"in sync ({len(pm)})"
             continue
         if source in _BULK:
-            avail = batch - spent
+            avail = min(batch - spent, _bulk_share)
         else:
             avail = min(batch - spent, SMALL_CAP - small_spent)
         if avail <= 0:
@@ -296,14 +299,42 @@ def run_notion_increment(batch: int = _NOTION_BATCH) -> dict:
 
 
 def status() -> dict:
-    """Mirror progress for the Databases observatory."""
+    """Mirror progress for the Databases observatory. Notion push progress is
+    measured against Obsidian's per-source counts — Obsidian is fully mirrored,
+    so it is the cheapest accurate proxy for each source's total item count."""
     state = _load()
-    pushed = {k: len(v) for k, v in
-              (state.get("notion_pushed") or {}).items()}
-    out = {"notion_pushed": pushed}
+    pages = state.get("notion_pages") or {}
+    notion_counts = {k: len(v) for k, v in pages.items() if isinstance(v, dict)}
+    obsidian = {}
     try:
         from lib import obsidian_mirror
-        out["obsidian"] = obsidian_mirror.stats()
+        obsidian = obsidian_mirror.stats()
     except Exception:
         pass
-    return out
+    # Only sources we actually push to Notion count toward the progress bar.
+    try:
+        targets = set(_all_sources())
+    except Exception:
+        targets = set(notion_counts)
+    targets |= set(notion_counts)
+    per_source = {}
+    total_pushed = total_items = 0
+    for src in sorted(targets):
+        pushed = notion_counts.get(src, 0)
+        total = max(obsidian.get(src, 0), pushed)
+        if total == 0:
+            continue
+        per_source[src] = {"pushed": pushed, "total": total,
+                           "pct": round(100.0 * pushed / total, 1)}
+        total_pushed += pushed
+        total_items += total
+    pct = round(100.0 * total_pushed / total_items, 1) if total_items else 0.0
+    return {
+        "notion_pushed": notion_counts,           # back-compat
+        "obsidian": obsidian,
+        "notion_per_source": per_source,
+        "notion_total_pushed": total_pushed,
+        "notion_total_items": total_items,
+        "notion_remaining": total_items - total_pushed,
+        "notion_pct": pct,
+    }

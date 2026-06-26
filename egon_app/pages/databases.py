@@ -22,7 +22,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QFrame,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractItemView, QScrollArea,
+    QAbstractItemView, QScrollArea, QProgressBar,
 )
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -153,8 +153,14 @@ def _gather() -> dict:
         notion = notion_workspace.live_status() or {}
     except Exception:
         pass
+    progress = {}
+    try:
+        from lib import mirror_runner
+        progress = mirror_runner.status()
+    except Exception:
+        pass
     return {"mind": mind, "files_n": files_n, "obsidian": _obsidian_stats(),
-            "notion": notion, "drift": _mirror_drift()}
+            "notion": notion, "drift": _mirror_drift(), "progress": progress}
 
 
 class DatabasesPage(QWidget):
@@ -187,6 +193,36 @@ class DatabasesPage(QWidget):
 
         self._cards = QGridLayout(); self._cards.setSpacing(12)
         v.addLayout(self._cards)
+
+        # Notion sync progress — push vs the full corpus (Obsidian counts as the
+        # per-source totals). The backfill runs in the background via catchup.
+        prog_panel = QFrame()
+        prog_panel.setStyleSheet(
+            f"QFrame {{ background: #16181c; border: 1px solid {_BORDER}; "
+            f"border-radius: 8px; }}")
+        pv = QVBoxLayout(prog_panel); pv.setContentsMargins(14, 10, 14, 12); pv.setSpacing(6)
+        ph = QHBoxLayout()
+        plbl = QLabel("🟦 Notion sync — backfilling in the background")
+        plbl.setStyleSheet(f"color: {_TEXT}; font-weight: 600; font-size: 13px;")
+        ph.addWidget(plbl); ph.addStretch(1)
+        self._prog_pct = QLabel("—")
+        self._prog_pct.setStyleSheet(f"color: {_GOLD}; font-weight: 700; font-size: 13px;")
+        ph.addWidget(self._prog_pct)
+        pv.addLayout(ph)
+        self._prog_bar = QProgressBar()
+        self._prog_bar.setRange(0, 1000)
+        self._prog_bar.setTextVisible(False)
+        self._prog_bar.setFixedHeight(10)
+        self._prog_bar.setStyleSheet(
+            f"QProgressBar {{ background: #0c0d0f; border: 1px solid {_BORDER}; "
+            f"border-radius: 5px; }}"
+            f"QProgressBar::chunk {{ background: {_GOLD}; border-radius: 5px; }}")
+        pv.addWidget(self._prog_bar)
+        self._prog_detail = QLabel("loading…")
+        self._prog_detail.setStyleSheet(f"color: {_MUTED}; font-size: 11px;")
+        self._prog_detail.setWordWrap(True)
+        pv.addWidget(self._prog_detail)
+        v.addWidget(prog_panel)
 
         drift_label = QLabel("Mirror drift — what the Notion mirror is missing")
         drift_label.setStyleSheet(f"color: {_TEXT}; font-weight: 600;")
@@ -266,6 +302,22 @@ class DatabasesPage(QWidget):
         for i, (t, val, hint, accent) in enumerate(cards):
             self._cards.addWidget(_card(t, val, hint, accent), 0, i)
             self._cards.setColumnStretch(i, 1)
+
+        prog = d.get("progress") or {}
+        if prog.get("notion_total_items"):
+            pct = prog.get("notion_pct", 0.0)
+            self._prog_bar.setValue(int(pct * 10))
+            self._prog_pct.setText(f"{pct}%")
+            top = sorted(prog.get("notion_per_source", {}).items(),
+                         key=lambda kv: kv[1]["total"] - kv[1]["pushed"], reverse=True)
+            biggest = ", ".join(
+                f"{s} {v['pushed']:,}/{v['total']:,}" for s, v in top[:3])
+            self._prog_detail.setText(
+                f"{prog['notion_total_pushed']:,} / {prog['notion_total_items']:,} pages · "
+                f"{prog['notion_remaining']:,} to go · biggest remaining: {biggest}")
+        else:
+            self._prog_pct.setText("—")
+            self._prog_detail.setText("no mirror progress data yet")
 
         drift = d.get("drift") or []
         self._table.setRowCount(0)
