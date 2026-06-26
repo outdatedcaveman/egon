@@ -153,16 +153,10 @@ def _gather() -> dict:
         notion = notion_workspace.live_status() or {}
     except Exception:
         pass
-    progress = {}
-    try:
-        from lib import mirror_runner
-        progress = mirror_runner.status()
-    except Exception:
-        pass
-    # Drift is loaded separately (slow Notion network call) so the cheap cards +
-    # progress bar render immediately instead of waiting ~20s for it.
+    # Progress bar (phase 0) and drift (phase 2) load separately so this cards
+    # payload never blocks them.
     return {"mind": mind, "files_n": files_n, "obsidian": _obsidian_stats(),
-            "notion": notion, "progress": progress}
+            "notion": notion}
 
 
 class DatabasesPage(QWidget):
@@ -260,12 +254,21 @@ class DatabasesPage(QWidget):
         import threading
 
         def _bg():
+            # Phase 0: progress bar — LOCAL only (mirror state + cached obsidian
+            # counts), no network, so it paints instantly regardless of Notion.
             try:
-                self._ready.emit(_gather())          # fast: cards + progress
+                from lib import mirror_runner
+                self._ready.emit({"progress": mirror_runner.status()})
+            except Exception:
+                pass
+            # Phase 1: cards (includes a Notion live_status network call).
+            try:
+                self._ready.emit(_gather())
             except Exception as e:
                 self._ready.emit({"error": str(e)[:200]})
+            # Phase 2: mirror drift (slow Notion network scan).
             try:
-                self._ready.emit({"drift": _mirror_drift()})  # slow: network
+                self._ready.emit({"drift": _mirror_drift()})
             except Exception as e:
                 self._ready.emit({"drift": [{"source": "notion", "local": "",
                     "mirrored": "", "drift": "", "note": f"drift failed: {str(e)[:60]}"}]})
@@ -273,68 +276,71 @@ class DatabasesPage(QWidget):
         threading.Thread(target=_bg, daemon=True, name="db-observatory").start()
 
     def _render(self, d: dict) -> None:
+        # Key-driven: each phase updates only its own section, so a slow/failed
+        # phase never blanks the others.
         if d.get("error"):
             self._status.setText(f"load failed: {d['error']}")
             return
-        # Phase 2: drift-only payload (slow Notion call finished) — fill table.
-        if "drift" in d and "mind" not in d:
+
+        if "progress" in d:                       # phase 0 — local, instant
+            prog = d.get("progress") or {}
+            if prog.get("notion_total_items"):
+                pct = prog.get("notion_pct", 0.0)
+                self._prog_bar.setValue(int(pct * 10))
+                self._prog_pct.setText(f"{pct}%")
+                top = sorted(prog.get("notion_per_source", {}).items(),
+                             key=lambda kv: kv[1]["total"] - kv[1]["pushed"], reverse=True)
+                biggest = ", ".join(
+                    f"{s} {v['pushed']:,}/{v['total']:,}" for s, v in top[:3])
+                self._prog_detail.setText(
+                    f"{prog['notion_total_pushed']:,} / {prog['notion_total_items']:,} pages · "
+                    f"{prog['notion_remaining']:,} to go · biggest remaining: {biggest}")
+            else:
+                self._prog_pct.setText("—")
+                self._prog_detail.setText("no mirror progress data yet")
+
+        if "mind" in d:                            # phase 1 — cards
+            self._status.setText("loading Notion drift (~20s)…")
+            while self._cards.count():
+                it = self._cards.takeAt(0)
+                if it.widget():
+                    it.widget().deleteLater()
+            mind = d.get("mind") or {}
+            ob = d.get("obsidian") or {}
+            notion = d.get("notion") or {}
+            cards = [
+                ("🌐 Unified mind",
+                 f"{mind.get('activity', 0):,}",
+                 f"activity rows · {mind.get('memory', 0)} memories · "
+                 f"{mind.get('sessions', 0)} sessions · {mind.get('projects', 0)} projects",
+                 _GOLD),
+                ("📁 File index",
+                 f"{d.get('files_n', 0):,}",
+                 "files across PC + Drive (+ phone on demand)", "#ff453a"),
+                ("🟣 Obsidian vault",
+                 f"{ob.get('notes', 0):,}" if ob.get("ok") else "—",
+                 (f"notes · {ob.get('attachments', 0)} attachments · "
+                  f"{ob.get('mb', 0)} MB") if ob.get("ok")
+                 else f"vault: {ob.get('error', '?')}", "#9D7BD8"),
+                ("🟦 Notion",
+                 "online" if notion.get("status") == "ok" else
+                 str(notion.get("status", "—")),
+                 notion.get("error") or "workspace API reachable; mirror drift below",
+                 _OK if notion.get("status") == "ok" else _ERR),
+            ]
+            for i, (t, val, hint, accent) in enumerate(cards):
+                self._cards.addWidget(_card(t, val, hint, accent), 0, i)
+                self._cards.setColumnStretch(i, 1)
+            if self._table.rowCount() == 0:
+                self._table.setRowCount(1)
+                self._table.setItem(0, 0, QTableWidgetItem(
+                    "loading mirror drift from Notion (~20s)…"))
+                for c in range(1, 5):
+                    self._table.setItem(0, c, QTableWidgetItem(""))
+
+        if "drift" in d:                           # phase 2 — slow network
             self._fill_drift(d.get("drift") or [])
             self._status.setText(time.strftime("updated %H:%M", time.localtime()))
-            return
-        self._status.setText("loading Notion drift (~20s)…")
-        while self._cards.count():
-            it = self._cards.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
-
-        mind = d.get("mind") or {}
-        ob = d.get("obsidian") or {}
-        notion = d.get("notion") or {}
-        cards = [
-            ("🌐 Unified mind",
-             f"{mind.get('activity', 0):,}",
-             f"activity rows · {mind.get('memory', 0)} memories · "
-             f"{mind.get('sessions', 0)} sessions · {mind.get('projects', 0)} projects",
-             _GOLD),
-            ("📁 File index",
-             f"{d.get('files_n', 0):,}",
-             "files across PC + Drive (+ phone on demand)", "#ff453a"),
-            ("🟣 Obsidian vault",
-             f"{ob.get('notes', 0):,}" if ob.get("ok") else "—",
-             (f"notes · {ob.get('attachments', 0)} attachments · "
-              f"{ob.get('mb', 0)} MB") if ob.get("ok")
-             else f"vault: {ob.get('error', '?')}", "#9D7BD8"),
-            ("🟦 Notion",
-             "online" if notion.get("status") == "ok" else
-             str(notion.get("status", "—")),
-             notion.get("error") or "workspace API reachable; mirror drift below",
-             _OK if notion.get("status") == "ok" else _ERR),
-        ]
-        for i, (t, val, hint, accent) in enumerate(cards):
-            self._cards.addWidget(_card(t, val, hint, accent), 0, i)
-            self._cards.setColumnStretch(i, 1)
-
-        prog = d.get("progress") or {}
-        if prog.get("notion_total_items"):
-            pct = prog.get("notion_pct", 0.0)
-            self._prog_bar.setValue(int(pct * 10))
-            self._prog_pct.setText(f"{pct}%")
-            top = sorted(prog.get("notion_per_source", {}).items(),
-                         key=lambda kv: kv[1]["total"] - kv[1]["pushed"], reverse=True)
-            biggest = ", ".join(
-                f"{s} {v['pushed']:,}/{v['total']:,}" for s, v in top[:3])
-            self._prog_detail.setText(
-                f"{prog['notion_total_pushed']:,} / {prog['notion_total_items']:,} pages · "
-                f"{prog['notion_remaining']:,} to go · biggest remaining: {biggest}")
-        else:
-            self._prog_pct.setText("—")
-            self._prog_detail.setText("no mirror progress data yet")
-
-        # The drift table fills in phase 2 (slow Notion call); show a hint now.
-        self._table.setRowCount(1)
-        self._table.setItem(0, 0, QTableWidgetItem("loading mirror drift from Notion (~20s)…"))
-        for c in range(1, 5):
-            self._table.setItem(0, c, QTableWidgetItem(""))
 
     def _fill_drift(self, drift: list) -> None:
         self._table.setRowCount(0)
