@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -65,6 +66,7 @@ HEAVY_IDLE_AFTER_S = int(os.environ.get("EGON_CORE_HEAVY_IDLE_AFTER_S", "900"))
 
 MIND_STATS = "http://127.0.0.1:8000/api/v1/mind/stats"
 HEADROOM_HEALTH = "http://127.0.0.1:8787/health"
+MOBILE_CONNECT_PORT = 8765
 OLLAMA_TAGS = "http://127.0.0.1:11434/api/tags"
 OLLAMA_EXE = Path.home() / "AppData/Local/Programs/Ollama/ollama.exe"  # no hardcoded user path
 
@@ -88,6 +90,14 @@ def _http_ok(url: str, timeout: float = 3.0) -> tuple[bool, str]:
         return r.status == 200, body
     except Exception as e:
         return False, f"{type(e).__name__}"
+
+
+def _tcp_ok(host: str, port: int, timeout: float = 0.4) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
 
 
 def _idle_seconds() -> float:
@@ -261,6 +271,27 @@ def check_mind(u: Unit) -> None:
         log("error", "mind_spawn_failed", error=str(e)[:160])
 
 
+def check_mobile_connect(u: Unit) -> None:
+    ok = _tcp_ok("127.0.0.1", MOBILE_CONNECT_PORT, timeout=0.5)
+    confirmed_down = u.probe(ok)
+    u.ok = ok or not confirmed_down
+    u.detail = "serving" if ok else f"probe {u.fails}/{u.FAILS_REQUIRED}"
+    if not confirmed_down or not u.can_restart():
+        return
+    u.mark_restart()
+    log("warn", "mobile_connect_down_restarting", attempt=u.restarts)
+    try:
+        env = {**SPAWN_ENV, "EGON_MIND_SERVICE_FORCE": "1"}
+        subprocess.Popen(
+            [str(PYW), str(ROOT / "scripts" / "mind_service.py")],
+            cwd=str(ROOT), env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008),
+        )
+    except Exception as e:
+        log("error", "mobile_connect_spawn_failed", error=str(e)[:160])
+
+
 def check_headroom(u: Unit) -> None:
     ok, body = _http_ok(HEADROOM_HEALTH, timeout=6.0)
     confirmed_down = u.probe(ok)
@@ -313,6 +344,19 @@ _index_proc = None        # isolated index-rebuild subprocess
 _index_backup_date = ""   # last day the local index was mirrored to Drive
 _reembed_proc = None
 _reembed_last_swap = 0.0
+
+
+def _any_heavy_running() -> bool:
+    """True if any heavy subprocess is alive — used to SERIALIZE heavy jobs so
+    only ONE runs at a time. Two/three concurrent (OCR + index + concept) is
+    what blew the 8GB box past 12GB. Bruno 2026-06-30."""
+    for p in (_hydrate_proc, _index_proc, _reembed_proc, globals().get("_concept_proc")):
+        try:
+            if p is not None and p.poll() is None:
+                return True
+        except Exception:
+            pass
+    return False
 # Re-embed the WHOLE corpus at most this often — model2vec is cheap (minutes),
 # so a periodic full pass keeps picking up newly hydrated document text with no
 # incremental-build complexity. 12h.
@@ -390,6 +434,10 @@ def check_reembed(u: "Unit") -> None:
         return
     # Launch a bounded, self-terminating batch. idle_abort_s bails the moment the
     # user returns; max_seconds caps the run; the model RSS dies with the process.
+    if _any_heavy_running():
+        u.ok = True
+        u.detail = f"waiting (another heavy job) {prog}"
+        return
     code = ("import sys; sys.path.insert(0, r'{root}'); from lib import reembed; "
             "print(reembed.reembed(max_seconds=1800, ram_floor_gb=0.8, "
             "idle_abort_s=90))").format(root=str(ROOT))
@@ -448,6 +496,10 @@ def check_concept_graph(u: "Unit") -> None:
         u.ok = True
         u.detail = f"idle-wait ({why})"
         return
+    if _any_heavy_running():
+        u.ok = True
+        u.detail = "waiting (another heavy job)"
+        return
     code = ("import sys; sys.path.insert(0, r'{root}'); from lib import concept_graph; "
             "r = concept_graph.build_concept_graph(k=200); "
             "print(r.get('n_concepts'), r.get('n_items'))").format(root=str(ROOT))
@@ -497,6 +549,10 @@ def check_hydration(u: "Unit") -> None:
         u.ok = True
         u.detail = "hydrating… (isolated subprocess)"
         return
+    if _any_heavy_running():
+        u.ok = True
+        u.detail = "waiting (another heavy job running)"
+        return
     # Run extraction + OCR in an ISOLATED subprocess so PaddleOCR's models and
     # extraction buffers are FREED when it exits each batch. In-thread they
     # accumulated multiple GB inside this always-on supervisor (it grew to
@@ -533,6 +589,9 @@ def check_index(u: Unit) -> None:
     due = age is None or age > INDEX_EVERY_S
     if not due or time.time() - _index_last < 600:
         return
+    if _any_heavy_running():
+        u.detail += " (waiting: another heavy job)"
+        return
     _index_last = time.time()
     # Run the WHOLE index cycle (pinned-file extract, OCR crawl, file index,
     # the 984k-item embedding rebuild, Obsidian mirror) in an ISOLATED
@@ -541,9 +600,10 @@ def check_index(u: Unit) -> None:
     # core of the 6.8GB bloat. A subprocess frees it all on exit. Bruno 2026-06-30.
     code = (
         "import sys; sys.path.insert(0, r'{root}')\n"
+        # NOTE: extraction/OCR is handled solely by check_hydration's subprocess
+        # — do NOT run the crawler here too (it spawned a 2nd OCR process).
         "for step in ("
         "  lambda: __import__('lib.hydration_worker', fromlist=['x']).process_queue(),"
-        "  lambda: __import__('lib.auto_hydrate_crawler', fromlist=['x']).run_crawler(),"
         "  lambda: __import__('lib.file_indexer', fromlist=['x']).build(),"
         "  lambda: __import__('lib.semantic_index', fromlist=['x']).build(force=False),"
         "  lambda: __import__('lib.obsidian_mirror', fromlist=['x']).mirror_all()):\n"
@@ -895,7 +955,8 @@ def main() -> int:
     except Exception as e:
         log("warn", "phone_keepalive_start_failed", error=str(e)[:160])
 
-    units = {"mind": Unit("mind"), "headroom": Unit("headroom"),
+    units = {"mind": Unit("mind"), "mobile_connect": Unit("mobile_connect"),
+             "headroom": Unit("headroom"),
              "ollama": Unit("ollama"),
              "connect_index": Unit("connect_index"),
              "hydration": Unit("hydration"),
@@ -909,6 +970,7 @@ def main() -> int:
     while True:
         try:
             check_mind(units["mind"])
+            check_mobile_connect(units["mobile_connect"])
             check_headroom(units["headroom"])
             check_ollama(units["ollama"])
             check_index(units["connect_index"])

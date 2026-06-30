@@ -66,11 +66,12 @@ def _extract_pdf(path: Path) -> str:
         if sum(len(p) for p in parts) > _MAX_CHARS:
             break
     text = "\n".join(parts)[:_MAX_CHARS]
-    # Scanned PDF? Embedded text layer is empty/sparse — fall back to OCR
-    # (PP-OCRv6) so the doc's CONTENT still becomes searchable. ~<40 chars/page
-    # of extractable text is the tell. Graceful: returns the original text if OCR
-    # is unavailable. Set EGON_OCR_FALLBACK=0 to disable.
-    if os.environ.get("EGON_OCR_FALLBACK", "1") not in ("0", "false", "no"):
+    # Scanned PDF? OCR is OPT-IN only (EGON_OCR_FALLBACK=1). PaddleOCR balloons
+    # to multiple GB across a batch of scans and was the #1 RAM hog on the 8GB
+    # box — so the always-on loop never OCRs. Run OCR deliberately, small batches,
+    # via a dedicated capped tool. Text PDFs still extract cheaply (pypdf above).
+    # Bruno 2026-06-30.
+    if os.environ.get("EGON_OCR_FALLBACK", "0") in ("1", "true", "yes"):
         if len(text.strip()) < max(120, 40 * max(n_pages, 1)):
             try:
                 from lib import ocr_extract
