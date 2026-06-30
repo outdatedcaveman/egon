@@ -308,6 +308,8 @@ def check_ollama(u: Unit) -> None:
 _index_building = False
 _index_last = 0.0
 _hydrating = False
+_hydrate_proc = None      # isolated hydration/OCR subprocess
+_index_proc = None        # isolated index-rebuild subprocess
 _reembed_proc = None
 _reembed_last_swap = 0.0
 # Re-embed the WHOLE corpus at most this often — model2vec is cheap (minutes),
@@ -484,44 +486,38 @@ def check_hydration(u: "Unit") -> None:
     Runs a bounded batch per cycle in a background thread, bailing the instant
     the user returns; the 6-hourly index rebuild embeds the accumulated
     extracts. This is the engine of the whole-vault embedding goal. 2026-06-24."""
-    global _hydrating
+    global _hydrate_proc
     allowed, why = _heavy_allowed()
     if not allowed:
         u.ok = True
         u.detail = f"idle-wait ({why})"
         return
-    if _hydrating:
+    if _hydrate_proc is not None and _hydrate_proc.poll() is None:
         u.ok = True
-        u.detail = "hydrating…"
+        u.detail = "hydrating… (isolated subprocess)"
         return
-    u.ok = True
-    _hydrating = True
-
-    def _run():
-        global _hydrating
-        try:
-            from lib import auto_hydrate_crawler as _ah
-            res = _ah.run_crawler(
-                max_extracts=300, max_bytes=int(1.5e9),
-                # bail the moment the user touches the machine (idle resets)
-                stop_check=lambda: _idle_seconds() < 90,
-            )
-            if res.get("status") == "ok" and res.get("newly_extracted"):
-                log("info", "mass_hydration", **{
-                    k: res[k] for k in ("newly_extracted", "candidates",
-                                        "cloud_deferred", "already_current",
-                                        "errors", "seconds") if k in res})
-        except Exception as e:
-            log("warn", "mass_hydration_failed", error=str(e)[:160])
-        finally:
-            _hydrating = False
-
-    threading.Thread(target=_run, daemon=True, name="core-hydrate").start()
+    # Run extraction + OCR in an ISOLATED subprocess so PaddleOCR's models and
+    # extraction buffers are FREED when it exits each batch. In-thread they
+    # accumulated multiple GB inside this always-on supervisor (it grew to
+    # ~6.8GB private over a few days, thrashing the 8GB box). Bruno 2026-06-30.
+    code = ("import sys; sys.path.insert(0, r'{root}'); "
+            "from lib import auto_hydrate_crawler as ah; "
+            "print(ah.run_crawler(max_extracts=300, max_bytes=int(1.5e9)))").format(root=str(ROOT))
+    try:
+        _hydrate_proc = subprocess.Popen(
+            [str(PYW), "-c", code], cwd=str(ROOT), env=SPAWN_ENV,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008))
+        u.ok = True
+        u.detail = "batch launched (isolated subprocess)"
+    except Exception as e:
+        u.ok = True
+        u.detail = f"launch failed: {str(e)[:60]}"
 
 
 def check_index(u: Unit) -> None:
     """Refresh the semantic Connect index every INDEX_EVERY_S, off-thread."""
-    global _index_building, _index_last
+    global _index_proc, _index_last
     meta = ROOT / "state" / "connect_index" / "meta.json"
     age = (time.time() - meta.stat().st_mtime) if meta.exists() else None
     u.ok = age is not None
@@ -530,65 +526,38 @@ def check_index(u: Unit) -> None:
     if not allowed:
         u.detail += f" ({why})"
         return
-    if _index_building:
-        u.detail += " (refreshing)"
+    if _index_proc is not None and _index_proc.poll() is None:
+        u.detail += " (refreshing, subprocess)"
         return
     due = age is None or age > INDEX_EVERY_S
     if not due or time.time() - _index_last < 600:
         return
     _index_last = time.time()
-    _index_building = True
-
-    def _build():
-        global _index_building
-        try:
-            # tier-2 first: extract text for pinned files (budgeted), so the
-            # rebuild below embeds their content. lib/hydration_worker.
-            from lib import hydration_worker
-            hst = hydration_worker.process_queue()
-            if hst.get("status") == "ok":
-                log("info", "hydration_run", **{k: v for k, v in hst.items()
-                                                if k != "status"})
-        except Exception as e:
-            log("warn", "hydration_failed", error=str(e)[:160])
-        try:
-            # auto-hydration crawler: automatically extract text for already
-            # locally hydrated cloud files on Google Drive. lib/auto_hydrate_crawler.
-            from lib import auto_hydrate_crawler
-            ahst = auto_hydrate_crawler.run_crawler()
-            if ahst.get("status") == "ok":
-                log("info", "auto_hydration_run", **{k: v for k, v in ahst.items()
-                                                     if k != "status"})
-        except Exception as e:
-            log("warn", "auto_hydration_failed", error=str(e)[:160])
-        try:
-            # files first so the fresh files_index.jsonl feeds this build
-            # (big-play tier 1: Drive+PC filenames into the Connect engine)
-            from lib import file_indexer
-            fst = file_indexer.build()
-            log("info", "files_index_refresh",
-                files=fst.get("files"), secs=fst.get("seconds"))
-        except Exception as e:
-            log("warn", "files_index_failed", error=str(e)[:160])
-        try:
-            from lib import semantic_index
-            st = semantic_index.build(force=False)
-            log("info", "index_refresh", **{k: v for k, v in st.items()})
-        except Exception as e:
-            log("warn", "index_refresh_failed", error=str(e)[:160])
-        try:
-            # Obsidian full mirror — local writes, no API limit, so the whole
-            # corpus stays instantiated every cycle. Notion fills separately
-            # and incrementally via check_mirror. Bruno 2026-06-12.
-            from lib import obsidian_mirror
-            ost = obsidian_mirror.mirror_all()
-            log("info", "obsidian_mirror", total=ost.get("total_written"))
-        except Exception as e:
-            log("warn", "obsidian_mirror_failed", error=str(e)[:160])
-        finally:
-            _index_building = False
-
-    threading.Thread(target=_build, daemon=True, name="core-index").start()
+    # Run the WHOLE index cycle (pinned-file extract, OCR crawl, file index,
+    # the 984k-item embedding rebuild, Obsidian mirror) in an ISOLATED
+    # subprocess. In-thread these loaded the embedding model + corpus + OCR into
+    # this always-on supervisor and never returned the memory to the OS — the
+    # core of the 6.8GB bloat. A subprocess frees it all on exit. Bruno 2026-06-30.
+    code = (
+        "import sys; sys.path.insert(0, r'{root}')\n"
+        "for step in ("
+        "  lambda: __import__('lib.hydration_worker', fromlist=['x']).process_queue(),"
+        "  lambda: __import__('lib.auto_hydrate_crawler', fromlist=['x']).run_crawler(),"
+        "  lambda: __import__('lib.file_indexer', fromlist=['x']).build(),"
+        "  lambda: __import__('lib.semantic_index', fromlist=['x']).build(force=False),"
+        "  lambda: __import__('lib.obsidian_mirror', fromlist=['x']).mirror_all()):\n"
+        "    try: step()\n"
+        "    except Exception as e: print('step failed:', e)\n"
+    ).format(root=str(ROOT))
+    try:
+        _index_proc = subprocess.Popen(
+            [str(PYW), "-c", code], cwd=str(ROOT), env=SPAWN_ENV,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008))
+        u.detail += " (rebuild launched, subprocess)"
+        log("info", "index_cycle_launched")
+    except Exception as e:
+        u.detail += f" (launch failed: {str(e)[:50]})"
 
 
 DIGEST_JSON = ROOT / "state" / "daily_digest.json"
