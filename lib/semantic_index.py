@@ -394,6 +394,10 @@ def build(force: bool = False) -> dict:
         np.save(VEC_PATH, mat)
         META_PATH.write_text(json.dumps(meta), encoding="utf-8")
         _write_turbo(mat)
+        try:
+            _ensure_meta_db()   # build the lazy meta DB here (in the subprocess)
+        except Exception:
+            pass
         _invalidate()
         return {"status": "ok", "items": len(meta),
                 "new": len(to_embed), "reused": len(meta) - len(to_embed)}
@@ -442,18 +446,82 @@ def _invalidate():
 _turbo = None
 
 
+META_DB = INDEX_DIR / "meta.db"
+
+
+class _LazyMeta:
+    """Index-addressable metadata backed by SQLite. Only the rows in a result
+    set are materialized — instead of holding all ~984k records as Python dicts
+    in RAM (~2GB, the bulk of mind_service's footprint). Drop-in for the old
+    list: supports len(), truthiness, and meta[i] -> dict. Bruno 2026-06-30."""
+    _FIELDS = ("uid", "source", "title", "url", "snippet", "h")
+
+    def __init__(self, db_path, n: int):
+        import sqlite3
+        self._db = sqlite3.connect(str(db_path), check_same_thread=False)
+        self._n = n
+
+    def __len__(self):
+        return self._n
+
+    def __bool__(self):
+        return self._n > 0
+
+    def __getitem__(self, i: int) -> dict:
+        row = self._db.execute(
+            "SELECT uid, source, title, url, snippet, h FROM meta WHERE rowid=?",
+            (int(i) + 1,)).fetchone()
+        return dict(zip(self._FIELDS, row)) if row else {}
+
+
+def _ensure_meta_db() -> int:
+    """Build meta.db from meta.json when missing/stale; return the row count.
+    meta.json is loaded ONCE here (transiently) only while (re)building — never
+    on a read path. Called from build() (subprocess) so mind_service never has
+    to load the full array."""
+    import sqlite3
+    mj_mtime = META_PATH.stat().st_mtime
+    if META_DB.exists() and META_DB.stat().st_mtime >= mj_mtime:
+        try:
+            con = sqlite3.connect(str(META_DB))
+            n = con.execute("SELECT count(*) FROM meta").fetchone()[0]
+            con.close()
+            return n
+        except Exception:
+            pass
+    records = json.loads(META_PATH.read_text(encoding="utf-8"))
+    tmp = META_DB.with_name("meta.db.tmp")
+    if tmp.exists():
+        tmp.unlink()
+    con = sqlite3.connect(str(tmp))
+    con.execute("CREATE TABLE meta (uid TEXT, source TEXT, title TEXT, "
+                "url TEXT, snippet TEXT, h TEXT)")
+    con.executemany(
+        "INSERT INTO meta (rowid, uid, source, title, url, snippet, h) "
+        "VALUES (?,?,?,?,?,?,?)",
+        [(i + 1, r.get("uid"), r.get("source"), r.get("title"), r.get("url"),
+          r.get("snippet"), r.get("h")) for i, r in enumerate(records)])
+    con.commit()
+    con.close()
+    n = len(records)
+    del records
+    tmp.replace(META_DB)
+    return n
+
+
 def _load_meta():
-    """meta.json only (shared by both engines)."""
-    global _meta, _meta_mtime
+    """Index-addressable metadata, SQLite-backed and lazy so the full ~984k
+    records never sit in RAM. mtime-cached against meta.json."""
+    global _meta, _meta_mtime, _vecs, _turbo
     if not META_PATH.exists():
         return None
     mtime = META_PATH.stat().st_mtime
     if _meta is not None and mtime == _meta_mtime:
         return _meta
     try:
-        _meta = json.loads(META_PATH.read_text(encoding="utf-8"))
+        n = _ensure_meta_db()
+        _meta = _LazyMeta(META_DB, n)
         _meta_mtime = mtime
-        global _vecs, _turbo
         _vecs = None      # engines reload lazily against the new meta
         _turbo = None
         return _meta
