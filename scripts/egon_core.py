@@ -557,16 +557,30 @@ def check_hydration(u: "Unit") -> None:
     # extraction buffers are FREED when it exits each batch. In-thread they
     # accumulated multiple GB inside this always-on supervisor (it grew to
     # ~6.8GB private over a few days, thrashing the 8GB box). Bruno 2026-06-30.
-    code = ("import sys; sys.path.insert(0, r'{root}'); "
-            "from lib import auto_hydrate_crawler as ah; "
-            "print(ah.run_crawler(max_extracts=300, max_bytes=int(1.5e9)))").format(root=str(ROOT))
+    # The subprocess polls real input idle and ABORTS within ~1s of any
+    # keypress/mouse move — so it never churns/freezes the PC while Bruno is
+    # using it. It only runs during genuine idle; the 15-min start gate is in
+    # _heavy_allowed. Smaller batch (200 docs / 0.8GB) keeps each unit light.
+    # Bruno 2026-06-30.
+    code = (
+        "import sys, ctypes\n"
+        "sys.path.insert(0, r'{root}')\n"
+        "def _idle_s():\n"
+        "    class L(ctypes.Structure): _fields_=[('s',ctypes.c_uint),('t',ctypes.c_uint)]\n"
+        "    l=L(); l.s=ctypes.sizeof(l)\n"
+        "    ctypes.windll.user32.GetLastInputInfo(ctypes.byref(l))\n"
+        "    return (ctypes.windll.kernel32.GetTickCount()-l.t)/1000.0\n"
+        "from lib import auto_hydrate_crawler as ah\n"
+        "print(ah.run_crawler(max_extracts=200, max_bytes=int(8e8), "
+        "stop_check=lambda: _idle_s() < 30))\n"
+    ).format(root=str(ROOT))
     try:
         _hydrate_proc = subprocess.Popen(
             [str(PYW), "-c", code], cwd=str(ROOT), env=SPAWN_ENV,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008))
         u.ok = True
-        u.detail = "batch launched (isolated subprocess)"
+        u.detail = "batch launched (idle-only, aborts on activity)"
     except Exception as e:
         u.ok = True
         u.detail = f"launch failed: {str(e)[:60]}"

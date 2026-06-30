@@ -53,18 +53,39 @@ def uid_for(path: str) -> str:
 
 
 def _extract_pdf(path: Path) -> str:
-    from pypdf import PdfReader
-    reader = PdfReader(str(path))
-    parts = []
+    # PyMuPDF (fitz) is ~10x faster than pypdf for text extraction — the main
+    # lever for getting the 175k-doc backlog done in weeks, not months. Falls
+    # back to pypdf if fitz chokes on a file. Bruno 2026-06-30.
+    parts: list[str] = []
     n_pages = 0
-    for page in reader.pages[:_MAX_PAGES]:
-        n_pages += 1
+    try:
+        import fitz
+        doc = fitz.open(str(path))
         try:
-            parts.append(page.extract_text() or "")
+            for page in doc:
+                if n_pages >= _MAX_PAGES:
+                    break
+                n_pages += 1
+                parts.append(page.get_text() or "")
+                if sum(len(p) for p in parts) > _MAX_CHARS:
+                    break
+        finally:
+            doc.close()
+    except Exception:
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(str(path))
+            parts, n_pages = [], 0
+            for page in reader.pages[:_MAX_PAGES]:
+                n_pages += 1
+                try:
+                    parts.append(page.extract_text() or "")
+                except Exception:
+                    continue
+                if sum(len(p) for p in parts) > _MAX_CHARS:
+                    break
         except Exception:
-            continue
-        if sum(len(p) for p in parts) > _MAX_CHARS:
-            break
+            return ""
     text = "\n".join(parts)[:_MAX_CHARS]
     # Scanned PDF? OCR is OPT-IN only (EGON_OCR_FALLBACK=1). PaddleOCR balloons
     # to multiple GB across a batch of scans and was the #1 RAM hog on the 8GB
