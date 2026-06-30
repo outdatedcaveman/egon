@@ -310,6 +310,7 @@ _index_last = 0.0
 _hydrating = False
 _hydrate_proc = None      # isolated hydration/OCR subprocess
 _index_proc = None        # isolated index-rebuild subprocess
+_index_backup_date = ""   # last day the local index was mirrored to Drive
 _reembed_proc = None
 _reembed_last_swap = 0.0
 # Re-embed the WHOLE corpus at most this often — model2vec is cheap (minutes),
@@ -564,6 +565,53 @@ DIGEST_JSON = ROOT / "state" / "daily_digest.json"
 DIGEST_MD = ROOT / "state" / "daily_digest.md"
 DIGEST_AFTER_HOUR = 8          # generate once per day, first cycle after 08:00
 _digest_running = False
+
+_DRIVE_INDEX_BACKUP = Path(os.environ.get(
+    "EGON_INDEX_DRIVE_BACKUP", r"G:\My Drive\EgonData\connect_index"))
+_DRIVE_EXTRACTS_BACKUP = Path(os.environ.get(
+    "EGON_EXTRACTS_DRIVE_BACKUP", r"G:\My Drive\EgonData\file_extracts"))
+
+
+def check_index_backup(u: "Unit") -> None:
+    """The live index + extracts now live on LOCAL disk (fast, no Drive sync
+    thrash). Once a day, mirror them to the Drive copy as a backup — robocopy in
+    a detached process, incremental (only changed files upload). Skips if the
+    index is still the Drive copy (nothing to back up to itself). Bruno 2026-06-30."""
+    global _index_backup_date
+    today = datetime.now().strftime("%Y-%m-%d")
+    if _index_backup_date == today:
+        u.ok = True
+        u.detail = f"backed up to Drive {today}"
+        return
+    try:
+        from lib.egon_paths import CONNECT_INDEX_DIR, FILE_EXTRACTS_DIR
+    except Exception as e:
+        u.ok = True
+        u.detail = f"paths err {str(e)[:40]}"
+        return
+    if str(CONNECT_INDEX_DIR).strip("\\/").lower() == str(_DRIVE_INDEX_BACKUP).strip("\\/").lower():
+        u.ok = True
+        u.detail = "index is the Drive copy — backup n/a"
+        return
+    if not (CONNECT_INDEX_DIR / "COMPLETE.json").exists():
+        u.ok = True
+        u.detail = "waiting for local index"
+        return
+    try:
+        for src, dst in ((CONNECT_INDEX_DIR, _DRIVE_INDEX_BACKUP),
+                         (FILE_EXTRACTS_DIR, _DRIVE_EXTRACTS_BACKUP)):
+            subprocess.Popen(
+                ["robocopy", str(src), str(dst), "/MIR", "/R:1", "/W:1",
+                 "/NFL", "/NDL", "/NJH", "/NP"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=0x08000000)  # CREATE_NO_WINDOW
+        _index_backup_date = today
+        u.ok = True
+        u.detail = f"Drive backup launched {today}"
+        log("info", "index_drive_backup", date=today)
+    except Exception as e:
+        u.ok = True
+        u.detail = f"backup failed: {str(e)[:60]}"
 
 
 def check_digest(u: Unit) -> None:
@@ -854,6 +902,7 @@ def main() -> int:
              "reembed": Unit("reembed"),
              "hermes": Unit("hermes"),
              "concept_graph": Unit("concept_graph"),
+             "index_backup": Unit("index_backup"),
              "daily_digest": Unit("daily_digest"),
              "snapshots": Unit("snapshots"),
              "mirror": Unit("mirror")}
@@ -867,6 +916,7 @@ def main() -> int:
             check_reembed(units["reembed"])
             check_hermes(units["hermes"])
             check_concept_graph(units["concept_graph"])
+            check_index_backup(units["index_backup"])
             check_digest(units["daily_digest"])
             check_snapshots(units["snapshots"])
             check_mirror(units["mirror"])
