@@ -38,16 +38,18 @@ def _free_ram_gb() -> float:
 
 
 def available() -> bool:
-    """True if PaddleOCR can be imported (without forcing a model load)."""
+    """True if RapidOCR can be imported (without forcing a model load)."""
     try:
-        import paddleocr  # noqa: F401
+        import rapidocr_onnxruntime  # noqa: F401
         return True
     except Exception:
         return False
 
 
 def _load():
-    """Lazy singleton PP-OCR engine. Returns None if unavailable / RAM too tight."""
+    """Lazy singleton RapidOCR engine (ONNX Runtime — PP-OCR-quality models at a
+    fraction of PaddleOCR's RAM, ~80MB, CPU-only). Returns None if unavailable.
+    Switched off PaddleOCR (it ballooned to ~6GB) — Bruno 2026-06-30."""
     global _ENGINE, _TRIED
     if _ENGINE is not None:
         return _ENGINE
@@ -60,53 +62,26 @@ def _load():
         if _free_ram_gb() < _RAM_FLOOR_GB:
             return None
         try:
-            from paddleocr import PaddleOCR
-            # Lean pipeline: skip doc-orientation/unwarping classifiers (extra
-            # models, RAM) — scanned text PDFs are already upright. PaddleOCR 3.x
-            # selects the latest PP-OCR (v6) detection+recognition models.
-            # enable_mkldnn=False is REQUIRED: paddlepaddle 3.3.1's oneDNN backend
-            # crashes on PP-OCRv6's det model (ConvertPirAttribute2RuntimeAttribute
-            # NotImplementedError). Plain CPU inference works fine. Bruno 2026-06-25.
-            _ENGINE = PaddleOCR(
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=False,
-                enable_mkldnn=False,
-                lang=os.environ.get("EGON_OCR_LANG", "en"),
-            )
+            from rapidocr_onnxruntime import RapidOCR
+            _ENGINE = RapidOCR()
         except Exception:
             _ENGINE = None
         return _ENGINE
 
 
 def _ocr_image(engine, arr) -> list[str]:
-    """Run OCR on a single page raster (numpy BGR ndarray); return text lines."""
+    """Run OCR on a single page raster (numpy ndarray); return text lines.
+    RapidOCR returns (result, elapse) where result = [[box, text, score], ...]."""
     try:
-        res = engine.predict(arr)
+        result, _ = engine(arr)
     except Exception:
-        try:
-            res = engine.ocr(arr)            # older API fallback
-        except Exception:
-            return []
+        return []
     lines: list[str] = []
-    for page in res or []:
-        # PaddleOCR 3.x predict() -> dict-like with 'rec_texts'
+    for det in result or []:
         try:
-            if isinstance(page, dict) and "rec_texts" in page:
-                lines.extend(t for t in page["rec_texts"] if t)
-                continue
-            if hasattr(page, "get") and page.get("rec_texts"):
-                lines.extend(t for t in page["rec_texts"] if t)
-                continue
-        except Exception:
-            pass
-        # legacy .ocr() -> [[box, (text, conf)], ...]
-        try:
-            for det in page:
-                if isinstance(det, (list, tuple)) and len(det) >= 2:
-                    txt = det[1][0] if isinstance(det[1], (list, tuple)) else det[1]
-                    if txt:
-                        lines.append(str(txt))
+            txt = det[1]
+            if txt:
+                lines.append(str(txt))
         except Exception:
             continue
     return lines

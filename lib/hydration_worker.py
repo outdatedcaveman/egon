@@ -53,40 +53,53 @@ def uid_for(path: str) -> str:
 
 
 def _extract_pdf(path: Path) -> str:
-    # PyMuPDF (fitz) is ~10x faster than pypdf for text extraction — the main
-    # lever for getting the 175k-doc backlog done in weeks, not months. Falls
-    # back to pypdf if fitz chokes on a file. Bruno 2026-06-30.
-    parts: list[str] = []
+    # PyMuPDF4LLM: fast (CPU, no ML, no GPU) + structured markdown (headings,
+    # tables) for better embeddings — the lever to clear the 175k backlog in
+    # weeks. Falls back to fitz plain text, then pypdf. Bruno 2026-06-30.
     n_pages = 0
+    text = ""
     try:
         import fitz
+        import pymupdf4llm
         doc = fitz.open(str(path))
         try:
-            for page in doc:
-                if n_pages >= _MAX_PAGES:
-                    break
-                n_pages += 1
-                parts.append(page.get_text() or "")
-                if sum(len(p) for p in parts) > _MAX_CHARS:
-                    break
+            n_pages = min(_MAX_PAGES, doc.page_count)
+            text = pymupdf4llm.to_markdown(
+                doc, pages=list(range(n_pages)), show_progress=False)[:_MAX_CHARS]
         finally:
             doc.close()
     except Exception:
         try:
-            from pypdf import PdfReader
-            reader = PdfReader(str(path))
-            parts, n_pages = [], 0
-            for page in reader.pages[:_MAX_PAGES]:
-                n_pages += 1
-                try:
-                    parts.append(page.extract_text() or "")
-                except Exception:
-                    continue
-                if sum(len(p) for p in parts) > _MAX_CHARS:
-                    break
+            import fitz
+            doc = fitz.open(str(path))
+            parts: list[str] = []
+            try:
+                for page in doc:
+                    if n_pages >= _MAX_PAGES:
+                        break
+                    n_pages += 1
+                    parts.append(page.get_text() or "")
+                    if sum(len(p) for p in parts) > _MAX_CHARS:
+                        break
+            finally:
+                doc.close()
+            text = "\n".join(parts)[:_MAX_CHARS]
         except Exception:
-            return ""
-    text = "\n".join(parts)[:_MAX_CHARS]
+            try:
+                from pypdf import PdfReader
+                reader = PdfReader(str(path))
+                parts, n_pages = [], 0
+                for page in reader.pages[:_MAX_PAGES]:
+                    n_pages += 1
+                    try:
+                        parts.append(page.extract_text() or "")
+                    except Exception:
+                        continue
+                    if sum(len(p) for p in parts) > _MAX_CHARS:
+                        break
+                text = "\n".join(parts)[:_MAX_CHARS]
+            except Exception:
+                return ""
     # Scanned PDF? OCR is OPT-IN only (EGON_OCR_FALLBACK=1). PaddleOCR balloons
     # to multiple GB across a batch of scans and was the #1 RAM hog on the 8GB
     # box — so the always-on loop never OCRs. Run OCR deliberately, small batches,
