@@ -47,7 +47,10 @@ elsevier wiley sage routledge taylor francis nature science scholar googleuserco
 vol issue journal journals review reviews annual proceedings online article articles paper
 papers pdf epub amazon goodreads youtube wikipedia google drive docs gmail github gitlab
 openrefine endnote remnote zotero notion obsidian mendeley paperpile instapaper pocket
-abstract full text pmc ncbi nih org www2 url link www3 redirect login signin""".split())
+abstract full text pmc ncbi nih org www2 url link www3 redirect login signin
+moment just wait page online site home menu sign content download downloads view
+loading please enable javascript browser cookies access denied forbidden error
+untitled document welcome dashboard print share more info details click here""".split())
 
 
 def _norm(mat: np.ndarray) -> np.ndarray:
@@ -67,13 +70,22 @@ def _load_titles(n: int) -> list[dict]:
     return out
 
 
+_VOWELS = frozenset("aeiou")
+
+
+def _wordish(tok: str) -> bool:
+    """Reject hash/ID/URL-fragment tokens (ddb6a1, s0092, pii, abs) — keep only
+    real words: alphabetic, length >= 4, containing a vowel."""
+    return len(tok) >= 4 and tok.isalpha() and any(c in _VOWELS for c in tok)
+
+
 def _label_from_titles(titles: list[str], global_df: Counter, n_docs: int) -> tuple[str, list[str]]:
     """Distinctive 2-4 word label for a concept, mined from member titles via a
     light tf-idf against the corpus-wide document frequency."""
     local = Counter()
     for t in titles:
         for tok in set(_TOKEN_RE.findall(t.lower())):
-            if tok not in _STOP:
+            if tok not in _STOP and _wordish(tok):
                 local[tok] += 1
     if not local:
         return "(unlabeled)", []
