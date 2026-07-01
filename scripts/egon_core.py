@@ -353,7 +353,7 @@ def _any_heavy_running() -> bool:
     what blew the 8GB box past 12GB. Bruno 2026-06-30."""
     g = globals()
     for name in ("_hydrate_proc", "_index_proc", "_reembed_proc", "_concept_proc",
-                 "_mirror_proc", "_index_backup_proc"):
+                 "_mirror_proc", "_index_backup_proc", "_canonical_proc"):
         p = g.get(name)
         try:
             if p is not None and p.poll() is None:
@@ -375,7 +375,7 @@ def _reap_heavy(reason: str = "user-active") -> int:
     g = globals()
     killed = 0
     for name in ("_hydrate_proc", "_index_proc", "_reembed_proc", "_concept_proc",
-                 "_mirror_proc", "_index_backup_proc"):
+                 "_mirror_proc", "_index_backup_proc", "_canonical_proc"):
         p = g.get(name)
         try:
             if p is not None and p.poll() is None:
@@ -511,6 +511,74 @@ def check_reembed(u: "Unit") -> None:
 _concept_proc = None
 _concept_last = 0.0
 CONCEPT_COOLDOWN_S = int(os.environ.get("EGON_CONCEPT_COOLDOWN_S", str(24 * 3600)))
+
+_canonical_proc = None
+_canonical_last = 0.0
+CANONICAL_COOLDOWN_S = int(os.environ.get("EGON_CANONICAL_COOLDOWN_S", str(3 * 3600)))
+
+
+def check_canonical(u: "Unit") -> None:
+    """Egon builds the CANONICAL project structure from every AI's work: it
+    classifies each newly-ingested session by CONTENT (hybrid embedding + LLM,
+    lib/canonical_classifier) into a canonical project, then materializes the
+    browsable tree under ~/AI/projects (lib/canonical_fs). Idle-gated, isolated
+    subprocess, serialized with the other heavy jobs. This is the source Egon's
+    chat + all AIs ground on — not the messy app repos. Bruno 2026-07-01."""
+    global _canonical_proc, _canonical_last
+    if _canonical_proc is not None and _canonical_proc.poll() is None:
+        u.ok = True
+        u.detail = "classifying sessions…"
+        return
+    # anything unclassified?
+    try:
+        import sqlite3
+        from lib.mind_context_broker import DB_PATH
+        c = sqlite3.connect(str(DB_PATH), timeout=5)
+        pending = c.execute(
+            "SELECT COUNT(*) FROM sessions WHERE CAST(id AS TEXT) NOT IN "
+            "(SELECT item_id FROM canonical_assignments WHERE item_type='session')"
+        ).fetchone()[0] if c.execute(
+            "SELECT name FROM sqlite_master WHERE name='canonical_assignments'"
+        ).fetchone() else c.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        c.close()
+    except Exception as e:
+        u.ok = True
+        u.detail = f"db err {str(e)[:30]}"
+        return
+    if pending <= 0:
+        u.ok = True
+        u.detail = "canonical up to date"
+        return
+    since = time.time() - _canonical_last
+    if _canonical_last and since < CANONICAL_COOLDOWN_S:
+        u.ok = True
+        u.detail = f"{pending} pending (cooldown)"
+        return
+    allowed, why = _heavy_allowed()
+    if not allowed:
+        u.ok = True
+        u.detail = f"{pending} pending (idle-wait: {why})"
+        return
+    if _any_heavy_running():
+        u.ok = True
+        u.detail = "waiting (another heavy job)"
+        return
+    code = ("import sys; sys.path.insert(0, r'{root}');"
+            "from lib import canonical_classifier as cc, canonical_fs;"
+            "cc.classify_sessions(limit=None, use_llm=True, only_unclassified=True);"
+            "print(canonical_fs.export_canonical())").format(root=str(ROOT))
+    try:
+        _canonical_proc = subprocess.Popen(
+            [str(PYW), "-c", code], cwd=str(ROOT), env=SPAWN_ENV,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008))
+        _canonical_last = time.time()
+        u.ok = True
+        u.detail = f"classifying {pending} sessions"
+        log("info", "canonical_classify_launched", pending=pending)
+    except Exception as e:
+        u.ok = True
+        u.detail = f"launch failed: {str(e)[:60]}"
 
 
 def check_concept_graph(u: "Unit") -> None:
@@ -1081,7 +1149,8 @@ def main() -> int:
              "index_backup": Unit("index_backup"),
              "daily_digest": Unit("daily_digest"),
              "snapshots": Unit("snapshots"),
-             "mirror": Unit("mirror")}
+             "mirror": Unit("mirror"),
+             "canonical": Unit("canonical")}
     _reap_heavy("startup-orphans")   # clear any heavy jobs a prior instance left
     while True:
         try:
@@ -1102,6 +1171,7 @@ def main() -> int:
             check_digest(units["daily_digest"])
             check_snapshots(units["snapshots"])
             check_mirror(units["mirror"])
+            check_canonical(units["canonical"])
             write_health(units)
         except Exception as e:
             log("error", "core_cycle_error", error=str(e)[:200])
