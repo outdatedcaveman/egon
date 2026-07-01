@@ -871,11 +871,11 @@ MIRROR_EVERY_S = int(os.environ.get("EGON_CORE_MIRROR_EVERY_S", "3600"))
 MIRROR_BATCH = int(os.environ.get("EGON_CORE_MIRROR_BATCH", "25"))
 NOTION_BODY_BATCH = int(os.environ.get("EGON_CORE_NOTION_BODY_BATCH", "5"))
 _mirror_last = 0.0
-_mirror_running = False
+_mirror_proc = None       # isolated Notion-push subprocess
 
 
 def check_mirror(u: Unit) -> None:
-    global _mirror_last, _mirror_running
+    global _mirror_last, _mirror_proc
     state_file = ROOT / "state" / "mirror_runner.json"
     catchup_file = ROOT / "state" / "notion_catchup_active.json"
 
@@ -902,73 +902,47 @@ def check_mirror(u: Unit) -> None:
     if not allowed and not catchup_active:
         u.detail += f" ({why})"
         return
-    if _mirror_running:
+    if _mirror_proc is not None and _mirror_proc.poll() is None:
+        u.detail += " (pushing, subprocess)"
         return
     if not catchup_active and time.time() - _mirror_last < MIRROR_EVERY_S:
         return
     _mirror_last = time.time()
-    _mirror_running = True
-
-    def _run():
-        global _mirror_running
-        try:
-            # Only refresh bodies if not in catchup mode to save time
-            if not catchup_active:
-                try:
-                    from lib import notion_body
-                    bres = notion_body.refresh(batch=NOTION_BODY_BATCH)
-                    if bres.get("fetched"):
-                        log("info", "notion_bodies", **{k: bres[k] for k in
-                            ("fetched", "cached_total") if k in bres})
-                except Exception as e:
-                    log("warn", "notion_bodies_failed", error=str(e)[:120])
-
-            from lib import mirror_runner
-            import json as _json
-
-            # Check catchup flag again inside thread
-            active = False
-            try:
-                if catchup_file.exists():
-                    active = _json.loads(catchup_file.read_text(encoding="utf-8")).get("active", False)
-            except Exception:
-                pass
-
-            if active:
-                log("info", "notion_catchup_started")
-                while True:
-                    t0 = time.time()
-                    res = mirror_runner.run_notion_increment(batch=200)
-                    pushed = res.get("pushed", 0)
-                    log("info", "notion_catchup_batch", pushed=pushed, status=res.get("status"), secs=round(time.time() - t0, 1))
-
-                    if pushed == 0:
-                        log("info", "notion_catchup_completed")
-                        try:
-                            catchup_file.write_text(_json.dumps({"active": False}), encoding="utf-8")
-                        except Exception:
-                            pass
-                        break
-
-                    # Check if catchup was deactivated externally
-                    try:
-                        if catchup_file.exists() and not _json.loads(catchup_file.read_text(encoding="utf-8")).get("active", False):
-                            log("info", "notion_catchup_paused_externally")
-                            break
-                    except Exception:
-                        pass
-
-                    time.sleep(2.0)
-            else:
-                res = mirror_runner.run_notion_increment(batch=MIRROR_BATCH)
-                log("info", "mirror_increment", pushed=res.get("pushed"),
-                    status=res.get("status"))
-        except Exception as e:
-            log("warn", "mirror_failed", error=str(e)[:160])
-        finally:
-            _mirror_running = False
-
-    threading.Thread(target=_run, name="egon-mirror", daemon=True).start()
+    # Run the Notion push in an ISOLATED subprocess. In-thread it held the 258k
+    # Zotero snapshot cache resident in this always-on supervisor (egon_core was
+    # ~700MB); a subprocess frees it on exit and keeps the supervisor tiny.
+    # Bruno 2026-07-01.
+    code = (
+        "import sys, json, time\n"
+        "sys.path.insert(0, r'{root}')\n"
+        "from pathlib import Path\n"
+        "cf = Path(r'{root}') / 'state' / 'notion_catchup_active.json'\n"
+        "def cu():\n"
+        "    try: return json.loads(cf.read_text(encoding='utf-8')).get('active', False)\n"
+        "    except Exception: return False\n"
+        "from lib import mirror_runner\n"
+        "if not cu():\n"
+        "    try:\n"
+        "        from lib import notion_body; notion_body.refresh(batch={nbb})\n"
+        "    except Exception: pass\n"
+        "if cu():\n"
+        "    while True:\n"
+        "        r = mirror_runner.run_notion_increment(batch=200)\n"
+        "        if r.get('pushed', 0) == 0:\n"
+        "            cf.write_text(json.dumps({{'active': False}}), encoding='utf-8'); break\n"
+        "        if not cu(): break\n"
+        "        time.sleep(2)\n"
+        "else:\n"
+        "    print(mirror_runner.run_notion_increment(batch={mb}))\n"
+    ).format(root=str(ROOT), nbb=NOTION_BODY_BATCH, mb=MIRROR_BATCH)
+    try:
+        _mirror_proc = subprocess.Popen(
+            [str(PYW), "-c", code], cwd=str(ROOT), env=SPAWN_ENV,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008))
+        u.detail += " (push launched, subprocess)"
+    except Exception as e:
+        u.detail += f" (launch failed: {str(e)[:40]})"
 
 
 def main() -> int:
