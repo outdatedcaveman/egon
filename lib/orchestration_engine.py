@@ -613,10 +613,15 @@ def decompose_prompt(prompt: str) -> list[dict]:
     # Try local LLM chain
     try:
         free_gb = _free_ram_gb()
-        # ollama is running or can load
+        # NEVER load a model without a safety buffer above its footprint —
+        # loading qwen even the 0.5B (0.8GB) when only ~1GB is free pushes the
+        # 8GB box into pagefile thrash and FREEZES the whole machine (incl. the
+        # GUI) for minutes. Below the buffer we use the instant rule-based
+        # decomposition instead — no model, no freeze. Bruno 2026-07-01.
+        _SAFETY_GB = 1.5
         chain = [(cfg["model"], 3.0), ("qwen2.5:1.5b", 1.6), ("qwen2.5:0.5b", 0.8)]
         for model, need_gb in chain:
-            if free_gb is not None and free_gb < need_gb:
+            if free_gb is None or free_gb < need_gb + _SAFETY_GB:
                 continue
             raw_response = _chat_decomposition(prompt, dict(cfg, model=model))
             if raw_response:
