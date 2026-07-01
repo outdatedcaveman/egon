@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="shell/egon.png" alt="Egon icon" width="96" height="96">
+</p>
+
 # Egon
 
 **A local-first visual control plane for your personal knowledge system.**

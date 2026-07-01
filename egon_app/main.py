@@ -94,13 +94,23 @@ def _mind_ready(timeout_s: float = 2.0) -> bool:
         return False
 
 
+def _mobile_connect_ready(timeout_s: float = 0.5) -> bool:
+    try:
+        import socket
+        with socket.create_connection(("127.0.0.1", 8765), timeout=timeout_s):
+            return True
+    except Exception:
+        return False
+
+
 def _mind_service_python() -> str:
     from lib.python_runtime import base_python
     return str(base_python(_ROOT, windowed=True))
 
 
 def _start_mind_service(log_fn=None) -> bool:
-    if _mind_ready():
+    mind_ready = _mind_ready()
+    if mind_ready and _mobile_connect_ready():
         return True
     script = _ROOT / "scripts" / "mind_service.py"
     if not script.exists():
@@ -128,7 +138,8 @@ def _start_mind_service(log_fn=None) -> bool:
             )
         subprocess.Popen([_mind_service_python(), str(script)], **kwargs)
         if log_fn:
-            log_fn("info", event="mind_service_start_requested", script=str(script))
+            event = "mobile_connect_start_requested" if mind_ready else "mind_service_start_requested"
+            log_fn("info", event=event, script=str(script))
         return True
     except Exception as e:
         if log_fn:

@@ -1,55 +1,72 @@
-"""Generate a simple Egon app icon: dark teal background, satellite emoji-style mark.
+"""Generate Egon's simple app icon.
 
-Outputs egon.ico in this same directory. One-shot script — re-run if you want
-to tweak the design. Not invoked at runtime; ico is committed.
+Outputs both:
+  - shell/egon.png, used inside the native app and repo docs
+  - shell/egon.ico, used by Windows shortcuts/taskbar/builds
+
+This is a one-shot asset builder, not runtime code.
 """
-from PIL import Image, ImageDraw, ImageFont
 from pathlib import Path
 
-OUT = Path(__file__).parent / "egon.ico"
+from PIL import Image, ImageDraw, ImageFont
+
+
+OUT_ICO = Path(__file__).parent / "egon.ico"
+OUT_PNG = Path(__file__).parent / "egon.png"
 SIZES = [16, 24, 32, 48, 64, 128, 256]
 
+
 def render(sz: int) -> Image.Image:
-    # Egon palette — dark teal background, soft cream "E"
-    bg = (16, 47, 60, 255)        # deep teal
-    fg = (240, 233, 213, 255)     # warm cream
-    ring = (96, 165, 168, 255)    # accent ring
+    bg = (13, 22, 28, 255)
+    fg = (228, 239, 236, 255)
+    accent = (64, 211, 168, 255)
+    shadow = (0, 0, 0, 70)
 
     img = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
-    # rounded-square background
-    radius = max(2, sz // 5)
-    d.rounded_rectangle([(0, 0), (sz - 1, sz - 1)], radius=radius, fill=bg)
-
-    # accent ring (orbit-ish, evokes 🛰️ without needing an emoji font)
-    pad = max(2, sz // 6)
-    ring_w = max(1, sz // 24)
-    d.ellipse(
-        [(pad, pad), (sz - pad, sz - pad)],
-        outline=ring, width=ring_w,
+    inset = max(1, sz // 32)
+    radius = max(4, sz // 7)
+    d.rounded_rectangle(
+        [(inset, inset), (sz - inset - 1, sz - inset - 1)],
+        radius=radius,
+        fill=shadow,
+    )
+    d.rounded_rectangle(
+        [(0, 0), (sz - inset - 2, sz - inset - 2)],
+        radius=radius,
+        fill=bg,
     )
 
-    # bold "E" centered
+    stroke = max(1, sz // 32)
+    d.rounded_rectangle(
+        [(stroke, stroke), (sz - inset - stroke - 2, sz - inset - stroke - 2)],
+        radius=max(3, radius - stroke),
+        outline=accent,
+        width=stroke,
+    )
+
     try:
-        font_path = "C:/Windows/Fonts/segoeuib.ttf"  # Segoe UI Bold
-        font = ImageFont.truetype(font_path, int(sz * 0.55))
+        font = ImageFont.truetype("C:/Windows/Fonts/segoeuib.ttf", int(sz * 0.58))
     except Exception:
         font = ImageFont.load_default()
+
     text = "E"
     bbox = d.textbbox((0, 0), text, font=font)
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     tx = (sz - tw) // 2 - bbox[0]
-    ty = (sz - th) // 2 - bbox[1]
+    ty = (sz - th) // 2 - bbox[1] - max(0, sz // 70)
     d.text((tx, ty), text, fill=fg, font=font)
 
     return img
 
 
-def main():
+def main() -> None:
     base = render(256)
-    base.save(OUT, format="ICO", sizes=[(s, s) for s in SIZES])
-    print(f"wrote {OUT} ({OUT.stat().st_size} bytes)")
+    base.save(OUT_PNG, format="PNG")
+    base.save(OUT_ICO, format="ICO", sizes=[(s, s) for s in SIZES])
+    print(f"wrote {OUT_PNG} ({OUT_PNG.stat().st_size} bytes)")
+    print(f"wrote {OUT_ICO} ({OUT_ICO.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":

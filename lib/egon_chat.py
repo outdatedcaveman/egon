@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # provider -> (default model, env var names to check for the key)
 PROVIDERS = {
-    "gemini": ("gemini-2.0-flash", ("GEMINI_API_KEY", "GOOGLE_API_KEY")),
+    "gemini": ("gemini-2.5-flash", ("GEMINI_API_KEY", "GOOGLE_API_KEY")),
     "claude": ("claude-sonnet-5", ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY")),
     "openai": ("gpt-5.5", ("OPENAI_API_KEY", "CHATGPT_API_KEY")),
 }
@@ -70,16 +70,28 @@ def _mind_context(query: str, limit: int = 6) -> str:
     in — never triggers agents or further LLM calls."""
     try:
         from lib.connection_engine import connect
-        hits = connect(query, limit=limit, semantic_search=True, lexical_search=False)
+        res = connect(query, limit=limit, semantic_search=True, lexical_search=False)
     except Exception:
         return ""
+    # connect() returns a dict {status, connections:[...]}, NOT a bare list.
+    if isinstance(res, dict):
+        hits = res.get("connections") or []
+    elif isinstance(res, list):
+        hits = res
+    else:
+        hits = []
     lines = []
-    for h in (hits or [])[:limit]:
+    for h in hits[:limit]:
+        if not isinstance(h, dict):
+            continue
         t = (h.get("title") or "").strip()
         s = (h.get("source") or "").strip()
+        why = h.get("why")
         sn = (h.get("snippet") or "").strip()
+        if not sn and isinstance(why, (list, tuple)):
+            sn = ", ".join(str(w) for w in why[:5])
         if t:
-            lines.append(f"- [{s}] {t}" + (f" — {sn[:120]}" if sn else ""))
+            lines.append(f"- [{s}] {t[:110]}" + (f" — {sn[:120]}" if sn else ""))
     return "\n".join(lines)
 
 

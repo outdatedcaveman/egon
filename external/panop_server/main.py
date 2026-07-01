@@ -28,6 +28,15 @@ from typing import List, Dict, Any
 import uvicorn
 import multiprocessing
 
+from lib.phone_access_policy import phone_access_state
+
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+PHONE_LINK_PAUSED_FILE = os.path.join(ROOT_DIR, "state", "panop", "phone_link_paused.json")
+
+
+def phone_link_paused():
+    return os.path.exists(PHONE_LINK_PAUSED_FILE)
+
 try:
     import cloudscraper
     _scraper = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "mobile": False})
@@ -688,7 +697,16 @@ def get_ai_prediction(text):
     if scores[best_cat] > 20: return best_cat
     return None
 
-def ensure_adb():
+def ensure_adb(user_request=False, reason="phone action", ttl_s=None):
+    access = None
+    if user_request:
+        phone_access_state(user_request=True, owner="panop", reason=reason, ttl_s=ttl_s)
+    else:
+        access = phone_access_state(background=True)
+        if not access.get("allowed"):
+            raise RuntimeError(access.get("message") or "phone access dormant")
+    if phone_link_paused() and not user_request and (access or {}).get("source") != "active_lease":
+        raise RuntimeError("phone link paused for banking mode")
     adb_dir = os.path.join(OUTPUT_DIR(), "platform-tools")
     adb_exe = os.path.join(adb_dir, "platform-tools", "adb.exe")
     if not os.path.exists(adb_exe):
@@ -1679,6 +1697,19 @@ def _batch_zotero_post(items, env):
 
 def run_adb_sweep():
     global sweep_status
+    access = phone_access_state(background=True)
+    if not access.get("allowed"):
+        sweep_status["running"] = False
+        sweep_status["adb_connected"] = False
+        sweep_status["device_id"] = None
+        sweep_status["last_error"] = access.get("message") or "Phone access dormant; ADB sweep skipped."
+        return
+    if phone_link_paused() and access.get("source") != "active_lease":
+        sweep_status["running"] = False
+        sweep_status["adb_connected"] = False
+        sweep_status["device_id"] = None
+        sweep_status["last_error"] = "Phone link paused for banking mode; ADB sweep skipped."
+        return
     sweep_status["running"] = True
     sweep_status["last_run"] = datetime.now().isoformat()
     sweep_status["last_error"] = None
@@ -2218,11 +2249,12 @@ def start_background_jobs():
     # daemon is up it persists, so the per-poll `adb devices` calls below
     # connect silently and never re-fork it. This is the other half of the
     # "no shell window every second" fix. Bruno 2026-05-27.
-    try:
-        _adb_exe0 = ensure_adb()
-        subprocess.run([_adb_exe0, "start-server"], capture_output=True, timeout=15)
-    except Exception:
-        pass
+    if phone_access_state(background=True).get("allowed") and not phone_link_paused():
+        try:
+            _adb_exe0 = ensure_adb()
+            subprocess.run([_adb_exe0, "start-server"], capture_output=True, timeout=15)
+        except Exception:
+            pass
     # Keep the wireless ADB link alive in the background. Android rotates
     # the connect port whenever Wireless Debugging idles or toggles, which
     # causes manual reconnects to feel flaky. The watchdog auto-discovers
@@ -2712,6 +2744,8 @@ def f_now(background_tasks: BackgroundTasks):
     sweep_status["tabs_seen"] = 0
     sweep_status["new_entries"] = 0
     sweep_status["matched"] = 0
+    phone_access_state(user_request=True, owner="fetch_now",
+                       reason="manual Fetch Now / ADB sweep", ttl_s=30 * 60)
     background_tasks.add_task(run_adb_sweep)
     return {"status": "fetching"}
 
@@ -3060,7 +3094,7 @@ def inspect_tabs(wake: bool = False):
       chrome_internal    — chrome:// / about: / devtools:// etc.
     """
     try:
-        adb_exe = ensure_adb()
+        adb_exe = ensure_adb(user_request=True, reason="inspect phone tabs", ttl_s=15 * 60)
     except Exception as e:
         return {"status": "error", "message": f"ADB unavailable: {e}"}
     tabs = None
@@ -3623,6 +3657,8 @@ def drain_all_tabs():
                          "skipped": 0, "remaining": 0, "current_url": "",
                          "cancel": False, "last_error": "",
                          "started_at": datetime.now().isoformat(), "finished_at": None})
+    phone_access_state(user_request=True, owner="tabs_drain",
+                       reason="manual tab drain", ttl_s=2 * 60 * 60)
     threading.Thread(target=_process_all_tabs_loop, daemon=True).start()
     return {"status": "started"}
 
@@ -3636,7 +3672,7 @@ def phone_keep_awake():
     ADB. Records the previous value so we can restore it. Also disables the
     lock screen briefly via stayon-while-charging if USB is detected."""
     try:
-        adb_exe = ensure_adb()
+        adb_exe = ensure_adb(user_request=True, reason="keep phone awake", ttl_s=30 * 60)
     except Exception as e:
         return {"status": "error", "message": f"ADB unavailable: {e}"}
     # Read previous timeout
@@ -3679,7 +3715,7 @@ def phone_pair(host: str = "", port: int = 0, code: str = ""):
     if not host or not port or not code:
         return {"status": "error", "message": "host, port and code are all required"}
     try:
-        adb_exe = ensure_adb()
+        adb_exe = ensure_adb(user_request=True, reason="pair phone", ttl_s=15 * 60)
     except Exception as e:
         return {"status": "error", "message": f"ADB unavailable: {e}"}
     target = f"{host}:{port}"
@@ -3852,6 +3888,13 @@ def _adb_watchdog_loop():
     reconnect attempt. Runs forever as a daemon thread."""
     while True:
         try:
+            access = phone_access_state(background=True)
+            if not access.get("allowed"):
+                time.sleep(int(access.get("sleep_s") or 60))
+                continue
+            if phone_link_paused():
+                time.sleep(6)
+                continue
             adb_exe = ensure_adb()
             ready, _u, _o = _adb_list_devices(adb_exe)
             
@@ -3881,7 +3924,7 @@ def _start_adb_watchdog():
 @app.post("/api/v1/phone/reconnect")
 def phone_reconnect():
     try:
-        adb_exe = ensure_adb()
+        adb_exe = ensure_adb(user_request=True, reason="manual phone reconnect", ttl_s=15 * 60)
     except Exception as e:
         return {"status": "error", "message": f"ADB unavailable: {e}"}
     # Hard restart the adb server — fixes most "connects then drops" cases
@@ -3933,7 +3976,7 @@ def phone_reconnect():
 @app.post("/api/v1/phone/usb_diagnose")
 def phone_usb_diagnose():
     try:
-        adb_exe = ensure_adb()
+        adb_exe = ensure_adb(user_request=True, reason="manual USB diagnosis", ttl_s=15 * 60)
     except Exception as e:
         return {"status": "error", "message": f"ADB unavailable: {e}", "logs": []}
         
@@ -4060,6 +4103,11 @@ _awake_cache = {"at": 0, "val": None}
 
 @app.get("/api/v1/phone/awake_status")
 def phone_awake_status():
+    if phone_link_paused():
+        out = {"awake": False, "available": False, "paused": True,
+               "message": "phone link paused for banking mode"}
+        _awake_cache.update(at=time.time(), val=out)
+        return out
     # Cache result for 5 s — UI polls every 10 s, this avoids two overlapping
     # adb-shell calls when reconnect + poll fire near each other (which is
     # what makes the phone "drop after one click").
@@ -4106,7 +4154,7 @@ def phone_awake_status():
 @app.post("/api/v1/phone/restore_sleep")
 def phone_restore_sleep():
     try:
-        adb_exe = ensure_adb()
+        adb_exe = ensure_adb(user_request=True, reason="restore phone sleep", ttl_s=5 * 60)
     except Exception as e:
         return {"status": "error", "message": f"ADB unavailable: {e}"}
     env = get_env()

@@ -184,10 +184,10 @@ class MainWindow(QMainWindow):
         from pathlib import Path
         from PySide6.QtGui import QPixmap
         logo_label = QLabel()
-        logo_path = str(Path(__file__).resolve().parent.parent / "theme" / "logo.png")
+        logo_path = str(Path(__file__).resolve().parent.parent / "shell" / "egon.png")
         pixmap = QPixmap(logo_path)
         if not pixmap.isNull():
-            logo_label.setPixmap(pixmap.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            logo_label.setPixmap(pixmap.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             h.addWidget(logo_label)
 
         title = QLabel("Egon")

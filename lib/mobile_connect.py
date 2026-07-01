@@ -28,7 +28,7 @@ from pathlib import Path
 # was imported inside build_app(), the hint couldn't resolve and FastAPI fell
 # back to treating `req` as a required query field → every call 422'd.
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 ROOT = Path(__file__).resolve().parent.parent
 CFG = ROOT / "egon-config.json"
@@ -160,11 +160,50 @@ _PAGE = """<!doctype html><html><head>
  .drainbar b{color:var(--text)}
  .drainbar button{flex:0 0 auto;padding:8px 12px;border-radius:9px;border:1px solid var(--line);
   background:var(--surface2);color:var(--text);font-weight:700;font-size:12.5px}
+ /* tab bar */
+ .tabs{display:flex;gap:6px;margin:2px 0 14px;background:var(--surface);border:1px solid var(--line);
+  border-radius:13px;padding:5px}
+ .tabs button{flex:1;background:transparent;color:var(--muted);border:none;border-radius:9px;
+  padding:10px 6px;font-weight:700;font-size:13.5px}
+ .tabs button.on{background:var(--surface2);color:var(--text)}
+ /* chat */
+ #chatlog{display:flex;flex-direction:column;gap:9px;min-height:42vh;padding:2px 0 12px}
+ .msg{max-width:88%;padding:10px 12px;border-radius:13px;font-size:14.5px;line-height:1.5}
+ .msg .txt{white-space:pre-wrap}
+ .msg.u{align-self:flex-end;background:rgba(127,203,205,.14);border:1px solid rgba(127,203,205,.28)}
+ .msg.a{align-self:flex-start;background:var(--surface);border:1px solid var(--line)}
+ .msg.err .txt{color:#f2a0a0}
+ .msg .who{font-size:10.5px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;
+  margin-bottom:3px;color:var(--gold)}
+ .msg.u .who{color:var(--teal)}
+ .prov{display:flex;gap:8px;align-items:center;margin-bottom:8px;font-size:12px;color:var(--muted)}
+ .prov select{background:var(--surface2);color:var(--text);border:1px solid var(--line);
+  border-radius:8px;padding:6px 8px;font-size:12.5px}
+ .chatbar{position:sticky;bottom:0;display:flex;gap:8px;padding:8px 0 2px;
+  background:linear-gradient(180deg,rgba(8,21,25,0),var(--bg0) 45%)}
+ .chatbar textarea{height:54px;flex:1;background:var(--surface);border:1px solid var(--line);
+  border-radius:12px;color:var(--text);padding:9px;font-size:15px;resize:none;outline:none}
+ .chatbar button{flex:0 0 70px;color:#08171c;background:linear-gradient(135deg,var(--gold),#d6a548)}
+ /* oversee */
+ .ocard{background:var(--surface);border:1px solid var(--line);border-radius:13px;padding:12px;margin:9px 0}
+ .ocard .ttl{font-weight:700;font-size:14px;margin-bottom:4px}
+ .ocard .meta{font-size:12.5px;color:var(--muted);line-height:1.45}
+ .prop{background:var(--surface);border:1px solid rgba(230,182,92,.25);border-radius:12px;padding:11px;margin:8px 0}
+ .prop .btns{display:flex;gap:8px;margin-top:10px}
+ .prop .btns button{flex:1;padding:10px;color:#08171c;font-weight:700;border-radius:9px;border:none}
+ .prop .appr{background:linear-gradient(135deg,var(--gold),#d6a548)}
+ .prop .veto{background:var(--surface2);color:var(--text);border:1px solid var(--line)}
 </style></head><body>
 <header>
  <div class="mark">✨</div>
  <div class="brand">Egon Connect<small>what in your world connects to this?</small></div>
 </header>
+<div class="tabs">
+ <button data-t="connect" class="on">Connect</button>
+ <button data-t="chat">Chat</button>
+ <button data-t="oversee">Oversee</button>
+</div>
+<div id="view-connect">
 <div class="composer">
  <textarea id="t" placeholder="Type, paste, or capture — then Search…"></textarea>
  <div class="actions">
@@ -176,6 +215,21 @@ _PAGE = """<!doctype html><html><head>
 </div>
 <div id="st"></div><div id="insight"></div><div id="res"></div>
 <div id="drainbar" class="drainbar" style="display:none"></div>
+</div>
+<div id="view-chat" style="display:none">
+ <div class="prov">Model
+  <select id="cprov"><option value="gemini">gemini</option>
+   <option value="claude">claude</option><option value="openai">openai</option></select>
+  <span id="cnote"></span></div>
+ <div id="chatlog"></div>
+ <div class="chatbar">
+  <textarea id="cin" placeholder="Message Egon…"></textarea>
+  <button id="csend">Send</button>
+ </div>
+</div>
+<div id="view-oversee" style="display:none">
+ <div id="orchbody"><div class="empty">loading…</div></div>
+</div>
 <script>
 const K=new URLSearchParams(location.search).get('k')||'';
 const E={instapaper:'📰',zotero:'📚',paperpile:'📄',kindle:'📖',letterboxd:'🎬',
@@ -279,6 +333,116 @@ renderDrain();
 // Android app share-target: app opens /m?k=…&shared=<text> → prefill + auto-connect.
 const SH=new URLSearchParams(location.search).get('shared');
 if(SH&&SH.trim().length>2){$('t').value=SH;call('/m/connect');}
+
+// ── Tabs ────────────────────────────────────────────────────────────────────
+function tab(name){
+ for(const v of ['connect','chat','oversee'])
+  $('view-'+v).style.display=(v===name)?'block':'none';
+ document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===name));
+ if(name==='oversee')loadOrch();
+ if(name==='chat'){checkProviders();setTimeout(()=>$('cin').focus(),50);}
+}
+document.querySelector('.tabs').addEventListener('click',ev=>{
+ const b=ev.target.closest('button[data-t]');if(b)tab(b.dataset.t);});
+
+// ── Chat (streaming SSE) ─────────────────────────────────────────────────────
+const CHIST=[];let PROV_OK=false;
+function scrollChat(){window.scrollTo(0,document.body.scrollHeight);}
+function addMsg(role,text){
+ const d=document.createElement('div');d.className='msg '+role;
+ d.innerHTML='<div class="who">'+(role==='u'?'You':'Egon')+'</div><div class="txt"></div>';
+ d.querySelector('.txt').textContent=text;
+ $('chatlog').appendChild(d);scrollChat();return d;
+}
+async function checkProviders(){
+ if(PROV_OK)return;
+ try{const r=await fetch('/m/providers?k='+encodeURIComponent(K));const a=await r.json();
+  const sel=$('cprov');let first=null;
+  [...sel.options].forEach(o=>{const ok=a[o.value];o.textContent=o.value+(ok?'':' (no key)');
+   if(ok&&first===null)first=o.value;});
+  if(first){sel.value=first;PROV_OK=true;}
+  $('cnote').textContent=first?'':'no keys configured';
+ }catch(e){}
+}
+async function sendChat(){
+ const inp=$('cin');const t=inp.value.trim();if(!t)return;
+ if($('csend').disabled)return;
+ inp.value='';addMsg('u',t);CHIST.push({role:'user',content:t});
+ const a=addMsg('a','');const tx=a.querySelector('.txt');tx.textContent='…';
+ $('csend').disabled=true;
+ let acc='';let first=true;
+ try{
+  const r=await fetch('/m/chat?k='+encodeURIComponent(K),{method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({messages:CHIST,provider:$('cprov').value})});
+  if(r.status===403){tx.textContent='⚠ wrong token';a.classList.add('err');$('csend').disabled=false;return;}
+  const rd=r.body.getReader();const dec=new TextDecoder();let buf='';
+  while(true){const{value,done}=await rd.read();if(done)break;
+   buf+=dec.decode(value,{stream:true});let i;
+   while((i=buf.indexOf('\\n\\n'))>=0){
+    const line=buf.slice(0,i).trim();buf=buf.slice(i+2);
+    if(!line.startsWith('data:'))continue;
+    const p=line.slice(5).trim();if(p==='[DONE]')continue;
+    try{const o=JSON.parse(p);
+     if(o.error){tx.textContent='⚠ '+o.error;a.classList.add('err');}
+     else if(o.t){if(first){tx.textContent='';first=false;}acc+=o.t;tx.textContent=acc;scrollChat();}
+    }catch(e){}
+   }
+  }
+  if(acc)CHIST.push({role:'assistant',content:acc});
+ }catch(e){tx.textContent='⚠ Egon not reachable — same WiFi as the PC?';a.classList.add('err');}
+ $('csend').disabled=false;
+}
+$('csend').onclick=sendChat;
+$('cin').addEventListener('keydown',e=>{
+ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat();}});
+
+// ── Oversee (orchestrator + Hermes) ─────────────────────────────────────────
+async function loadOrch(){
+ $('orchbody').innerHTML='<div class="empty">loading…</div>';
+ try{
+  const r=await fetch('/m/orch?k='+encodeURIComponent(K));
+  if(r.status===403){$('orchbody').innerHTML='<div class="empty">wrong token</div>';return;}
+  renderOrch(await r.json());
+ }catch(e){$('orchbody').innerHTML='<div class="empty">core not reachable</div>';}
+}
+function renderOrch(d){
+ if(d.error){$('orchbody').innerHTML='<div class="empty">'+esc(d.error)+'</div>';return;}
+ const m=d.mission||{};const s=m.summary||{};const agents=m.agents||{};
+ const au=(d.autonomy&&(d.autonomy.autonomy||d.autonomy))||{};
+ let h='<div class="ocard"><div class="ttl">Mission · autonomy '+(au.enabled?'ON':'OFF')+'</div>'+
+  '<div class="meta">active '+(s.active_work||0)+' · paused '+(s.paused||0)+
+  ' · clarification '+(s.needs_clarification||0)+' · leases '+(s.open_leases||0)+'</div></div>';
+ const names=Object.keys(agents);
+ if(names.length){h+='<div class="sec mind">Agents</div>';}
+ for(const name of names){const info=agents[name]||{};
+  const st=((info.state||{}).status)||'idle';
+  const ct=((info.current_task||{}).sub_task_desc)||'no active task';
+  const le=(info.latest_event||{}).content||'';
+  h+='<div class="ocard"><div class="ttl">'+esc(name)+' · '+esc(st)+'</div>'+
+   '<div class="meta">'+esc(ct.slice(0,150))+
+   (le?('<br>latest: '+esc(le.slice(0,120))):'')+'</div></div>';
+ }
+ const props=d.proposals||[];
+ if(props.length){h+='<div class="sec arch">Hermes proposals — your call</div>';
+  for(const p of props.slice(0,12)){const tier=p.masterlaw_tier||'ok';const tid=p.task_id;
+   const mark={block:'⛔ BLOCK',confirm:'⚠ ASK',ok:'✓ OK'}[tier]||'·';
+   h+='<div class="prop"><div>'+mark+' #'+tid+' → '+esc(p.agent||'')+'<br>'+
+    esc((p.why||'').slice(0,140))+'</div><div class="btns">';
+   if(tier!=='block')h+='<button class="appr" data-act="requeue" data-tid="'+tid+'">Approve</button>';
+   h+='<button class="veto" data-act="cancel" data-tid="'+tid+'">Veto</button></div></div>';
+  }
+ }else{h+='<div class="ocard"><div class="meta">Nothing needs your call right now.</div></div>';}
+ $('orchbody').innerHTML=h;
+}
+$('orchbody').addEventListener('click',ev=>{
+ const b=ev.target.closest('button[data-act]');if(!b)return;
+ b.disabled=true;b.textContent='…';
+ fetch('/m/orch/act?k='+encodeURIComponent(K),{method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({task_id:parseInt(b.dataset.tid,10),action:b.dataset.act})})
+  .then(()=>setTimeout(loadOrch,700)).catch(()=>setTimeout(loadOrch,700));
+});
 </script></body></html>"""
 
 
@@ -348,6 +512,96 @@ def build_app():
         # Worker thread: keep the event loop free during the blocking search +
         # synthesis (see m_connect note on the flapping). Bruno 2026-06-24.
         return await asyncio.to_thread(_work)
+
+    # ── Chat: a real streaming conversation on the phone, same cloud backend as
+    # the desktop Mission Control chat. One-directional (types in → model out,
+    # vault injected as data; never dispatches agents). SSE stream so the reply
+    # appears token-by-token. Bruno 2026-07-01. ──────────────────────────────
+    @app.get("/m/providers")
+    def m_providers(req: Request):
+        if not _authed(req):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        try:
+            from lib import egon_chat
+            return JSONResponse(egon_chat.available_providers())
+        except Exception as e:
+            return JSONResponse({"error": str(e)[:120]}, status_code=500)
+
+    @app.post("/m/chat")
+    async def m_chat(req: Request):
+        if not _authed(req):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        body = await req.json()
+        messages = body.get("messages") or []
+        provider = str(body.get("provider") or "gemini")
+
+        def gen():
+            # Sync generator → Starlette iterates it in a threadpool, keeping the
+            # event loop free (same discipline as the search routes above).
+            try:
+                from lib import egon_chat
+                got = False
+                for piece in egon_chat.stream_chat(
+                    messages, provider=provider, inject_context=True
+                ):
+                    if piece:
+                        got = True
+                        yield "data: " + json.dumps({"t": piece}) + "\n\n"
+                if not got:
+                    yield "data: " + json.dumps({"error": "empty reply"}) + "\n\n"
+            except Exception as e:
+                msg = str(e)
+                if "429" in msg:
+                    msg = "rate-limited (429) — pick another provider"
+                yield "data: " + json.dumps({"error": msg[:200]}) + "\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(gen(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache",
+                                          "X-Accel-Buffering": "no"})
+
+    # ── Oversight: view the orchestrator/Hermes from the phone and act on
+    # proposals (approve/veto). Proxies the local mind API (127.0.0.1:8000) so
+    # the phone never talks to it directly. Bruno 2026-07-01. ─────────────────
+    _MIND = "http://127.0.0.1:8000/api/v1/mind"
+
+    @app.get("/m/orch")
+    async def m_orch(req: Request):
+        if not _authed(req):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        import httpx
+        out: dict = {"mission": {}, "proposals": []}
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as c:
+                r1 = await c.get(_MIND + "/orchestrator/mission-control?limit_events=20")
+                out["mission"] = r1.json()
+                r2 = await c.get(_MIND + "/orchestrator/hermes")
+                out["proposals"] = (r2.json() or {}).get("proposals") or []
+                try:
+                    r3 = await c.get(_MIND + "/orchestrator/autonomy/status")
+                    out["autonomy"] = r3.json()
+                except Exception:
+                    pass
+        except Exception as e:
+            out["error"] = str(e)[:140]
+        return JSONResponse(out)
+
+    @app.post("/m/orch/act")
+    async def m_orch_act(req: Request):
+        if not _authed(req):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        body = await req.json()
+        tid = body.get("task_id")
+        action = str(body.get("action") or "")
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as c:
+                r = await c.post(
+                    f"{_MIND}/orchestrator/tasks/{tid}/control",
+                    json={"action": action})
+                return JSONResponse(r.json())
+        except Exception as e:
+            return JSONResponse({"error": str(e)[:120]}, status_code=502)
 
     return app
 

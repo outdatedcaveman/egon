@@ -53,6 +53,8 @@ if sys.platform == "win32":
 
 ROOT = Path(__file__).resolve().parent.parent
 LOCKED_FILE = ROOT / "state/panop/locked_target.json"
+PAUSE_FILE = ROOT / "state/panop/phone_link_paused.json"
+STATUS_FILE = ROOT / "state/panop/phone_status.json"
 ADB_CANDIDATES = [
     ROOT / "state/panop/platform-tools/platform-tools/adb.exe",
     ROOT / "panop_output/platform-tools/platform-tools/adb.exe",
@@ -122,6 +124,26 @@ def _single_instance() -> bool:
         return True
     except Exception:
         return True   # fail-open rather than refuse to start
+
+
+def _paused() -> bool:
+    return PAUSE_FILE.exists()
+
+
+def _write_paused_status() -> None:
+    try:
+        STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        STATUS_FILE.write_text(json.dumps({
+            "reachable": False,
+            "needs_action": False,
+            "paused": True,
+            "paused_reason": "manual banking mode",
+            "target": None,
+            "message": "Phone link paused (banking mode). Egon will not start ADB while this is on.",
+            "updated": datetime.now().isoformat(timespec="seconds"),
+        }, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 # ── core loop ───────────────────────────────────────────────────────────────
@@ -212,6 +234,12 @@ def run() -> int:
 
     while True:
         try:
+            if _paused():
+                _write_paused_status()
+                _log("info", "banking_mode_manual_pause")
+                time.sleep(POLL_INTERVAL_S)
+                continue
+
             target = _read_target() or target
             if not target:
                 time.sleep(POLL_INTERVAL_S)

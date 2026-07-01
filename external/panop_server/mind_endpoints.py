@@ -977,7 +977,7 @@ async def mind_memory_review(mid: int, req: Request):
 
 @app.get("/api/v1/mind/logo.png")
 def get_logo():
-    logo_path = Path(__file__).resolve().parent.parent.parent / "theme" / "logo.png"
+    logo_path = Path(__file__).resolve().parent.parent.parent / "shell" / "egon.png"
     if logo_path.exists():
         return FileResponse(logo_path, media_type="image/png")
     return {"status": "error", "error": "logo not found"}

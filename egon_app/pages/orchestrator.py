@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QFrame, QGridLayout, QSizePolicy, QProgressBar, QSplitter
 )
 from egon_app import theme
+from egon_app.pages._chat_widget import ChatWidget
 
 _API = "http://127.0.0.1:8000/api/v1/mind"
 
@@ -380,12 +381,17 @@ class OrchestratorPage(QWidget):
         header_lay.addWidget(self._banner)
         root.addLayout(header_lay)
         
-        sub = QLabel("Type a high-level command to decompose it into sub-tasks for "
-                     "active agent bodies (claude-code, antigravity, hermes, codex). "
-                     "Sub-tasks are dynamically queued and injected into agents' context when they run.")
+        sub = QLabel("Talk to Egon directly below — it answers in real time, grounded in your "
+                     "vault. The dashboard underneath is oversight: live agent status, Hermes "
+                     "proposals (you veto), and the task queue.")
         sub.setStyleSheet(f"color:{_MUTED};")
         sub.setWordWrap(True)
         root.addWidget(sub)
+
+        # ── The chat box Bruno asked for: Mission Control IS a conversation. ──
+        self._chat = ChatWidget(self, title="MISSION CONTROL  ·  chat")
+        self._chat.setMinimumHeight(420)
+        root.addWidget(self._chat)
 
         root.addWidget(self._build_hermes_panel())
         root.addWidget(self._build_command_panel())

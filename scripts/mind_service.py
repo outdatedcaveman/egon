@@ -25,6 +25,7 @@ HOST = "127.0.0.1"
 PORT = 8000
 MIND_STATS_URL = f"http://{HOST}:{PORT}/api/v1/mind/stats"
 LOG_PATH = ROOT / "logs" / "mind-service.log"
+MOBILE_HOST = "127.0.0.1"
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -49,6 +50,14 @@ def _log(level: str, event: str, **data) -> None:
 def _port_open(timeout: float = 0.4) -> bool:
     try:
         with socket.create_connection((HOST, PORT), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def _tcp_open(host: str, port: int, timeout: float = 0.4) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
             return True
     except Exception:
         return False
@@ -128,12 +137,42 @@ def _warm_health_cache() -> None:
                  path=path, error=f"{type(e).__name__}: {str(e)[:200]}")
 
 
+def _run_mobile_connect_only() -> int:
+    """Serve Mobile Connect when another process already owns the mind API."""
+    try:
+        from lib.mobile_connect import build_app, write_url_file, MOBILE_PORT
+        import uvicorn
+    except Exception as e:
+        _log("error", "mobile_connect_import_failed",
+             error=f"{type(e).__name__}: {str(e)[:300]}")
+        return 1
+    if _tcp_open(MOBILE_HOST, MOBILE_PORT):
+        _log("info", "mobile_connect_already_running", port=MOBILE_PORT)
+        return 0
+    try:
+        url = write_url_file()
+        _log("info", "mobile_connect_only_up", port=MOBILE_PORT, url=url)
+        uvicorn.run(
+            build_app(),
+            host="0.0.0.0",
+            port=MOBILE_PORT,
+            log_config=None,
+            log_level="warning",
+            access_log=False,
+        )
+        return 0
+    except Exception as e:
+        _log("error", "mobile_connect_only_failed",
+             error=f"{type(e).__name__}: {str(e)[:300]}")
+        return 1
+
+
 def main() -> int:
     _log("info", "starting", argv=" ".join(sys.argv[1:]))
 
     if _mind_ready():
-        _log("info", "already_running")
-        return 0
+        _log("info", "mind_already_running")
+        return _run_mobile_connect_only()
 
     force_start = os.environ.get("EGON_MIND_SERVICE_FORCE") == "1"
     if force_start:

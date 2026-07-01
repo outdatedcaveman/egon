@@ -707,6 +707,38 @@ _DRIVE_EXTRACTS_BACKUP = Path(os.environ.get(
     "EGON_EXTRACTS_DRIVE_BACKUP", r"G:\My Drive\EgonData\file_extracts"))
 
 
+def _backup_private_config(day: str) -> None:
+    """Daily: zip private config + customizations (keys, persona, settings) to a
+    dated file on Drive for safekeeping. Tiny + fast, so inline (no subprocess).
+    New dated file each day = no Drive in-place-overwrite conflict. Bruno 2026-07-01."""
+    try:
+        import zipfile
+        import glob as _glob
+        patterns = ["egon-config.json", ".env", "state/persona*.json",
+                    "state/settings*.json", "state/*config*.json",
+                    "state/memory_rules*.json", "state/notion_catchup_active.json",
+                    "state/reembed_active.json", "state/hydrate_cloud.json",
+                    "external/panop_server/panop_env.json"]
+        files = sorted({Path(p) for pat in patterns
+                        for p in _glob.glob(str(ROOT / pat)) if Path(p).is_file()})
+        if not files:
+            return
+        bdir = _DRIVE_INDEX_BACKUP.parent / "config_backup"
+        bdir.mkdir(parents=True, exist_ok=True)
+        zpath = bdir / f"egon_private_{day}.zip"
+        with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
+            for f in files:
+                z.write(f, f.relative_to(ROOT))
+        for old in sorted(_glob.glob(str(bdir / "egon_private_*.zip")))[:-5]:
+            try:
+                os.remove(old)
+            except Exception:
+                pass
+        log("info", "private_config_backup", files=len(files), day=day)
+    except Exception as e:
+        log("warn", "private_config_backup_failed", error=str(e)[:120])
+
+
 def check_index_backup(u: "Unit") -> None:
     """The live index + extracts now live on LOCAL disk (fast, no Drive sync
     thrash). Once a day, mirror them to the Drive copy as a backup — robocopy in
@@ -770,6 +802,7 @@ def check_index_backup(u: "Unit") -> None:
             [str(PYW), "-c", code], cwd=str(ROOT), env=SPAWN_ENV,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008))
+        _backup_private_config(today)   # tiny: config/keys/persona dated zip
         _index_backup_date = today
         u.ok = True
         u.detail = f"Drive backup (dated zip) launched {today}"

@@ -34,6 +34,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from lib.phone_access_policy import phone_access_state
+
 ROOT = Path(__file__).resolve().parent.parent.parent
 LOCKED_FILE = ROOT / "state" / "panop" / "locked_target.json"
 # Human-facing phone link status — the UI (Inbox banner) + the tray notifier
@@ -229,6 +231,16 @@ def _set_adb_wifi(adb_path: Path, target: str, on: bool) -> None:
          "adb_wifi_enabled", "1" if on else "0", timeout=6)
 
 
+def _kill_adb_processes(reason: str) -> None:
+    """Banking mode means no active ADB daemon, even if another helper woke it."""
+    try:
+        subprocess.run(["taskkill", "/F", "/IM", "adb.exe"],
+                       capture_output=True, text=True, timeout=4)
+        _log("info", "adb_processes_killed", reason=reason)
+    except Exception as e:
+        _log("warn", "adb_process_kill_failed", reason=reason, error=str(e)[:160])
+
+
 # ── accessibility grant (Connect "Capture" button) ───────────────────────────
 # Bruno 2026-06-24: the Egon Connect app's Capture button reads the screen via
 # EgonA11yService. EVERY APK reinstall wipes the accessibility grant, so Capture
@@ -370,19 +382,28 @@ def _relock_via_usb(adb_path: Path) -> str | None:
 
 def _write_phone_status(reachable: bool, target: str | None,
                         usb_seen: bool = False, paused: bool = False,
-                        paused_reason: str = "") -> None:
+                        paused_reason: str = "", dormant: bool = False,
+                        dormant_reason: str = "") -> None:
     """Persist a human-facing status the UI + tray notifier read. `needs_action`
     is True when the link is down AND we couldn't auto-heal (no usable USB
     device) — i.e. Bruno must plug in / enable USB debugging. When `paused`
     (banking mode), the link being down is intentional, so `needs_action` stays
     False and the message explains why."""
-    if paused:
+    if dormant:
         needs_action = False
-        msg = ("Phone link paused (banking mode) — Egon has stopped re-enabling "
-               "Wireless Debugging so apps like Nubank can open"
-               + (f" ({paused_reason})" if paused_reason else "")
-               + ". The link resumes automatically once the banking app closes; "
-               "turn banking mode off (or delete the pause flag) to resume now.")
+        msg = dormant_reason or (
+            "Phone access dormant - Egon is not touching ADB until a user "
+            "action requests it or a configured downtime window opens."
+        )
+    elif paused:
+        needs_action = False
+        base = ("Phone link paused (banking mode) - Egon has stopped "
+                "re-enabling Wireless Debugging so apps like Nubank can open"
+                + (f" ({paused_reason})" if paused_reason else ""))
+        if paused_reason == "manual banking mode":
+            msg = base + ". Turn banking mode off when you want Egon Connect to resume."
+        else:
+            msg = base + ". The link resumes automatically once the banking app closes."
     else:
         needs_action = (not reachable) and (not usb_seen)
         if reachable:
@@ -402,6 +423,7 @@ def _write_phone_status(reachable: bool, target: str | None,
             "paused": paused,
             "paused_reason": paused_reason,
             "target": target,
+            "dormant": dormant,
             "message": msg,
             "updated": datetime.now().isoformat(timespec="seconds"),
         }, indent=2), encoding="utf-8")
@@ -433,6 +455,7 @@ def _run_loop(stop: threading.Event) -> None:
     last_reassert = 0.0
     last_wifi_assert = 0.0        # throttle the adb_wifi re-enable to POLL_INTERVAL_S
     banking_grace_until = 0.0     # while >now, stay in banking mode (no relock)
+    last_access_allowed = False
     BANKING_GRACE_S = 90
     target = _read_target()
 
@@ -441,6 +464,29 @@ def _run_loop(stop: threading.Event) -> None:
             cfg = _load_phone_cfg()
             manual = _manual_paused(cfg)
             in_grace = time.time() < banking_grace_until
+            if manual:
+                _write_phone_status(False, None, paused=True,
+                                    paused_reason="manual banking mode")
+                _log("info", "banking_mode_manual_pause")
+                stop.wait(POLL_INTERVAL_S)
+                continue
+
+            access = phone_access_state(background=True)
+            if not access.get("allowed"):
+                if last_access_allowed:
+                    _adb(adb_path, "disconnect", timeout=6)
+                    _adb(adb_path, "kill-server", timeout=6)
+                    _log("info", "phone_access_released", reason="lease_expired_or_dormant")
+                else:
+                    _kill_adb_processes("phone access dormant")
+                last_access_allowed = False
+                _write_phone_status(False, target, dormant=True,
+                                    dormant_reason=access.get("message", "Phone access dormant."))
+                _log("info", "phone_access_dormant", source=access.get("source"))
+                stop.wait(int(access.get("sleep_s") or POLL_INTERVAL_S))
+                continue
+            last_access_allowed = True
+
             if manual or in_grace:
                 # Banking mode: do NOT relock and do NOT re-enable Wireless
                 # Debugging — that's exactly what blocks Nubank et al. Keep it
@@ -448,7 +494,7 @@ def _run_loop(stop: threading.Event) -> None:
                 # auto-trigger, never a manual pause) once the app is gone.
                 target = _read_target() or target
                 reachable = bool(target) and _is_reachable(adb_path, target)
-                reason = "manual banking mode" if manual else "banking app open"
+                reason = "banking app open"
                 if reachable:
                     _set_adb_wifi(adb_path, target, False)
                     _ensure_a11y(adb_path, target, False)  # banking-safe
