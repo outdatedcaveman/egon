@@ -361,6 +361,52 @@ def _any_heavy_running() -> bool:
         except Exception:
             pass
     return False
+
+
+HEAVY_REAP_IDLE_S = int(os.environ.get("EGON_HEAVY_REAP_IDLE_S", "45"))
+
+
+def _reap_heavy(reason: str = "user-active") -> int:
+    """Terminate EVERY heavy subprocess immediately. Called the instant the user
+    becomes active (heavy work must NEVER thrash the 8GB box while Bruno uses it)
+    and at startup to clear orphans a prior egon_core instance left running (e.g.
+    a catchup Notion loop). This is the hard guarantee that Egon's heavy jobs are
+    strictly idle-only. Bruno 2026-07-01."""
+    g = globals()
+    killed = 0
+    for name in ("_hydrate_proc", "_index_proc", "_reembed_proc", "_concept_proc",
+                 "_mirror_proc", "_index_backup_proc"):
+        p = g.get(name)
+        try:
+            if p is not None and p.poll() is None:
+                p.kill()
+                killed += 1
+            g[name] = None
+        except Exception:
+            pass
+    # Sweep orphaned -c workers (untracked, from prior instances)
+    try:
+        mypid = os.getpid()
+        out = subprocess.run(
+            ["wmic", "process", "where", "name like '%python%'",
+             "get", "ProcessId,CommandLine"],
+            capture_output=True, text=True).stdout
+        import re as _re
+        for line in out.splitlines():
+            low = line.lower()
+            if " -c " in line and any(k in low for k in (
+                    "mirror_runner", "run_notion", "concept_graph", "semantic_index",
+                    "auto_hydrate", "hydration_worker", "notion_body", "reembed")):
+                mm = _re.search(r"(\d+)\s*$", line.strip())
+                if mm and int(mm.group(1)) != mypid:
+                    subprocess.run(["taskkill", "/PID", mm.group(1), "/F"],
+                                   capture_output=True)
+                    killed += 1
+    except Exception:
+        pass
+    if killed:
+        log("info", "heavy_reaped", n=killed, reason=reason)
+    return killed
 # Re-embed the WHOLE corpus at most this often — model2vec is cheap (minutes),
 # so a periodic full pass keeps picking up newly hydrated document text with no
 # incremental-build complexity. 12h.
@@ -1003,8 +1049,13 @@ def main() -> int:
              "daily_digest": Unit("daily_digest"),
              "snapshots": Unit("snapshots"),
              "mirror": Unit("mirror")}
+    _reap_heavy("startup-orphans")   # clear any heavy jobs a prior instance left
     while True:
         try:
+            # HARD RULE: the moment the user is active, kill ALL heavy work so it
+            # can never thrash the machine while Bruno uses it.
+            if _idle_seconds() < HEAVY_REAP_IDLE_S:
+                _reap_heavy("user-active")
             check_mind(units["mind"])
             check_mobile_connect(units["mobile_connect"])
             check_headroom(units["headroom"])
@@ -1021,7 +1072,12 @@ def main() -> int:
             write_health(units)
         except Exception as e:
             log("error", "core_cycle_error", error=str(e)[:200])
-        time.sleep(CHECK_EVERY_S)
+        # Interruptible sleep: check every 1s so heavy work is reaped within ~1s
+        # of the user returning, not up to a full cycle later.
+        for _ in range(CHECK_EVERY_S):
+            time.sleep(1)
+            if _idle_seconds() < HEAVY_REAP_IDLE_S and _any_heavy_running():
+                _reap_heavy("user-active")
 
 
 if __name__ == "__main__":
