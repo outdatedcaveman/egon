@@ -90,7 +90,8 @@ class OrchestratorPage(QWidget):
         
         # Poll status every 5 seconds when visible
         self._timer = QTimer(self)
-        self._timer.setInterval(5000)
+        self._timer.setInterval(20000)   # 20s (was 5s) — 4x less polling churn on
+        # a RAM-tight machine; combined with thread-prune + skip-if-busy. 2026-07-01
         self._timer.timeout.connect(self.refresh)
 
     def _button_style(self, fg: str = _TEXT, bg: str = "#212328", border: str = _BORDER) -> str:
