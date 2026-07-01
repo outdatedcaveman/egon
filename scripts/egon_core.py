@@ -342,6 +342,7 @@ _hydrating = False
 _hydrate_proc = None      # isolated hydration/OCR subprocess
 _index_proc = None        # isolated index-rebuild subprocess
 _index_backup_date = ""   # last day the local index was mirrored to Drive
+_index_backup_proc = None  # isolated dated-zip Drive backup subprocess
 _reembed_proc = None
 _reembed_last_swap = 0.0
 
@@ -671,17 +672,47 @@ def check_index_backup(u: "Unit") -> None:
         u.ok = True
         u.detail = "waiting for local index"
         return
+    global _index_backup_proc
+    if _index_backup_proc is not None and _index_backup_proc.poll() is None:
+        u.ok = True
+        u.detail = "backing up to Drive… (zip)"
+        return
+    # The index (1.1GB vectors.npy) must NEVER be robocopy-mirrored onto Drive —
+    # Drive can't reconcile a 1GB binary overwritten in place and quarantines it
+    # to Lost & Found (the recurring "file not synced"). Instead write ONE dated
+    # zip as a NEW file (Drive conflicts on overwrites, not new files), pruned to
+    # the last 3. file_extracts stay a plain incremental mirror (small files sync
+    # fine). Bruno 2026-06-30.
+    backups = _DRIVE_INDEX_BACKUP.parent / "index_backups"
+    code = (
+        "import sys, os, glob, shutil\n"
+        "sys.path.insert(0, r'{root}')\n"
+        "src = r'{src}'; bdir = r'{bdir}'; day = '{day}'\n"
+        "os.makedirs(bdir, exist_ok=True)\n"
+        "tmp = os.path.join(r'{state}', '_index_backup_tmp')\n"
+        "shutil.make_archive(tmp, 'zip', src)\n"
+        "final = os.path.join(bdir, 'connect_index_' + day + '.zip')\n"
+        "shutil.move(tmp + '.zip', final)\n"
+        "zips = sorted(glob.glob(os.path.join(bdir, 'connect_index_*.zip')))\n"
+        "[os.remove(z) for z in zips[:-3]]\n"          # rotate: keep newest 3
+        "print('index backup zip:', final)\n"
+    ).format(root=str(ROOT), src=str(CONNECT_INDEX_DIR), bdir=str(backups),
+             day=today, state=str(ROOT / "state"))
     try:
-        for src, dst in ((CONNECT_INDEX_DIR, _DRIVE_INDEX_BACKUP),
-                         (FILE_EXTRACTS_DIR, _DRIVE_EXTRACTS_BACKUP)):
-            subprocess.Popen(
-                ["robocopy", str(src), str(dst), "/MIR", "/R:1", "/W:1",
-                 "/NFL", "/NDL", "/NJH", "/NP"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                creationflags=0x08000000)  # CREATE_NO_WINDOW
+        # extracts: small text files, incremental mirror is safe on Drive
+        subprocess.Popen(
+            ["robocopy", str(FILE_EXTRACTS_DIR), str(_DRIVE_EXTRACTS_BACKUP),
+             "/MIR", "/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NP"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=0x08000000)
+        # index: dated zip as a new file (no in-place overwrite = no conflict)
+        _index_backup_proc = subprocess.Popen(
+            [str(PYW), "-c", code], cwd=str(ROOT), env=SPAWN_ENV,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008))
         _index_backup_date = today
         u.ok = True
-        u.detail = f"Drive backup launched {today}"
+        u.detail = f"Drive backup (dated zip) launched {today}"
         log("info", "index_drive_backup", date=today)
     except Exception as e:
         u.ok = True
