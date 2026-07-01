@@ -25,6 +25,7 @@ _GOLD    = "#ff9f0a"
 _OK      = "#30d158"
 _ERR     = "#ff453a"
 _PENDING = "#E2A844"
+_PANEL_BG = "#0c0d0f"
 
 _AGENT_COLORS = {
     "claude-code": "#D77A56",
@@ -80,6 +81,11 @@ class OrchestratorPage(QWidget):
         super().__init__(parent)
         self._threads: list[QThread] = []
         self._selected_task_id: int | None = None
+        self._last_tasks: list[dict] = []
+        self._last_cooldowns: dict = {}
+        self._mission_agents: dict = {}
+        self._last_mission_data: dict = {}
+        self._agent_overview_cards: dict[str, dict] = {}
         self._build()
         
         # Poll status every 5 seconds when visible
@@ -87,8 +93,261 @@ class OrchestratorPage(QWidget):
         self._timer.setInterval(5000)
         self._timer.timeout.connect(self.refresh)
 
+    def _button_style(self, fg: str = _TEXT, bg: str = "#212328", border: str = _BORDER) -> str:
+        return (
+            f"QPushButton {{ background:{bg}; color:{fg}; border:none; "
+            "border-radius:5px; padding:4px 8px; font-weight:600; font-size:10px; }}"
+            f"QPushButton:disabled {{ background:#15171a; color:{_MUTED}; border:none; }}"
+        )
+
+    def _chip(self, label: str, value: str, color: str = _MUTED) -> QLabel:
+        chip = QLabel(f"{label} {value}")
+        chip.setStyleSheet(
+            f"QLabel {{ background:transparent; color:{color}; border:none; "
+            "padding:0 4px 0 0; font-size:10px; font-weight:700; }}"
+        )
+        chip.setMinimumHeight(22)
+        return chip
+
+    def _build_command_panel(self) -> QFrame:
+        panel = QFrame()
+        panel.setStyleSheet(
+            f"QFrame {{ background:{_BG_CARD}; border:none; border-radius:8px; }}"
+        )
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(8)
+
+        title = QLabel("COMMAND")
+        title.setStyleSheet(f"color:{_TEXT}; font-weight:800; font-size:11px;")
+        lay.addWidget(title)
+
+        self._input = QPlainTextEdit()
+        self._input.setPlaceholderText("Decompose and delegate a goal... (e.g., 'Check database stats, refactor synthesis, and run a workspace audit')")
+        self._input.setStyleSheet(
+            f"QPlainTextEdit {{ background:#0c0d0f; color:{_TEXT}; "
+            f"border:none; border-radius:6px; padding:8px; "
+            f"font-size:13px; }}"
+        )
+        self._input.setFixedHeight(82)
+        lay.addWidget(self._input)
+
+        row = QHBoxLayout()
+        self._btn_dispatch = QPushButton("Decompose  Dispatch")
+        self._btn_dispatch.setStyleSheet(
+            f"QPushButton {{ background:{_GOLD}; color:#16181c; border:none; "
+            f"border-radius:6px; padding:8px 22px; font-weight:800; font-size:13px; }}"
+        )
+        self._btn_dispatch.clicked.connect(self._dispatch)
+        self._top_btn_dispatch = self._btn_dispatch
+        row.addWidget(self._btn_dispatch)
+
+        self._status = QLabel("Ready")
+        self._status.setStyleSheet(f"color:{_MUTED};")
+        self._top_status = self._status
+        row.addWidget(self._status)
+
+        self._progress = QProgressBar()
+        self._progress.setStyleSheet(
+            f"QProgressBar {{ background: {_BG_CARD}; border:none; border-radius: 4px; }}"
+            f"QProgressBar::chunk {{ background: {_GOLD}; border-radius: 4px; }}"
+        )
+        self._progress.setFixedHeight(6)
+        self._progress.setFixedWidth(120)
+        self._progress.setTextVisible(False)
+        self._progress.setVisible(False)
+        self._top_progress = self._progress
+        row.addWidget(self._progress)
+        row.addStretch(1)
+        lay.addLayout(row)
+        return panel
+
+    def _build_hermes_panel(self) -> QFrame:
+        hermes_panel = QFrame()
+        hermes_panel.setStyleSheet(
+            f"QFrame {{ background:{_BG_CARD}; border:none; border-radius:8px; }}"
+        )
+        hp = QVBoxLayout(hermes_panel)
+        hp.setContentsMargins(12, 10, 12, 10)
+        hp.setSpacing(6)
+        head = QHBoxLayout()
+        ht = QLabel("HERMES OVERSIGHT  -  masterlaw-screened")
+        ht.setStyleSheet(f"color:{_GOLD}; font-weight:800; font-size:12px;")
+        head.addWidget(ht)
+        head.addStretch(1)
+        self._auto_btn = QPushButton("Autonomous dispatch: ...")
+        self._auto_btn.setCursor(Qt.PointingHandCursor)
+        self._auto_btn.clicked.connect(self._toggle_autonomy)
+        self._top_auto_btn = self._auto_btn
+        head.addWidget(self._auto_btn)
+        hp.addLayout(head)
+        self._hermes_summary = QLabel("...")
+        self._hermes_summary.setStyleSheet(f"color:{_TEXT}; font-size:11px;")
+        self._top_hermes_summary = self._hermes_summary
+        hp.addWidget(self._hermes_summary)
+        self._hermes_rows = QVBoxLayout()
+        self._hermes_rows.setSpacing(4)
+        self._top_hermes_rows = self._hermes_rows
+        hp.addLayout(self._hermes_rows)
+        self._auto_enabled = False
+        return hermes_panel
+
+    def _build_agent_overview_panel(self) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName("agentOverview")
+        panel.setStyleSheet(
+            f"QFrame#agentOverview {{ background:{_BG_CARD}; border:none; border-radius:8px; }}"
+        )
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(12, 10, 12, 12)
+        lay.setSpacing(10)
+
+        head = QHBoxLayout()
+        title = QLabel("AI COMMAND DECK")
+        title.setStyleSheet(f"color:{_TEXT}; font-weight:800; font-size:12px;")
+        subtitle = QLabel("Live per-agent work, quota state, latest signal, and controls")
+        subtitle.setStyleSheet(f"color:{_MUTED}; font-size:11px;")
+        head.addWidget(title)
+        head.addWidget(subtitle)
+        head.addStretch(1)
+        self._agent_deck_summary = QLabel("Loading agents...")
+        self._agent_deck_summary.setStyleSheet(
+            f"QLabel {{ color:{_TEXT}; background:transparent; border:none; "
+            "padding:0; font-size:10px; font-weight:800; }}"
+        )
+        head.addWidget(self._agent_deck_summary)
+        lay.addLayout(head)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
+        agents = ("claude-code", "codex", "antigravity", "hermes")
+        for idx, name in enumerate(agents):
+            color = _AGENT_COLORS.get(name, _ACCENT)
+            card = QFrame()
+            card.setObjectName(f"agentOverviewCard_{name}")
+            card.setMinimumHeight(178)
+            card.setStyleSheet(
+                f"QFrame {{ background:{_PANEL_BG}; border:none; border-radius:8px; }}"
+            )
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(10, 9, 10, 9)
+            cl.setSpacing(7)
+
+            hdr = QHBoxLayout()
+            dot = QLabel("o")
+            dot.setStyleSheet(f"color:{color}; font-size:13px;")
+            hdr.addWidget(dot)
+            name_lbl = QLabel(name)
+            name_lbl.setStyleSheet(f"color:{_TEXT}; font-weight:800; font-size:13px;")
+            hdr.addWidget(name_lbl)
+            hdr.addStretch(1)
+            status = QLabel("IDLE")
+            status.setStyleSheet(
+                f"QLabel {{ color:{_MUTED}; background:transparent; border:none; "
+                "padding:0; font-size:10px; font-weight:800; }}"
+            )
+            hdr.addWidget(status)
+            cl.addLayout(hdr)
+
+            action = QLabel("No active task")
+            action.setWordWrap(True)
+            action.setMinimumHeight(34)
+            action.setStyleSheet(f"color:{_TEXT}; background:transparent; border:none; font-size:12px; font-weight:600;")
+            cl.addWidget(action)
+
+            progress = QProgressBar()
+            progress.setRange(0, 100)
+            progress.setValue(0)
+            progress.setTextVisible(False)
+            progress.setFixedHeight(6)
+            progress.setStyleSheet(
+                f"QProgressBar {{ background:#15171a; border:none; border-radius:3px; }}"
+                f"QProgressBar::chunk {{ background:{color}; border-radius:3px; }}"
+            )
+            cl.addWidget(progress)
+
+            chips = QHBoxLayout()
+            chips.setSpacing(5)
+            active_chip = self._chip("Active", "0", _ACCENT)
+            done_chip = self._chip("Done", "0", _OK)
+            fail_chip = self._chip("Fail", "0", _ERR)
+            cancel_chip = self._chip("Cancel", "0", _MUTED)
+            success_chip = self._chip("Success", "100%", _TEXT)
+            for chip in (active_chip, done_chip, fail_chip, cancel_chip, success_chip):
+                chips.addWidget(chip)
+            chips.addStretch(1)
+            cl.addLayout(chips)
+
+            latest = QLabel("Latest: no event yet")
+            latest.setWordWrap(True)
+            latest.setMinimumHeight(32)
+            latest.setStyleSheet(f"color:{_MUTED}; background:transparent; border:none; font-size:10px;")
+            cl.addWidget(latest)
+
+            controls = QHBoxLayout()
+            controls.setSpacing(6)
+            btn_events = QPushButton("Events")
+            btn_pause = QPushButton("Pause")
+            btn_edit = QPushButton("Edit")
+            btn_clarify = QPushButton("Clarify")
+            btn_stop = QPushButton("Stop")
+            btn_cooldown = QPushButton("Cooldown")
+            for btn in (btn_events, btn_pause, btn_edit, btn_clarify):
+                btn.setStyleSheet(self._button_style())
+                controls.addWidget(btn)
+            btn_stop.setStyleSheet(self._button_style("#ffffff", _ERR, _ERR))
+            controls.addWidget(btn_stop)
+            btn_cooldown.setStyleSheet(self._button_style(_TEXT))
+            controls.addWidget(btn_cooldown)
+            controls.addStretch(1)
+            cl.addLayout(controls)
+
+            self._agent_overview_cards[name] = {
+                "frame": card,
+                "dot": dot,
+                "status": status,
+                "action": action,
+                "progress": progress,
+                "active": active_chip,
+                "done": done_chip,
+                "fail": fail_chip,
+                "cancel": cancel_chip,
+                "success": success_chip,
+                "latest": latest,
+                "events": btn_events,
+                "pause": btn_pause,
+                "edit": btn_edit,
+                "clarify": btn_clarify,
+                "stop": btn_stop,
+                "cooldown": btn_cooldown,
+            }
+            grid.addWidget(card, idx // 2, idx % 2)
+        lay.addLayout(grid)
+        return panel
+
     def _build(self) -> None:
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        page_scroll = QScrollArea()
+        page_scroll.setWidgetResizable(True)
+        page_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        page_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        page_scroll.setStyleSheet(
+            "QScrollArea { border:none; background:transparent; }"
+            "QScrollBar:vertical { background:#0c0d0f; width:10px; margin:0; }"
+            "QScrollBar::handle:vertical { background:#333842; border-radius:5px; min-height:32px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
+        )
+        content = QWidget()
+        content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        page_scroll.setWidget(content)
+        outer.addWidget(page_scroll)
+
+        root = QVBoxLayout(content)
         root.setContentsMargins(24, 18, 24, 18)
         root.setSpacing(12)
 
@@ -103,13 +362,13 @@ class OrchestratorPage(QWidget):
         # System Status Banner
         self._banner = QFrame()
         self._banner.setStyleSheet(
-            f"QFrame {{ background: {_BG_CARD}; border: 1px solid {_BORDER}; border-radius: 12px; }}"
+            f"QFrame {{ background: {_BG_CARD}; border:none; border-radius: 12px; }}"
         )
         banner_lay = QHBoxLayout(self._banner)
         banner_lay.setContentsMargins(10, 4, 10, 4)
         banner_lay.setSpacing(6)
         
-        self._banner_dot = QLabel("●")
+        self._banner_dot = QLabel("o")
         self._banner_dot.setStyleSheet(f"color: {_OK}; font-size: 14px;")
         banner_lay.addWidget(self._banner_dot)
         
@@ -127,6 +386,9 @@ class OrchestratorPage(QWidget):
         sub.setWordWrap(True)
         root.addWidget(sub)
 
+        root.addWidget(self._build_hermes_panel())
+        root.addWidget(self._build_command_panel())
+
         # Metrics Dashboard Row
         metrics_lay = QHBoxLayout()
         metrics_lay.setSpacing(12)
@@ -141,7 +403,7 @@ class OrchestratorPage(QWidget):
         for key, label, val_color in metrics_defs:
             card = QFrame()
             card.setStyleSheet(
-                f"QFrame {{ background: {_BG_CARD}; border: 1px solid {_BORDER}; border-radius: 8px; }}"
+                f"QFrame {{ background: {_BG_CARD}; border:none; border-radius: 8px; }}"
             )
             card_lay = QVBoxLayout(card)
             card_lay.setContentsMargins(12, 10, 12, 10)
@@ -162,7 +424,7 @@ class OrchestratorPage(QWidget):
 
         mission_panel = QFrame()
         mission_panel.setStyleSheet(
-            f"QFrame {{ background:{_BG_CARD}; border:1px solid {_BORDER}; border-radius:8px; }}"
+            f"QFrame {{ background:{_BG_CARD}; border:none; border-radius:8px; }}"
         )
         mission_lay = QVBoxLayout(mission_panel)
         mission_lay.setContentsMargins(12, 10, 12, 10)
@@ -172,27 +434,21 @@ class OrchestratorPage(QWidget):
         mission_lay.addWidget(mission_title)
         self._mission = QPlainTextEdit()
         self._mission.setReadOnly(True)
-        self._mission.setFixedHeight(122)
+        self._mission.setFixedHeight(76)
         self._mission.setStyleSheet(
             f"QPlainTextEdit {{ background:#0c0d0f; color:{_TEXT}; "
-            f"border:1px solid {_BORDER}; border-radius:6px; padding:7px; font-size:11px; }}"
+            f"border:none; border-radius:6px; padding:7px; font-size:11px; }}"
         )
         self._mission.setPlaceholderText("Loading mission status...")
         mission_lay.addWidget(self._mission)
         root.addWidget(mission_panel)
 
-        # Text input panel
-        self._input = QPlainTextEdit()
-        self._input.setPlaceholderText("Decompose and delegate a goal... (e.g., 'Check database stats, refactor synthesis, and run a workspace audit')")
-        self._input.setStyleSheet(
-            f"QPlainTextEdit {{ background:#0c0d0f; color:{_TEXT}; "
-            f"border:1px solid {_BORDER}; border-radius:6px; padding:8px; "
-            f"font-size:13px; }}")
-        self._input.setFixedHeight(80)
-        root.addWidget(self._input)
+        root.addWidget(self._build_agent_overview_panel())
 
-        # Buttons and dispatch state row
-        row = QHBoxLayout()
+        # Legacy command box was moved to the top command panel.
+        legacy_command_box = QWidget()
+        legacy_command_box.setVisible(False)
+        row = QHBoxLayout(legacy_command_box)
         self._btn_dispatch = QPushButton("🪄 Decompose & Dispatch")
         self._btn_dispatch.setStyleSheet(
             f"QPushButton {{ background:{_GOLD}; color:#16181c; border:none; "
@@ -206,7 +462,7 @@ class OrchestratorPage(QWidget):
         
         self._progress = QProgressBar()
         self._progress.setStyleSheet(
-            f"QProgressBar {{ background: {_BG_CARD}; border: 1px solid {_BORDER}; border-radius: 4px; }}"
+            f"QProgressBar {{ background: {_BG_CARD}; border:none; border-radius: 4px; }}"
             f"QProgressBar::chunk {{ background: {_GOLD}; border-radius: 4px; }}"
         )
         self._progress.setFixedHeight(6)
@@ -217,6 +473,11 @@ class OrchestratorPage(QWidget):
         
         row.addStretch(1)
         root.addLayout(row)
+        for _legacy_widget in (self._btn_dispatch, self._status, self._progress):
+            _legacy_widget.setVisible(False)
+        self._btn_dispatch = self._top_btn_dispatch
+        self._status = self._top_status
+        self._progress = self._top_progress
 
         # Left: Agent status grid (2x2)
         grid_widget = QWidget()
@@ -234,7 +495,7 @@ class OrchestratorPage(QWidget):
             # into thin bars when nothing is in flight (2026-06-25).
             card.setMinimumHeight(104)
             card.setStyleSheet(
-                f"QFrame#agentCard {{ background:{_BG_CARD}; border:1px solid {_BORDER}; border-radius:8px; }}")
+                f"QFrame#agentCard {{ background:{_BG_CARD}; border:none; border-radius:8px; }}")
             card_lay = QVBoxLayout(card)
             card_lay.setContentsMargins(12, 10, 12, 10)
             card_lay.setSpacing(4)
@@ -245,7 +506,7 @@ class OrchestratorPage(QWidget):
             agent_lbl.setStyleSheet(f"color:{_TEXT}; font-weight:700; font-size:13px;")
             hdr_lay.addWidget(agent_lbl)
             
-            status_dot = QLabel("●")
+            status_dot = QLabel("o")
             status_dot.setStyleSheet(f"color: {_MUTED}; font-size: 12px;")
             hdr_lay.addWidget(status_dot)
             
@@ -282,7 +543,7 @@ class OrchestratorPage(QWidget):
             
             cooldown_btn = QPushButton("Cooldown")
             cooldown_btn.setStyleSheet(
-                f"QPushButton {{ background:#212328; color:{_TEXT}; border:1px solid {_BORDER}; "
+                f"QPushButton {{ background:#212328; color:{_TEXT}; border:none; "
                 f"border-radius:4px; padding:2px 8px; font-weight:600; font-size:10px; }}"
             )
             btn_lay.addWidget(cooldown_btn)
@@ -315,7 +576,7 @@ class OrchestratorPage(QWidget):
         # Right: Tasks Queue list
         queue_panel = QFrame()
         queue_panel.setStyleSheet(
-            f"QFrame {{ background:{_BG_CARD}; border:1px solid {_BORDER}; border-radius:8px; }}"
+            f"QFrame {{ background:{_BG_CARD}; border:none; border-radius:8px; }}"
         )
         queue_lay = QVBoxLayout(queue_panel)
         queue_lay.setContentsMargins(12, 12, 12, 12)
@@ -346,7 +607,7 @@ class OrchestratorPage(QWidget):
         self._timeline.setPlaceholderText("Select a task to inspect its live events.")
         self._timeline.setStyleSheet(
             f"QPlainTextEdit {{ background:#0c0d0f; color:{_TEXT}; "
-            f"border:1px solid {_BORDER}; border-radius:6px; padding:7px; "
+            f"border:none; border-radius:6px; padding:7px; "
             f"font-size:11px; }}"
         )
         self._timeline.setMinimumHeight(150)
@@ -361,20 +622,20 @@ class OrchestratorPage(QWidget):
             "QSplitter::handle { background: #22252a; width: 1px; }"
             "QSplitter::handle:hover { background: #ff9f0a; }"
         )
-        content_splitter.addWidget(left_widget)
         content_splitter.addWidget(queue_panel)
         content_splitter.setCollapsible(0, False)
-        content_splitter.setCollapsible(1, False)
-        content_splitter.setSizes([600, 300])
+        content_splitter.setSizes([900])
+        content_splitter.setMinimumHeight(360)
         
         # History Panel (Recent Activity History + Retry button)
         history_panel = QFrame()
         history_panel.setStyleSheet(
-            f"QFrame {{ background:{_BG_CARD}; border:1px solid {_BORDER}; border-radius:8px; }}"
+            f"QFrame {{ background:{_BG_CARD}; border:none; border-radius:8px; }}"
         )
         history_lay = QVBoxLayout(history_panel)
         history_lay.setContentsMargins(12, 12, 12, 12)
         history_lay.setSpacing(8)
+        history_panel.setMinimumHeight(170)
         
         h_title = QLabel("RECENT ACTIVITY HISTORY")
         h_title.setStyleSheet(f"color:{_TEXT}; font-weight:700; font-size:11px;")
@@ -404,11 +665,12 @@ class OrchestratorPage(QWidget):
         main_splitter.setCollapsible(0, False)
         main_splitter.setCollapsible(1, False)
         main_splitter.setSizes([500, 150])
+        main_splitter.setMinimumHeight(560)
         
         # --- HERMES OVERSIGHT — always-on cross-AI monitor (proposes, you veto) ---
         hermes_panel = QFrame()
         hermes_panel.setStyleSheet(
-            f"QFrame {{ background:{_BG_CARD}; border:1px solid {_BORDER}; border-radius:8px; }}")
+            f"QFrame {{ background:{_BG_CARD}; border:none; border-radius:8px; }}")
         hp = QVBoxLayout(hermes_panel)
         hp.setContentsMargins(12, 10, 12, 10)
         hp.setSpacing(6)
@@ -433,6 +695,10 @@ class OrchestratorPage(QWidget):
         hp.addLayout(self._hermes_rows)
         self._auto_enabled = False
         root.addWidget(hermes_panel)
+        hermes_panel.setVisible(False)
+        self._auto_btn = self._top_auto_btn
+        self._hermes_summary = self._top_hermes_summary
+        self._hermes_rows = self._top_hermes_rows
 
         root.addWidget(main_splitter, 1)
 
@@ -440,6 +706,17 @@ class OrchestratorPage(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
+        # Prune finished threads (the list was never cleaned → grew unbounded).
+        # And if the previous batch is still in flight — mind_service is slow /
+        # RAM-thrashing — SKIP this cycle instead of piling on 4 more HTTP
+        # threads every 5s. Unbounded pile-up is what froze the GUI ("Not
+        # Responding") over minutes, even while just typing. Bruno 2026-07-01.
+        try:
+            self._threads = [t for t in self._threads if t is not None and t.isRunning()]
+        except Exception:
+            self._threads = []
+        if len(self._threads) >= 4:
+            return
         self._threads.append(_spawn_http(
             self, "GET", f"{_API}/orchestrator/status", self._on_status_loaded
         ))
@@ -455,12 +732,15 @@ class OrchestratorPage(QWidget):
 
     def _on_autonomy_loaded(self, res: dict) -> None:
         d = (res.get("data") or {}) if res.get("ok") else {}
-        on = bool(d.get("enabled"))
+        autonomy = d.get("autonomy") or d
+        on = bool(autonomy.get("enabled"))
+        mode = str(autonomy.get("mode") or "supervise_only")
         self._auto_enabled = on
-        self._auto_btn.setText(f"Autonomous dispatch: {'ON' if on else 'OFF'}")
+        label_mode = "supervise" if mode == "supervise_only" else mode
+        self._auto_btn.setText(f"Autonomy: {'ON' if on else 'OFF'} ({label_mode})")
         self._auto_btn.setStyleSheet(
             f"QPushButton {{ background:{'#3a5f3a' if on else '#212328'}; "
-            f"color:{'#b6f5b6' if on else _TEXT}; border:1px solid {_BORDER}; "
+            f"color:{'#b6f5b6' if on else _TEXT}; border:none; "
             f"border-radius:6px; padding:5px 10px; font-size:11px; font-weight:600; }}")
 
     def _toggle_autonomy(self) -> None:
@@ -492,11 +772,11 @@ class OrchestratorPage(QWidget):
         tier = p.get("masterlaw_tier", "ok")
         tid = p.get("task_id")
         row = QFrame()
-        row.setStyleSheet(f"QFrame {{ background:#0e0f12; border:1px solid {_BORDER}; border-radius:6px; }}")
+        row.setStyleSheet(f"QFrame {{ background:#0e0f12; border:none; border-radius:6px; }}")
         lay = QHBoxLayout(row)
         lay.setContentsMargins(8, 5, 8, 5)
         lay.setSpacing(6)
-        mark = {"block": "⛔", "confirm": "❔", "ok": "✓"}.get(tier, "·")
+        mark = {"block": "BLOCK", "confirm": "ASK", "ok": "OK"}.get(tier, "-")
         txt = f"{mark} #{tid} → {p.get('agent')}: {p.get('why','')[:72]}"
         if tier != "ok":
             txt += f"   ({p.get('masterlaw_reason','')[:50]})"
@@ -517,7 +797,7 @@ class OrchestratorPage(QWidget):
         veto = QPushButton("Veto")
         veto.setCursor(Qt.PointingHandCursor)
         veto.setStyleSheet(
-            f"QPushButton {{ background:#3a2326; color:#f5b6b6; border:1px solid {_BORDER}; "
+            f"QPushButton {{ background:#3a2326; color:#f5b6b6; border:none; "
             f"border-radius:5px; padding:4px 10px; font-size:11px; }}")
         veto.clicked.connect(lambda _=False, t=tid: self._proposal_act(t, "cancel"))
         lay.addWidget(veto)
@@ -528,11 +808,57 @@ class OrchestratorPage(QWidget):
             self, "POST", f"{_API}/orchestrator/tasks/{task_id}/control",
             lambda res: self.refresh(), json_body={"action": action}))
 
-    def _on_mission_loaded(self, res: dict) -> None:
-        if not res.get("ok"):
-            self._mission.setPlainText(f"Mission status failed: {res.get('error')}")
-            return
-        data = res.get("data") or {}
+    @staticmethod
+    def _seen_text(seconds) -> str:
+        if seconds is None:
+            return "never"
+        try:
+            seconds = int(seconds)
+        except Exception:
+            return "unknown"
+        if seconds < 90:
+            return f"{seconds}s ago"
+        minutes = seconds // 60
+        if minutes < 90:
+            return f"{minutes}m ago"
+        hours = minutes // 60
+        if hours < 48:
+            return f"{hours}h ago"
+        return f"{hours // 24}d ago"
+
+    @staticmethod
+    def _one_line(text: str, limit: int = 190) -> str:
+        text = " ".join(str(text or "").split())
+        return text if len(text) <= limit else text[: limit - 1] + "..."
+
+    def _agent_counts(self, name: str) -> tuple[list[dict], dict, int, int]:
+        active_statuses = {"pending", "assigned", "paused", "needs_clarification"}
+        agent_tasks = [
+            t for t in (self._last_tasks or [])
+            if str(t.get("agent_name", "")).lower() == name
+        ]
+        counts = {k: 0 for k in (
+            "pending", "assigned", "paused", "needs_clarification",
+            "completed", "failed", "cancelled"
+        )}
+        for task in agent_tasks:
+            status = str(task.get("status") or "")
+            if status in counts:
+                counts[status] += 1
+        active_count = sum(counts[s] for s in active_statuses)
+        finished_success_base = counts["completed"] + counts["failed"]
+        success_rate = int((counts["completed"] / finished_success_base) * 100) if finished_success_base else 100
+        return agent_tasks, counts, active_count, success_rate
+
+    def _agent_card_notice(self, name: str, action: str) -> None:
+        self._status.setText(f"{name}: no active task to {action}. Use the command box to assign new work.")
+        self._timeline.setPlainText(
+            f"{name} has no active task to {action}.\n"
+            "Events remains available for the latest task when history exists; Cooldown can hold this AI out of routing."
+        )
+
+    def _render_mission_console(self) -> None:
+        data = self._last_mission_data or {}
         summary = data.get("summary") or {}
         lines = [
             f"Active work {summary.get('active_work', 0)} | paused {summary.get('paused', 0)} | clarification {summary.get('needs_clarification', 0)} | leases {summary.get('open_leases', 0)}",
@@ -542,7 +868,13 @@ class OrchestratorPage(QWidget):
         if cooldown:
             lines.append("Cooldown: " + ", ".join(cooldown))
         if stale:
-            lines.append("Stale: " + ", ".join(stale))
+            active_stale = []
+            for name in stale:
+                info = (data.get("agents") or {}).get(name) or {}
+                if info.get("current_task") or int(info.get("active_task_count") or 0) > 0:
+                    active_stale.append(name)
+            if active_stale:
+                lines.append("Needs attention: stale active agents " + ", ".join(active_stale))
         wake = data.get("wake") or {}
         active_wake = wake.get("active_runners") or []
         queue_only = []
@@ -558,18 +890,149 @@ class OrchestratorPage(QWidget):
             if queue_only:
                 wake_bits.append("queued/no-runner " + ", ".join(sorted(queue_only)))
             lines.append("Wake: " + " | ".join(wake_bits))
-        agents = data.get("agents") or {}
-        for name in ("claude-code", "codex", "antigravity", "hermes"):
-            info = agents.get(name) or {}
-            state = info.get("state") or {}
-            task = info.get("current_task") or {}
-            latest = info.get("latest_event") or {}
-            seen = info.get("last_seen_seconds_ago")
-            seen_text = "never" if seen is None else f"{int(seen)}s"
-            status = state.get("status") or ("cooldown" if info.get("cooldown") else "idle")
-            task_text = task.get("sub_task_desc") or latest.get("content") or "no active task"
-            lines.append(f"{name}: {status} ({seen_text}) - {task_text[:150]}")
+        if len(lines) == 1:
+            lines.append("Use the AI Command Deck below for per-agent action, stats, events, and controls.")
         self._mission.setPlainText("\n".join(lines))
+
+    def _render_agent_overview(self) -> None:
+        if not self._agent_overview_cards:
+            return
+        active_statuses = {"pending", "assigned", "paused", "needs_clarification"}
+        terminal_statuses = {"completed", "cancelled", "failed", "wake_exit", "status_completed", "status_cancelled"}
+        mission_agents = self._mission_agents or {}
+        cooldowns = self._last_cooldowns or {}
+        active_agents = 0
+        cooldown_agents = 0
+
+        for name, card in self._agent_overview_cards.items():
+            agent_tasks, counts, active_count, success_rate = self._agent_counts(name)
+            info = mission_agents.get(name) or {}
+            state = info.get("state") or {}
+            current_task = info.get("current_task") or {}
+            latest = info.get("latest_event") or {}
+            cooldown = cooldowns.get(name) or info.get("cooldown")
+            active_task = next((t for t in agent_tasks if t.get("status") in active_statuses), None)
+            latest_task = agent_tasks[0] if agent_tasks else None
+            control_task = active_task or current_task or latest_task
+            task_id = (control_task or {}).get("id") or (control_task or {}).get("task_id")
+
+            status = state.get("status") or ("cooldown" if cooldown else "idle")
+            if not active_task and not current_task and status in terminal_statuses and not cooldown:
+                status = "idle"
+            if cooldown:
+                status = "cooldown"
+                cooldown_agents += 1
+            if active_count:
+                active_agents += 1
+
+            if status == "cooldown":
+                color = _GOLD
+                status_label = "COOLDOWN"
+            elif active_count:
+                color = _ACCENT
+                status_label = "ACTIVE"
+            elif status in {"failed", "error"}:
+                color = _ERR
+                status_label = "ERROR"
+            else:
+                color = _MUTED
+                status_label = "IDLE"
+
+            action = (current_task or {}).get("sub_task_desc")
+            if not action and active_task:
+                action = active_task.get("sub_task_desc")
+            if not action and cooldown:
+                reason = cooldown.get("reason", "quota or manual cooldown") if isinstance(cooldown, dict) else "cooldown"
+                action = f"Paused by cooldown: {reason}"
+            if not action:
+                action = "No active task"
+
+            latest_content = latest.get("content")
+            latest_kind = latest.get("event_type") or "event"
+            if not latest_content and agent_tasks:
+                task_latest = agent_tasks[0].get("latest_event") or {}
+                latest_kind = task_latest.get("event_type") or latest_kind
+                latest_content = task_latest.get("content")
+
+            card["dot"].setStyleSheet(f"color:{color}; font-size:13px;")
+            card["status"].setText(status_label)
+            card["status"].setStyleSheet(
+                f"QLabel {{ color:{color}; background:transparent; border:none; "
+                "padding:0; font-size:10px; font-weight:800; }}"
+            )
+            card["action"].setText(self._one_line(action, 175))
+            card["progress"].setValue(success_rate)
+            card["active"].setText(f"Active {active_count}")
+            card["done"].setText(f"Done {counts['completed']}")
+            card["fail"].setText(f"Fail {counts['failed']}")
+            card["cancel"].setText(f"Cancel {counts['cancelled']}")
+            card["success"].setText(f"Success {success_rate}%")
+            card["latest"].setText(
+                f"Latest {latest_kind}: {self._one_line(latest_content, 190)}"
+                if latest_content else f"Last seen: {self._seen_text(info.get('last_seen_seconds_ago'))}"
+            )
+
+            for key in ("events", "pause", "edit", "clarify", "stop"):
+                try:
+                    card[key].clicked.disconnect()
+                except Exception:
+                    pass
+                card[key].setEnabled(True)
+            try:
+                card["cooldown"].clicked.disconnect()
+            except Exception:
+                pass
+
+            if active_task and task_id:
+                card["events"].clicked.connect(lambda _=False, tid=task_id: self._load_task_events(tid))
+                if active_task and active_task.get("status") == "paused":
+                    card["pause"].setText("Resume")
+                    card["pause"].clicked.connect(lambda _=False, tid=task_id: self._control_task(tid, "resume"))
+                else:
+                    card["pause"].setText("Pause")
+                    card["pause"].clicked.connect(lambda _=False, tid=task_id: self._control_task(tid, "pause", "manual pause"))
+                card["edit"].clicked.connect(lambda _=False, tid=task_id: self._edit_task_from_input(tid))
+                card["clarify"].clicked.connect(lambda _=False, tid=task_id: self._control_task(tid, "clarify", self._input.toPlainText().strip()))
+                card["stop"].clicked.connect(lambda _=False, tid=task_id: self._control_task(tid, "stop", "manual stop"))
+            else:
+                card["pause"].setText("Pause")
+                if task_id:
+                    card["events"].clicked.connect(lambda _=False, tid=task_id: self._load_task_events(tid))
+                else:
+                    card["events"].clicked.connect(lambda _=False, n=name: self._agent_card_notice(n, "show events for"))
+                card["pause"].clicked.connect(lambda _=False, n=name: self._toggle_cooldown(n, False))
+                card["edit"].clicked.connect(lambda _=False, n=name: self._agent_card_notice(n, "edit"))
+                card["clarify"].clicked.connect(lambda _=False, n=name: self._agent_card_notice(n, "clarify"))
+                card["stop"].clicked.connect(lambda _=False, n=name: self._toggle_cooldown(n, False))
+
+            if cooldown:
+                card["cooldown"].setText("Resume")
+                card["cooldown"].setStyleSheet(self._button_style(_OK, "#18251b", _OK))
+                card["cooldown"].clicked.connect(lambda _=False, n=name: self._toggle_cooldown(n, True))
+            else:
+                card["cooldown"].setText("Cooldown")
+                card["cooldown"].setStyleSheet(self._button_style(_TEXT))
+                card["cooldown"].clicked.connect(lambda _=False, n=name: self._toggle_cooldown(n, False))
+
+            card["frame"].setStyleSheet(
+                f"QFrame {{ background:{_PANEL_BG}; border:none; border-radius:8px; }}"
+            )
+
+        idle_agents = len(self._agent_overview_cards) - active_agents - cooldown_agents
+        self._agent_deck_summary.setText(
+            f"{active_agents} active · {cooldown_agents} cooldown · {max(idle_agents, 0)} idle"
+        )
+
+    def _on_mission_loaded(self, res: dict) -> None:
+        if not res.get("ok"):
+            self._mission.setPlainText(f"Mission status failed: {res.get('error')}")
+            return
+        data = res.get("data") or {}
+        self._last_mission_data = data
+        self._mission_agents = data.get("agents") or {}
+        self._render_mission_console()
+        self._render_agent_overview()
+        self._render_agent_breakdown()
 
     def _on_status_loaded(self, res: dict) -> None:
         if not res.get("ok"):
@@ -580,6 +1043,10 @@ class OrchestratorPage(QWidget):
 
         tasks = res.get("data", {}).get("tasks", [])
         cooldowns = res.get("data", {}).get("cooldowns", {})
+        self._last_tasks = tasks
+        self._last_cooldowns = cooldowns
+        self._render_mission_console()
+        self._render_agent_overview()
 
         # ── Calculate metrics ──────────────────────────────────────────
         total_tasks = len(tasks)
@@ -595,6 +1062,7 @@ class OrchestratorPage(QWidget):
         self._metrics_cards["completed"].setText(str(completed_tasks))
         self._metrics_cards["inflight"].setText(str(inflight_tasks))
         self._metrics_cards["success_rate"].setText(f"{success_rate}%")
+        self._render_agent_breakdown()
 
         # ── System Status Banner ───────────────────────────────────────
         if inflight_tasks > 0:
@@ -648,7 +1116,7 @@ class OrchestratorPage(QWidget):
                 card["btn_stop"].setVisible(False)
                 card["btn_cooldown"].setText("Resume")
                 card["btn_cooldown"].setStyleSheet(
-                    f"QPushButton {{ background:#212328; color:{_OK}; border:1px solid {_OK}; "
+                    f"QPushButton {{ background:#212328; color:{_OK}; border:none; "
                     f"border-radius:4px; padding:2px 8px; font-weight:600; font-size:10px; }}"
                 )
                 card["btn_cooldown"].clicked.connect(
@@ -664,7 +1132,7 @@ class OrchestratorPage(QWidget):
                 card["btn_stop"].setVisible(False)
                 card["btn_cooldown"].setText("Cooldown")
                 card["btn_cooldown"].setStyleSheet(
-                    f"QPushButton {{ background:#212328; color:{_TEXT}; border:1px solid {_BORDER}; "
+                    f"QPushButton {{ background:#212328; color:{_TEXT}; border:none; "
                     f"border-radius:4px; padding:2px 8px; font-weight:600; font-size:10px; }}"
                 )
                 card["btn_cooldown"].clicked.connect(
@@ -721,7 +1189,7 @@ class OrchestratorPage(QWidget):
 
                 card["btn_cooldown"].setText("Cooldown")
                 card["btn_cooldown"].setStyleSheet(
-                    f"QPushButton {{ background:#212328; color:{_TEXT}; border:1px solid {_BORDER}; "
+                    f"QPushButton {{ background:#212328; color:{_TEXT}; border:none; "
                     f"border-radius:4px; padding:2px 8px; font-weight:600; font-size:10px; }}"
                 )
                 card["btn_cooldown"].clicked.connect(
@@ -736,7 +1204,7 @@ class OrchestratorPage(QWidget):
         else:
             for t in active_tasks:
                 row = QFrame()
-                row.setStyleSheet(f"background:#0c0d0f; border:1px solid {_BORDER}; border-radius:6px;")
+                row.setStyleSheet(f"background:#0c0d0f; border:none; border-radius:6px;")
                 row_lay = QHBoxLayout(row)
                 row_lay.setContentsMargins(8, 6, 8, 6)
 
@@ -765,7 +1233,7 @@ class OrchestratorPage(QWidget):
 
                 btn_events = QPushButton("Events")
                 btn_events.setStyleSheet(
-                    f"QPushButton {{ background:#212328; color:{_GOLD}; border:1px solid {_BORDER}; "
+                    f"QPushButton {{ background:#212328; color:{_GOLD}; border:none; "
                     f"border-radius:4px; padding:2px 8px; font-weight:600; font-size:10px; }}"
                 )
                 btn_events.clicked.connect(
@@ -775,7 +1243,7 @@ class OrchestratorPage(QWidget):
 
                 btn_pause = QPushButton("Pause" if t.get("status") != "paused" else "Resume")
                 btn_pause.setStyleSheet(
-                    f"QPushButton {{ background:#212328; color:{_TEXT}; border:1px solid {_BORDER}; "
+                    f"QPushButton {{ background:#212328; color:{_TEXT}; border:none; "
                     f"border-radius:4px; padding:2px 8px; font-weight:600; font-size:10px; }}"
                 )
                 if t.get("status") == "paused":
@@ -790,7 +1258,7 @@ class OrchestratorPage(QWidget):
 
                 btn_clarify = QPushButton("Clarify")
                 btn_clarify.setStyleSheet(
-                    f"QPushButton {{ background:#212328; color:{_GOLD}; border:1px solid {_GOLD}; "
+                    f"QPushButton {{ background:#212328; color:{_GOLD}; border:none; "
                     f"border-radius:4px; padding:2px 8px; font-weight:600; font-size:10px; }}"
                 )
                 btn_clarify.clicked.connect(
@@ -800,7 +1268,7 @@ class OrchestratorPage(QWidget):
 
                 btn_edit = QPushButton("Edit")
                 btn_edit.setStyleSheet(
-                    f"QPushButton {{ background:#212328; color:{_TEXT}; border:1px solid {_BORDER}; "
+                    f"QPushButton {{ background:#212328; color:{_TEXT}; border:none; "
                     f"border-radius:4px; padding:2px 8px; font-weight:600; font-size:10px; }}"
                 )
                 btn_edit.clicked.connect(
@@ -837,7 +1305,7 @@ class OrchestratorPage(QWidget):
         else:
             for t in history_tasks:
                 row = QFrame()
-                row.setStyleSheet(f"background:#0c0d0f; border:1px solid {_BORDER}; border-radius:6px;")
+                row.setStyleSheet(f"background:#0c0d0f; border:none; border-radius:6px;")
                 row_lay = QHBoxLayout(row)
                 row_lay.setContentsMargins(8, 6, 8, 6)
 
@@ -848,7 +1316,7 @@ class OrchestratorPage(QWidget):
                 status_pill = QLabel(status_text)
                 status_pill.setStyleSheet(
                     f"QLabel {{ color:{status_color}; font-size:9px; font-weight:700; "
-                    f"border:1px solid {status_color}; border-radius:4px; padding:1px 4px; }}"
+                    f"border:none; border-radius:4px; padding:1px 4px; }}"
                 )
                 row_lay.addWidget(status_pill)
 
@@ -860,7 +1328,7 @@ class OrchestratorPage(QWidget):
 
                 btn_retry = QPushButton("Retry")
                 btn_retry.setStyleSheet(
-                    f"QPushButton {{ background:#212328; color:{_TEXT}; border:1px solid {_BORDER}; "
+                    f"QPushButton {{ background:#212328; color:{_TEXT}; border:none; "
                     f"border-radius:4px; padding:2px 8px; font-weight:600; font-size:10px; }}"
                 )
                 btn_retry.clicked.connect(
@@ -870,7 +1338,7 @@ class OrchestratorPage(QWidget):
 
                 btn_events = QPushButton("Events")
                 btn_events.setStyleSheet(
-                    f"QPushButton {{ background:#212328; color:{_GOLD}; border:1px solid {_BORDER}; "
+                    f"QPushButton {{ background:#212328; color:{_GOLD}; border:none; "
                     f"border-radius:4px; padding:2px 8px; font-weight:600; font-size:10px; }}"
                 )
                 btn_events.clicked.connect(
@@ -883,6 +1351,86 @@ class OrchestratorPage(QWidget):
         self._history_list.addStretch(1)
         if self._selected_task_id is not None:
             self._load_task_events(self._selected_task_id)
+
+    def _render_agent_breakdown(self) -> None:
+        if not hasattr(self, "_agent_breakdown"):
+            return
+        tasks = self._last_tasks or []
+        cooldowns = self._last_cooldowns or {}
+        mission_agents = self._mission_agents or {}
+        agent_names = ("claude-code", "codex", "antigravity", "hermes")
+        active_statuses = {"pending", "assigned", "paused", "needs_clarification"}
+
+        def _seen_text(seconds) -> str:
+            if seconds is None:
+                return "never"
+            try:
+                seconds = int(seconds)
+            except Exception:
+                return "unknown"
+            if seconds < 90:
+                return f"{seconds}s ago"
+            minutes = seconds // 60
+            if minutes < 90:
+                return f"{minutes}m ago"
+            hours = minutes // 60
+            if hours < 48:
+                return f"{hours}h ago"
+            return f"{hours // 24}d ago"
+
+        def _one_line(text: str, limit: int = 190) -> str:
+            text = " ".join(str(text or "").split())
+            return text if len(text) <= limit else text[: limit - 1] + "…"
+
+        lines: list[str] = []
+        for name in agent_names:
+            agent_tasks = [t for t in tasks if str(t.get("agent_name", "")).lower() == name]
+            counts = {k: 0 for k in ("pending", "assigned", "paused", "needs_clarification",
+                                     "completed", "failed", "cancelled")}
+            for task in agent_tasks:
+                status = str(task.get("status") or "")
+                if status in counts:
+                    counts[status] += 1
+
+            active_count = sum(counts[s] for s in active_statuses)
+            finished_success_base = counts["completed"] + counts["failed"]
+            success_rate = int((counts["completed"] / finished_success_base) * 100) if finished_success_base else 100
+            info = mission_agents.get(name) or {}
+            state = info.get("state") or {}
+            current_task = info.get("current_task") or {}
+            latest = info.get("latest_event") or {}
+            cooldown = cooldowns.get(name) or info.get("cooldown")
+
+            state_status = state.get("status") or ("cooldown" if cooldown else "idle")
+            if not current_task and state_status in {"completed", "cancelled", "failed", "wake_exit"} and not cooldown:
+                state_status = "idle"
+            if cooldown:
+                state_status = "cooldown"
+
+            action = current_task.get("sub_task_desc")
+            if not action:
+                active = next((t for t in agent_tasks if t.get("status") in active_statuses), None)
+                action = active.get("sub_task_desc") if active else "no active task"
+
+            total = len(agent_tasks)
+            lines.append(
+                f"{name}: {state_status} | last {_seen_text(info.get('last_seen_seconds_ago'))} | "
+                f"active {active_count} (pending {counts['pending']}, assigned {counts['assigned']}, "
+                f"paused {counts['paused']}, clarify {counts['needs_clarification']}) | "
+                f"done {counts['completed']} / failed {counts['failed']} / cancelled {counts['cancelled']} | "
+                f"success {success_rate}% | total {total}"
+            )
+            lines.append(f"  action: {_one_line(action, 230)}")
+            latest_content = latest.get("content")
+            latest_kind = latest.get("event_type") or "event"
+            if latest_content:
+                lines.append(f"  latest {latest_kind}: {_one_line(latest_content, 230)}")
+            if cooldown:
+                reason = cooldown.get("reason", "cooldown") if isinstance(cooldown, dict) else "cooldown"
+                lines.append(f"  cooldown: {_one_line(reason, 180)}")
+            lines.append("")
+
+        self._agent_breakdown.setPlainText("\n".join(lines).rstrip())
 
     def _update_task(self, task_id: int, status: str) -> None:
         self._threads.append(_spawn_http(
