@@ -351,7 +351,10 @@ def _any_heavy_running() -> bool:
     """True if any heavy subprocess is alive — used to SERIALIZE heavy jobs so
     only ONE runs at a time. Two/three concurrent (OCR + index + concept) is
     what blew the 8GB box past 12GB. Bruno 2026-06-30."""
-    for p in (_hydrate_proc, _index_proc, _reembed_proc, globals().get("_concept_proc")):
+    g = globals()
+    for name in ("_hydrate_proc", "_index_proc", "_reembed_proc", "_concept_proc",
+                 "_mirror_proc", "_index_backup_proc"):
+        p = g.get(name)
         try:
             if p is not None and p.poll() is None:
                 return True
@@ -421,6 +424,10 @@ def check_reembed(u: "Unit") -> None:
     if _reembed_proc is not None and _reembed_proc.poll() is None:
         u.ok = True
         u.detail = f"embedding… {prog}"
+        return
+    if _any_heavy_running():
+        u.ok = True
+        u.detail = f"queued (another heavy job) {prog}"
         return
     # Cooldown between full re-embed passes (a fresh pass picks up new doc text).
     since = time.time() - _reembed_last_swap
@@ -552,6 +559,10 @@ def check_hydration(u: "Unit") -> None:
         return
     if _any_heavy_running():
         u.ok = True
+        u.detail = "queued (another heavy job running)"
+        return
+    if _any_heavy_running():
+        u.ok = True
         u.detail = "waiting (another heavy job running)"
         return
     # Run extraction + OCR in an ISOLATED subprocess so PaddleOCR's models and
@@ -600,6 +611,9 @@ def check_index(u: Unit) -> None:
         return
     if _index_proc is not None and _index_proc.poll() is None:
         u.detail += " (refreshing, subprocess)"
+        return
+    if _any_heavy_running():
+        u.detail += " (queued: heavy job running)"
         return
     due = age is None or age > INDEX_EVERY_S
     if not due or time.time() - _index_last < 600:
@@ -904,6 +918,9 @@ def check_mirror(u: Unit) -> None:
         return
     if _mirror_proc is not None and _mirror_proc.poll() is None:
         u.detail += " (pushing, subprocess)"
+        return
+    if _any_heavy_running():
+        u.detail += " (queued: heavy job running)"
         return
     if not catchup_active and time.time() - _mirror_last < MIRROR_EVERY_S:
         return
