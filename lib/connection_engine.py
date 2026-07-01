@@ -182,10 +182,18 @@ def _semantic_connect(text: str, terms: list[str], limit: int) -> list[dict] | N
     hits = si.search(text, top_k=60)
     if not hits:
         return []
-    try:
-        from lib import reranker
-        hits = reranker.rerank(text, hits, top_k=limit + 14)
-    except Exception:
+    # Stage-2 rerank is OPT-IN (EGON_RERANK=1). It pulls sentence-transformers +
+    # torch (~0.5–1GB) that then sits resident in mind_service forever — not worth
+    # it on the 8GB box. turbovec's quantized ANN already ranks well on its own.
+    # Bruno 2026-07-01.
+    import os
+    if os.environ.get("EGON_RERANK", "0") in ("1", "true", "yes"):
+        try:
+            from lib import reranker
+            hits = reranker.rerank(text, hits, top_k=limit + 14)
+        except Exception:
+            hits = hits[:limit + 14]
+    else:
         hits = hits[:limit + 14]
     tset = set(terms)
     per_source = {}
