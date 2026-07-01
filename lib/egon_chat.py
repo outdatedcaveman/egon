@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -65,42 +66,92 @@ def available_providers() -> dict[str, bool]:
     return {p: _key_for(p) is not None for p in PROVIDERS}
 
 
+# Slugs that are also common English words — only treat as a project when the
+# broader message context makes it a clear reference (avoid false positives).
+_AMBIGUOUS_SLUGS = {"double", "flood"}
+
+
+def _detect_project(text: str) -> str | None:
+    """If the message names one of Bruno's projects (mouseion, egon, routster…),
+    return its canonical slug so we can pull that project's cross-agent capsule."""
+    try:
+        from lib.mind_project_resolver import known_project_slugs
+        known = known_project_slugs()
+    except Exception:
+        return None
+    toks = set(re.findall(r"[a-z0-9_\-]{3,}", (text or "").lower()))
+    hits = [s for s in known if s in toks]
+    clear = [h for h in hits if h not in _AMBIGUOUS_SLUGS]
+    picks = clear or hits
+    # Longest match wins (more specific), stable for repeatability.
+    return sorted(picks, key=len, reverse=True)[0] if picks else None
+
+
 def _mind_context(query: str, limit: int = 6) -> str:
-    """Top vault hits for the query, as plain text to ground the reply. Pure data
-    in — never triggers agents or further LLM calls."""
+    """Assemble grounding context for the reply. Two layers, both pure DATA in
+    (never dispatches agents or makes further LLM calls):
+
+      1. The SHARED-MIND CAPSULE (lib.mind_context_broker) — the real answer to
+         'does it have context on everything from the three AIs': a project-aware
+         digest of durable memory, recent activity, and structural insights
+         pulled from Claude, Codex, and Antigravity's unified mind.
+      2. ARCHIVE hits (connect()) — Zotero, Paperpile, Drive, Kindle, bookmarks…
+    """
+    parts: list[str] = []
+
+    # 1) cross-agent capsule (project-aware when the message names a project)
+    try:
+        from lib.mind_context_broker import build_context_capsule
+        project = _detect_project(query)
+        cap = build_context_capsule(
+            project=project, query=query, budget_chars=3500,
+            limit_activity=6, limit_memory=6,
+            include_graph=True, include_audit=False)
+        if isinstance(cap, dict) and cap.get("status") == "ok":
+            briefing = (cap.get("briefing") or "").strip()
+            if briefing:
+                parts.append(briefing)
+    except Exception:
+        pass
+
+    # 2) archive/vault hits via the Connection Engine
     try:
         from lib.connection_engine import connect
         res = connect(query, limit=limit, semantic_search=True, lexical_search=False)
+        hits = res.get("connections") if isinstance(res, dict) else (res or [])
+        lines = []
+        for h in (hits or [])[:limit]:
+            if not isinstance(h, dict):
+                continue
+            t = (h.get("title") or "").strip()
+            s = (h.get("source") or "").strip()
+            why = h.get("why")
+            sn = (h.get("snippet") or "").strip()
+            if not sn and isinstance(why, (list, tuple)):
+                sn = ", ".join(str(w) for w in why[:5])
+            if t:
+                lines.append(f"- [{s}] {t[:110]}" + (f" — {sn[:120]}" if sn else ""))
+        if lines:
+            parts.append("Relevant items from your archives:\n" + "\n".join(lines))
     except Exception:
-        return ""
-    # connect() returns a dict {status, connections:[...]}, NOT a bare list.
-    if isinstance(res, dict):
-        hits = res.get("connections") or []
-    elif isinstance(res, list):
-        hits = res
-    else:
-        hits = []
-    lines = []
-    for h in hits[:limit]:
-        if not isinstance(h, dict):
-            continue
-        t = (h.get("title") or "").strip()
-        s = (h.get("source") or "").strip()
-        why = h.get("why")
-        sn = (h.get("snippet") or "").strip()
-        if not sn and isinstance(why, (list, tuple)):
-            sn = ", ".join(str(w) for w in why[:5])
-        if t:
-            lines.append(f"- [{s}] {t[:110]}" + (f" — {sn[:120]}" if sn else ""))
-    return "\n".join(lines)
+        pass
+
+    return "\n\n".join(parts)
 
 
 _SYSTEM = (
-    "You are Egon, Bruno's personal knowledge assistant. You have access to his "
-    "unified mind (papers, notes, bookmarks, projects). Answer conversationally "
-    "and concretely. When 'Relevant from Bruno's vault' context is provided, use "
-    "it and cite sources inline like [zotero]/[paperpile]. You only converse — you "
-    "do not dispatch tasks or agents."
+    "You are Egon, Bruno's personal knowledge assistant and the memory shared by "
+    "his three coding AIs (Claude Code, Codex, Antigravity). You DO have running "
+    "context on his projects and work: each turn you are given an EGON SHARED-MIND "
+    "CAPSULE — a digest of durable memory, recent cross-agent activity, structural "
+    "insights, and archive matches drawn from that unified mind. TREAT THE CAPSULE "
+    "AS YOUR OWN KNOWLEDGE: when it names a project (e.g. mouseion, egon, routster, "
+    "panop), speak about it directly from the capsule instead of claiming you don't "
+    "know what it is. If the capsule is genuinely thin on a detail, say what you DO "
+    "have and name the specific gap — don't ask the user to explain their own "
+    "project from scratch. Answer conversationally and concretely; cite sources "
+    "inline like [zotero]/[paperpile]/[memory 1539]. You only converse — you never "
+    "dispatch tasks or agents."
 )
 
 
@@ -111,7 +162,9 @@ def _messages_with_context(messages: list[dict], inject_context: bool) -> list[d
         if ctx:
             msgs.insert(len(msgs) - 1, {
                 "role": "user",
-                "content": "Relevant from Bruno's vault (context, not a question):\n" + ctx,
+                "content": ("EGON SHARED-MIND CAPSULE (your own memory across Claude, "
+                            "Codex, Antigravity + Bruno's archives — context, not a "
+                            "question):\n" + ctx),
             })
     return msgs
 
