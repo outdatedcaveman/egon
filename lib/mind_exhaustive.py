@@ -50,25 +50,33 @@ ARCHIVE_ROOT = egon_paths.STATE_DIR / "mind_archive"
 EXTRACTS = ARCHIVE_ROOT / "_extracts"
 COVERAGE = egon_paths.STATE_DIR / "mind_coverage.json"
 
-# What "everything" means per agent: root + include-all minus pure junk.
-# Excludes are ONLY non-informational machine artifacts (compiled binaries,
-# caches, temp) — never user/AI content. Every exclusion is visible in the
-# manifest as skip='excluded-dir' so nothing is silently dropped.
+# What "everything" means per agent: root + include-all minus pure machine
+# artifacts (compiled binaries, dependency trees, build output, caches, temp) —
+# NEVER user/AI content. Every exclusion is visible in the manifest as
+# skip='excluded-dir' so nothing is silently dropped.
+# 2026-07-02 audit correction: antigravity/scratch was wrongly excluded — it
+# holds REAL work (synesism-workshop, a Panop working copy, double-app,
+# notion_dump, AT's own scripts); only its build/dependency trees are junk.
+# Codex generated_images (9 real outputs), computer-use config, and
+# vendor_imports (883 skill files) are content too — now included.
+_MACHINE_DIRS = {"node_modules", "dist", "build", ".next", ".turbo",
+                 "__pycache__", ".venv", "venv", ".mypy_cache",
+                 ".pytest_cache", "chrome_temp_profile", "site-packages"}
 SOURCES = {
     "claude": {
         "root": HOME / ".claude",
-        "exclude_dirs": {"cache", "debug", "telemetry", "shell-snapshots",
-                          "session-env", "downloads", "plugins"},
+        "exclude_dirs": _MACHINE_DIRS | {"cache", "debug", "telemetry",
+                                         "shell-snapshots", "session-env",
+                                         "plugins"},
     },
     "codex": {
         "root": HOME / ".codex",
-        "exclude_dirs": {"cache", "tmp", "bin", "vendor_imports",
-                          "generated_images", "computer-use",
-                          "computer-use-turn-ended", "process_manager"},
+        "exclude_dirs": _MACHINE_DIRS | {"cache", "tmp", "bin",
+                                         "process_manager"},
     },
     "antigravity": {
         "root": HOME / ".gemini" / "antigravity",
-        "exclude_dirs": {"bin", "playground", "scratch"},
+        "exclude_dirs": _MACHINE_DIRS | {"bin", "playground"},
     },
 }
 _BIG_FILE_BYTES = 500 * 1024 * 1024          # >500MB: manifest yes, copy flagged
