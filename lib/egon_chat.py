@@ -21,6 +21,7 @@ import json
 import mimetypes
 import os
 import re
+import time
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -117,6 +118,49 @@ def _detect_project(text: str) -> str | None:
     return sorted(picks, key=len, reverse=True)[0] if picks else None
 
 
+def _canonical_context(project: str, max_sessions: int = 5) -> str:
+    """The canonical view of a project: every AI's sessions that Egon's own
+    content classifier filed under it (canonical_assignments), newest first,
+    with their goal summaries. This is the consolidated-mind ground truth —
+    independent of which app or folder the work happened in."""
+    import sqlite3
+    try:
+        from lib.mind_context_broker import DB_PATH
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=4)
+        conn.row_factory = sqlite3.Row
+    except Exception:
+        return ""
+    try:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM canonical_assignments "
+            "WHERE item_type='session' AND canonical_project=?", (project,)).fetchone()[0]
+        if not total:
+            return ""
+        rows = conn.execute(
+            """SELECT s.external_id, s.started_at, s.summary, a.name AS agent
+               FROM canonical_assignments ca
+               JOIN sessions s ON s.id = CAST(ca.item_id AS INTEGER)
+               LEFT JOIN agents a ON a.id = s.agent_id
+               WHERE ca.item_type='session' AND ca.canonical_project=?
+                 AND s.summary IS NOT NULL AND s.summary != ''
+               ORDER BY s.started_at DESC LIMIT ?""",
+            (project, max_sessions)).fetchall()
+    except Exception:
+        return ""
+    finally:
+        conn.close()
+    if not rows:
+        return ""
+    lines = [f"CANONICAL PROJECT '{project}' — {total} sessions across your AIs "
+             f"(filed by Egon's content classifier); the most recent:"]
+    for r in rows:
+        agent = (r["agent"] or "ai").split(":")[0]
+        when = time.strftime("%Y-%m-%d", time.localtime(r["started_at"] or 0))
+        head = " ".join((r["summary"] or "").split())[:500]
+        lines.append(f"- [{agent} {when}] {head}")
+    return "\n".join(lines)
+
+
 def _mind_context(query: str, limit: int = 6) -> str:
     """Assemble grounding context for the reply. Two layers, both pure DATA in
     (never dispatches agents or makes further LLM calls):
@@ -144,9 +188,20 @@ def _mind_context(query: str, limit: int = 6) -> str:
     except Exception:
         pass
 
-    # 1b) ACTUAL repo source — parameter-level code access. When the message
-    # names a project we can locate on disk, pull the most relevant source
-    # windows (the function/params, not the file top). Bruno 2026-07-01.
+    # 1b) CANONICAL project context — the primary source (Bruno 2026-07-01: the
+    # consolidated mind, not the messy app repos, is where projects live). Pull
+    # the sessions Egon's own classifier filed under this project, across ALL
+    # AIs, with their goal summaries. Read-only, no lock contention.
+    if project:
+        try:
+            canon = _canonical_context(project)
+            if canon:
+                parts.append(canon)
+        except Exception:
+            pass
+
+    # 1c) ACTUAL repo source — parameter-level code access. Secondary to the
+    # canonical mind but still valuable: the CURRENT state of the code on disk.
     try:
         from lib import repo_map
         files = repo_map.repo_files_for(project, query, max_files=4)
