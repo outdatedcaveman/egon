@@ -57,10 +57,11 @@ class _StreamWorker(QObject):
         try:
             from lib import egon_chat
             got = False
-            for piece in egon_chat.stream_chat(
+            # Consolidated surface (Bruno 2026-07-02): orders are auto-detected
+            # and dispatched to the orchestrator; replies describe what queued.
+            for piece in egon_chat.stream_chat_with_dispatch(
                 self._messages, provider=self._provider, model=self._model,
-                inject_context=True, temperature=self._temperature,
-                max_tokens=self._max_tokens,
+                temperature=self._temperature, max_tokens=self._max_tokens,
             ):
                 if self._stop:
                     break

@@ -200,7 +200,6 @@ _PAGE = """<!doctype html><html><head>
 </header>
 <div class="tabs">
  <button data-t="connect" class="on">Connect</button>
- <button data-t="chat">Chat</button>
  <button data-t="oversee">Oversee</button>
 </div>
 <div id="view-connect">
@@ -216,7 +215,10 @@ _PAGE = """<!doctype html><html><head>
 <div id="st"></div><div id="insight"></div><div id="res"></div>
 <div id="drainbar" class="drainbar" style="display:none"></div>
 </div>
-<div id="view-chat" style="display:none">
+<div id="view-oversee" style="display:none">
+ <!-- ONE surface (Bruno 2026-07-02): talk AND command here. Orders are
+      auto-detected and dispatched to the orchestrator; the reply describes
+      what was queued. The dashboard below shows agents + proposals live. -->
  <div class="prov">Model
   <select id="cprov"><option value="gemini">gemini</option>
    <option value="claude">claude</option><option value="openai">openai</option></select>
@@ -226,18 +228,12 @@ _PAGE = """<!doctype html><html><head>
  <div class="chatbar">
   <button id="cattach" style="flex:0 0 46px;background:var(--surface2);color:var(--text);
    border:1px solid var(--line);font-size:17px">📎</button>
-  <textarea id="cin" placeholder="Message Egon…"></textarea>
+  <textarea id="cin" placeholder="Talk to Egon or give an order — orders are dispatched to your agents…"></textarea>
   <button id="csend">Send</button>
  </div>
  <input id="cfile" type="file" multiple style="display:none"
   accept="image/*,audio/*,video/*,.pdf,.docx,.txt,.md,.json,.csv">
-</div>
-<div id="view-oversee" style="display:none">
- <div class="composer" style="margin-bottom:12px">
-  <textarea id="ocmd" style="height:64px" placeholder="Give the orchestrator an order — it decomposes and dispatches to your agents…"></textarea>
-  <div class="actions"><button id="odispatch" style="background:linear-gradient(135deg,var(--gold),#d6a548)">🪄 Dispatch</button></div>
- </div>
- <div id="ost" style="color:var(--muted);font-size:13px;margin:0 2px 8px;min-height:16px"></div>
+ <div class="sec mind" style="margin-top:20px">Agents &amp; proposals</div>
  <div id="orchbody"><div class="empty">loading…</div></div>
 </div>
 <script>
@@ -346,11 +342,10 @@ if(SH&&SH.trim().length>2){$('t').value=SH;call('/m/connect');}
 
 // ── Tabs ────────────────────────────────────────────────────────────────────
 function tab(name){
- for(const v of ['connect','chat','oversee'])
+ for(const v of ['connect','oversee'])
   $('view-'+v).style.display=(v===name)?'block':'none';
  document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===name));
- if(name==='oversee')loadOrch();
- if(name==='chat'){checkProviders();setTimeout(()=>$('cin').focus(),50);}
+ if(name==='oversee'){loadOrch();checkProviders();setTimeout(()=>$('cin').focus(),50);}
 }
 document.querySelector('.tabs').addEventListener('click',ev=>{
  const b=ev.target.closest('button[data-t]');if(b)tab(b.dataset.t);});
@@ -446,6 +441,7 @@ async function sendChat(){
    }
   }
   if(acc){CHIST.push({role:'assistant',content:acc});saveChat();}
+  setTimeout(loadOrch,900);   // an order may have queued tasks — refresh the deck
  }catch(e){tx.textContent='⚠ Egon not reachable — same WiFi as the PC?';a.classList.add('err');}
  $('csend').disabled=false;
 }
@@ -491,22 +487,6 @@ function renderOrch(d){
  }else{h+='<div class="ocard"><div class="meta">Nothing needs your call right now.</div></div>';}
  $('orchbody').innerHTML=h;
 }
-$('odispatch').onclick=async()=>{
- const t=$('ocmd').value.trim();
- if(t.length<5){$('ost').textContent='type an order first';return;}
- $('odispatch').disabled=true;$('ost').textContent='dispatching…';
- try{
-  const r=await fetch('/m/orch/dispatch?k='+encodeURIComponent(K),{method:'POST',
-   headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:t})});
-  const d=await r.json();
-  if(d.error){$('ost').textContent='⚠ '+d.error;}
-  else{$('ocmd').value='';
-   const n=(d.tasks||d.sub_tasks||[]).length||d.task_count||'';
-   $('ost').textContent='✓ dispatched'+(n?(' — '+n+' sub-tasks queued'):'')+' — agents pick up on their next wake';
-   setTimeout(loadOrch,800);}
- }catch(e){$('ost').textContent='⚠ Egon not reachable';}
- $('odispatch').disabled=false;
-};
 $('orchbody').addEventListener('click',ev=>{
  const b=ev.target.closest('button[data-act]');if(!b)return;
  b.disabled=true;b.textContent='…';
@@ -613,8 +593,10 @@ def build_app():
             try:
                 from lib import egon_chat
                 got = False
-                for piece in egon_chat.stream_chat(
-                    messages, provider=provider, inject_context=True
+                # Consolidated surface: orders are auto-detected and dispatched
+                # to the orchestrator; the reply describes what was queued.
+                for piece in egon_chat.stream_chat_with_dispatch(
+                    messages, provider=provider
                 ):
                     if piece:
                         got = True

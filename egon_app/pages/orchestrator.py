@@ -388,13 +388,20 @@ class OrchestratorPage(QWidget):
         sub.setWordWrap(True)
         root.addWidget(sub)
 
-        # ── The chat box Bruno asked for: Mission Control IS a conversation. ──
-        self._chat = ChatWidget(self, title="MISSION CONTROL  ·  chat")
+        # ── The chat box Bruno asked for: Mission Control IS a conversation —
+        # and (2026-07-02) THE command surface: orders typed here are detected
+        # and dispatched to the orchestrator; the reply describes what queued.
+        self._chat = ChatWidget(self, title="MISSION CONTROL  ·  talk or command")
         self._chat.setMinimumHeight(420)
         root.addWidget(self._chat)
 
         root.addWidget(self._build_hermes_panel())
-        root.addWidget(self._build_command_panel())
+        # COMMAND panel consolidated into the chat above (one input, not two —
+        # Bruno 2026-07-02). Panel kept but hidden: its _dispatch plumbing still
+        # backs task edit/clarify flows.
+        _cmd_panel = self._build_command_panel()
+        _cmd_panel.setVisible(False)
+        root.addWidget(_cmd_panel)
 
         # Metrics Dashboard Row
         metrics_lay = QHBoxLayout()

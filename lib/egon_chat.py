@@ -253,9 +253,83 @@ _SYSTEM = (
     "Bruno may attach images and documents; read them directly. Answer "
     "conversationally and concretely; this is his primary work surface, so match "
     "the depth and quality of a native AI app. Cite sources inline like "
-    "[zotero]/[paperpile]/[memory 1539]/[repo: path]. You only converse — you "
-    "never dispatch tasks or agents."
+    "[zotero]/[paperpile]/[memory 1539]/[repo: path]. When a DISPATCH RESULT "
+    "note is provided in context, Bruno's message was an order and the "
+    "orchestrator has ALREADY queued it — describe concretely what was "
+    "dispatched (sub-tasks, agents) and what happens next; don't re-ask for "
+    "permission. Otherwise just converse — you never initiate dispatch yourself."
 )
+
+
+# ── Dispatch-aware chat ──────────────────────────────────────────────────────
+# Bruno 2026-07-02: "consolidate into one surface and scrap my rule" — the chat
+# IS the command surface now. Per user message we run a cheap intent check; if
+# it's an ORDER (do/fix/build X on his machine/projects), we dispatch it to the
+# orchestrator FIRST, then stream Egon's reply with the dispatch result in
+# context so the reply describes what was queued. The trigger is always Bruno's
+# own message — the model never self-dispatches, so no feedback loop.
+
+_ORC_API = "http://127.0.0.1:8000/api/v1/mind/orchestrator"
+
+
+def _detect_order(text: str) -> bool:
+    """Cheap LLM intent check: is this an order to execute work, vs a question/
+    conversation? Conservative — defaults to False on any doubt or error."""
+    if not text or len(text.strip()) < 8:
+        return False
+    try:
+        prompt = (
+            "Is this message an ORDER instructing agents to execute work on the "
+            "user's machine/projects (build/fix/run/change something), rather "
+            "than a question, discussion, or status request? Reply strict JSON: "
+            '{"order": true|false}\n\nMESSAGE:\n' + text[:1200])
+        out = chat([{"role": "user", "content": prompt}], provider="claude",
+                   model="claude-haiku-4-5-20251001", inject_context=False,
+                   temperature=0.0, max_tokens=24)
+        i, j = out.find("{"), out.rfind("}")
+        return bool(json.loads(out[i:j + 1]).get("order")) if i >= 0 else False
+    except Exception:
+        return False
+
+
+def _dispatch_order(text: str) -> dict | None:
+    """POST the order to the orchestrator (same endpoint as the desktop COMMAND
+    panel). Returns the dispatch result, or None on failure."""
+    try:
+        import httpx
+        r = httpx.post(f"{_ORC_API}/dispatch", json={"prompt": text}, timeout=45.0)
+        if r.status_code < 400:
+            return r.json()
+    except Exception:
+        pass
+    return None
+
+
+def stream_chat_with_dispatch(messages: list[dict], provider: str = DEFAULT_PROVIDER,
+                              model: str | None = None,
+                              temperature: float | None = None,
+                              max_tokens: int | None = None) -> Iterable[str]:
+    """The consolidated surface: detect order → dispatch → stream a reply that
+    describes what was queued. Non-orders stream a normal grounded reply."""
+    msgs = list(messages)
+    last = _text_of(msgs[-1].get("content", "")) if msgs else ""
+    dispatched: dict | None = None
+    if msgs and msgs[-1].get("role") == "user" and _detect_order(last):
+        dispatched = _dispatch_order(last)
+    if dispatched:
+        tasks = (dispatched.get("tasks") or dispatched.get("sub_tasks") or [])
+        lines = []
+        for t in tasks[:10]:
+            if isinstance(t, dict):
+                lines.append(f"- #{t.get('id','?')} → {t.get('agent_name') or t.get('agent','?')}: "
+                             f"{(t.get('sub_task_desc') or t.get('description') or '')[:110]}")
+        note = ("DISPATCH RESULT (the orchestrator already queued Bruno's order; "
+                "describe this to him):\n" + ("\n".join(lines) if lines
+                else json.dumps(dispatched)[:600]))
+        msgs.insert(len(msgs) - 1, {"role": "user", "content": note})
+    yield from stream_chat(msgs, provider=provider, model=model,
+                           inject_context=True, temperature=temperature,
+                           max_tokens=max_tokens)
 
 
 def _text_of(content) -> str:
