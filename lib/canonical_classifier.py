@@ -194,6 +194,16 @@ def classify_sessions(limit: int | None = None, use_llm: bool = True,
     if only_unclassified:
         done = {r["item_id"] for r in conn.execute(
             "SELECT item_id FROM canonical_assignments WHERE item_type='session'")}
+        # Second chance for 'unfiled': many were classified before their session
+        # had any summary (e.g. Codex threads gained summaries only when the
+        # exhaustive parser backfilled state_5 metadata). If the session NOW has
+        # real text, requeue it — the upsert makes re-classification safe.
+        retry = {r["item_id"] for r in conn.execute(
+            """SELECT ca.item_id FROM canonical_assignments ca
+               JOIN sessions s ON s.id = CAST(ca.item_id AS INTEGER)
+               WHERE ca.item_type='session' AND ca.canonical_project='unfiled'
+                 AND s.summary IS NOT NULL AND s.summary != ''""")}
+        done -= retry
     rows = conn.execute("SELECT id, external_id, summary FROM sessions "
                         "ORDER BY id DESC").fetchall()
     by_project: dict[str, int] = {}
