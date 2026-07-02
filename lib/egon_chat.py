@@ -311,24 +311,34 @@ def _doc_as_text(p: dict) -> str:
 
 
 _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+_AUDIO_EXT = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac", ".opus"}
+_VIDEO_EXT = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".3gp"}
 _MAX_DOC_CHARS = 24000
+_MAX_MEDIA_BYTES = 20 * 1024 * 1024   # inline base64 ceiling (Gemini inlineData)
 
 
 def attach_from_path(path: str) -> dict | None:
     """Turn a file on disk into a message part. Images → base64 image part;
-    PDFs/office/text/code → extracted-text document part. Returns None if the
-    file can't be read. Used by the desktop + phone chat attach buttons."""
+    audio/video → base64 media parts (Gemini consumes them natively; other
+    providers get an honest 'switch to Gemini' note); PDFs/office/text/code →
+    extracted-text document part. Returns None if the file can't be read."""
     p = Path(path)
     if not p.exists() or not p.is_file():
         return None
     ext = p.suffix.lower()
-    if ext in _IMAGE_EXT:
+    if ext in _IMAGE_EXT or ext in _AUDIO_EXT or ext in _VIDEO_EXT:
         try:
+            if p.stat().st_size > _MAX_MEDIA_BYTES and ext not in _IMAGE_EXT:
+                return {"type": "document", "name": p.name,
+                        "text": f"(media file too large to inline: {p.stat().st_size >> 20}MB; "
+                                f"max {_MAX_MEDIA_BYTES >> 20}MB)"}
             data = base64.b64encode(p.read_bytes()).decode("ascii")
         except Exception:
             return None
-        mime = mimetypes.guess_type(str(p))[0] or "image/png"
-        return {"type": "image", "mime": mime, "data": data, "name": p.name}
+        mime = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
+        kind = ("image" if ext in _IMAGE_EXT
+                else "audio" if ext in _AUDIO_EXT else "video")
+        return {"type": kind, "mime": mime, "data": data, "name": p.name}
     text = _extract_text(p, ext)
     if text is None:
         return None
@@ -379,8 +389,9 @@ def _gemini_stream(messages, model, key, params):
         role = "model" if m["role"] == "assistant" else "user"
         gparts = []
         for p in _normalize_parts(m["content"]):
-            if p["type"] == "image" and p.get("data"):
-                gparts.append({"inlineData": {"mimeType": p.get("mime", "image/png"),
+            if p["type"] in ("image", "audio", "video") and p.get("data"):
+                # Gemini consumes image/audio/video natively via inlineData
+                gparts.append({"inlineData": {"mimeType": p.get("mime", "application/octet-stream"),
                                               "data": p["data"]}})
             elif p["type"] == "document":
                 gparts.append({"text": _doc_as_text(p)})
@@ -424,6 +435,10 @@ def _anthropic_stream(messages, model, key, params):
                 blocks.append({"type": "image", "source": {
                     "type": "base64", "media_type": p.get("mime", "image/png"),
                     "data": p["data"]}})
+            elif p["type"] in ("audio", "video"):
+                blocks.append({"type": "text", "text":
+                               f"[Attached {p['type']} '{p.get('name','file')}' — this "
+                               "provider can't consume it; switch to Gemini for audio/video.]"})
             elif p["type"] == "document":
                 blocks.append({"type": "text", "text": _doc_as_text(p)})
             else:
@@ -468,6 +483,10 @@ def _openai_stream(messages, model, key, params):
                 if p["type"] == "image" and p.get("data"):
                     arr.append({"type": "image_url", "image_url": {
                         "url": f"data:{p.get('mime','image/png')};base64,{p['data']}"}})
+                elif p["type"] in ("audio", "video"):
+                    arr.append({"type": "text", "text":
+                                f"[Attached {p['type']} '{p.get('name','file')}' — this "
+                                "provider can't consume it; switch to Gemini for audio/video.]"})
                 elif p["type"] == "document":
                     arr.append({"type": "text", "text": _doc_as_text(p)})
                 else:

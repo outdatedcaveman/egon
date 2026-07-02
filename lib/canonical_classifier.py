@@ -240,7 +240,66 @@ def classify_sessions(limit: int | None = None, use_llm: bool = True,
             key=lambda x: -x[1])), "methods": methods}
 
 
+def classify_memories(limit: int | None = None, use_llm: bool = True,
+                      only_unclassified: bool = True) -> dict:
+    """Classify durable memories into canonical projects (item_type='memory').
+    Memories are the second content stream after sessions: rollout summaries,
+    decisions, Codex thread metadata, Antigravity conversations — all filed by
+    CONTENT, same hybrid pipeline. Cheap shortcut: when a memory's tags already
+    name exactly one canonical project, trust the tag (method='tag') — no
+    embedding or LLM spend needed."""
+    conn = _conn()
+    ensure_schema(conn)
+    done = set()
+    if only_unclassified:
+        done = {r["item_id"] for r in conn.execute(
+            "SELECT item_id FROM canonical_assignments WHERE item_type='memory'")}
+    known = set(CANONICAL_DEFS.keys())
+    rows = conn.execute(
+        "SELECT id, kind, content, tags FROM memory "
+        "WHERE superseded_by_memory_id IS NULL ORDER BY id DESC").fetchall()
+    by_project: dict[str, int] = {}
+    methods: dict[str, int] = {}
+    n = 0
+    for row in rows:
+        if limit and n >= limit:
+            break
+        mid = str(row["id"])
+        if only_unclassified and mid in done:
+            continue
+        content = (row["content"] or "").strip()
+        if len(content) < 30:
+            continue
+        tags = {t.strip().lower() for t in (row["tags"] or "").split(",") if t.strip()}
+        tag_hits = tags & known
+        if len(tag_hits) == 1:
+            res = {"canonical_project": next(iter(tag_hits)), "confidence": 1.0,
+                   "method": "tag", "tags": sorted(tag_hits), "rationale": "tagged"}
+        else:
+            res = classify_text(content, use_llm=use_llm)
+        conn.execute(
+            """INSERT INTO canonical_assignments
+               (item_type,item_id,canonical_project,confidence,method,tags,rationale,ts)
+               VALUES ('memory',?,?,?,?,?,?,?)
+               ON CONFLICT(item_type,item_id) DO UPDATE SET
+                 canonical_project=excluded.canonical_project, confidence=excluded.confidence,
+                 method=excluded.method, tags=excluded.tags, rationale=excluded.rationale,
+                 ts=excluded.ts""",
+            (mid, res["canonical_project"], res["confidence"], res["method"],
+             json.dumps(res["tags"]), res["rationale"], int(time.time())))
+        by_project[res["canonical_project"]] = by_project.get(res["canonical_project"], 0) + 1
+        methods[res["method"]] = methods.get(res["method"], 0) + 1
+        n += 1
+        if n % 50 == 0:
+            conn.commit()
+    conn.commit()
+    conn.close()
+    return {"counted": n, "by_project": dict(sorted(by_project.items(),
+            key=lambda x: -x[1])), "methods": methods}
+
+
 if __name__ == "__main__":
     import sys
     lim = int(sys.argv[1]) if len(sys.argv) > 1 else None
     print(json.dumps(classify_sessions(limit=lim), indent=2, ensure_ascii=False))
+    print(json.dumps(classify_memories(limit=lim), indent=2, ensure_ascii=False))

@@ -222,10 +222,15 @@ _PAGE = """<!doctype html><html><head>
    <option value="claude">claude</option><option value="openai">openai</option></select>
   <span id="cnote"></span></div>
  <div id="chatlog"></div>
+ <div id="cchips" style="display:flex;flex-wrap:wrap;gap:6px;margin:4px 0"></div>
  <div class="chatbar">
+  <button id="cattach" style="flex:0 0 46px;background:var(--surface2);color:var(--text);
+   border:1px solid var(--line);font-size:17px">📎</button>
   <textarea id="cin" placeholder="Message Egon…"></textarea>
   <button id="csend">Send</button>
  </div>
+ <input id="cfile" type="file" multiple style="display:none"
+  accept="image/*,audio/*,video/*,.pdf,.docx,.txt,.md,.json,.csv">
 </div>
 <div id="view-oversee" style="display:none">
  <div id="orchbody"><div class="empty">loading…</div></div>
@@ -346,7 +351,15 @@ document.querySelector('.tabs').addEventListener('click',ev=>{
  const b=ev.target.closest('button[data-t]');if(b)tab(b.dataset.t);});
 
 // ── Chat (streaming SSE) ─────────────────────────────────────────────────────
-const CHIST=[];let PROV_OK=false;
+// Persistence: the conversation (text only — attachments elided) survives
+// reloads via localStorage. Attachments: 📎 → /m/attach converts each file to a
+// message part (images/audio/video base64 through; documents text-extracted).
+let CHIST=[];let PROV_OK=false;let CATT=[];
+try{CHIST=JSON.parse(localStorage.getItem('egon_chat')||'[]')||[];}catch(e){CHIST=[];}
+function saveChat(){
+ try{const el=CHIST.map(m=>({role:m.role,content:(typeof m.content==='string')?m.content:
+  m.content.map(p=>p.data?{...p,data:'',elided:true}:p)}));
+  localStorage.setItem('egon_chat',JSON.stringify(el));}catch(e){}}
 function scrollChat(){window.scrollTo(0,document.body.scrollHeight);}
 function addMsg(role,text){
  const d=document.createElement('div');d.className='msg '+role;
@@ -354,6 +367,39 @@ function addMsg(role,text){
  d.querySelector('.txt').textContent=text;
  $('chatlog').appendChild(d);scrollChat();return d;
 }
+function renderHist(){
+ for(const m of CHIST){
+  let t=(typeof m.content==='string')?m.content:
+   m.content.filter(p=>p.type==='text').map(p=>p.text).join(' ')+
+   m.content.filter(p=>p.type!=='text').map(p=>' 📎'+(p.name||p.type)).join('');
+  addMsg(m.role==='user'?'u':'a',t);
+ }}
+renderHist();
+const ICO={image:'🖼',audio:'🎵',video:'🎬',document:'📄'};
+function renderChips(){
+ $('cchips').innerHTML=CATT.map((p,i)=>'<span data-i="'+i+'" style="background:var(--surface2);'+
+  'border:1px solid var(--line);border-radius:9px;padding:4px 9px;font-size:12px">'+
+  (ICO[p.type]||'📄')+' '+esc((p.name||'').slice(0,24))+' ✕</span>').join('');}
+$('cchips').addEventListener('click',ev=>{
+ const s=ev.target.closest('span[data-i]');if(!s)return;
+ CATT.splice(parseInt(s.dataset.i,10),1);renderChips();});
+$('cattach').onclick=()=>$('cfile').click();
+$('cfile').addEventListener('change',async ev=>{
+ for(const f of ev.target.files||[]){
+  if(f.size>20*1024*1024){addMsg('a','⚠ '+f.name+' too large (>20MB)');continue;}
+  const b64=await new Promise(res=>{const r=new FileReader();
+   r.onload=()=>res(String(r.result).split(',')[1]||'');r.readAsDataURL(f);});
+  try{
+   const r=await fetch('/m/attach?k='+encodeURIComponent(K),{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:f.name,mime:f.type,data:b64})});
+   const p=await r.json();
+   if(p.error){addMsg('a','⚠ '+f.name+': '+p.error);continue;}
+   CATT.push(p);renderChips();
+  }catch(e){addMsg('a','⚠ upload failed — same WiFi as the PC?');}
+ }
+ ev.target.value='';
+});
 async function checkProviders(){
  if(PROV_OK)return;
  try{const r=await fetch('/m/providers?k='+encodeURIComponent(K));const a=await r.json();
@@ -365,9 +411,14 @@ async function checkProviders(){
  }catch(e){}
 }
 async function sendChat(){
- const inp=$('cin');const t=inp.value.trim();if(!t)return;
+ const inp=$('cin');const t=inp.value.trim();
+ if(!t&&!CATT.length)return;
  if($('csend').disabled)return;
- inp.value='';addMsg('u',t);CHIST.push({role:'user',content:t});
+ const atts=CATT.slice();CATT=[];renderChips();
+ const content=atts.length?((t?[{type:'text',text:t}]:[]).concat(atts)):t;
+ inp.value='';
+ addMsg('u',t+(atts.length?(' '+atts.map(p=>' 📎'+(p.name||p.type)).join('')):''));
+ CHIST.push({role:'user',content:content});saveChat();
  const a=addMsg('a','');const tx=a.querySelector('.txt');tx.textContent='…';
  $('csend').disabled=true;
  let acc='';let first=true;
@@ -389,7 +440,7 @@ async function sendChat(){
     }catch(e){}
    }
   }
-  if(acc)CHIST.push({role:'assistant',content:acc});
+  if(acc){CHIST.push({role:'assistant',content:acc});saveChat();}
  }catch(e){tx.textContent='⚠ Egon not reachable — same WiFi as the PC?';a.classList.add('err');}
  $('csend').disabled=false;
 }
@@ -559,6 +610,46 @@ def build_app():
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache",
                                           "X-Accel-Buffering": "no"})
+
+    # ── Attachments from the phone: images/audio/video pass straight through as
+    # base64 parts; documents (pdf/docx/txt) are saved to a temp file and run
+    # through egon_chat.attach_from_path for text extraction. Bruno 2026-07-02.
+    @app.post("/m/attach")
+    async def m_attach(req: Request):
+        if not _authed(req):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        body = await req.json()
+        name = str(body.get("name") or "file")
+        mime = str(body.get("mime") or "application/octet-stream")
+        data = str(body.get("data") or "")          # base64, no data: prefix
+        if not data:
+            return JSONResponse({"error": "no data"}, status_code=400)
+        ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+        from lib import egon_chat as ec
+        if ext in ec._IMAGE_EXT:
+            return JSONResponse({"type": "image", "mime": mime, "data": data, "name": name})
+        if ext in ec._AUDIO_EXT or ext in ec._VIDEO_EXT:
+            kind = "audio" if ext in ec._AUDIO_EXT else "video"
+            return JSONResponse({"type": kind, "mime": mime, "data": data, "name": name})
+        # document: extract text server-side
+        import asyncio, base64 as b64, tempfile, os as _os
+        def _work():
+            tmp = None
+            try:
+                fd, tmp = tempfile.mkstemp(suffix=ext or ".bin")
+                with _os.fdopen(fd, "wb") as f:
+                    f.write(b64.b64decode(data))
+                part = ec.attach_from_path(tmp)
+                return part or {"error": "could not read file"}
+            except Exception as e:
+                return {"error": str(e)[:120]}
+            finally:
+                try:
+                    if tmp:
+                        _os.remove(tmp)
+                except Exception:
+                    pass
+        return JSONResponse(await asyncio.to_thread(_work))
 
     # ── Oversight: view the orchestrator/Hermes from the phone and act on
     # proposals (approve/veto). Proxies the local mind API (127.0.0.1:8000) so

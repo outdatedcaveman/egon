@@ -602,12 +602,19 @@ def check_canonical(u: "Unit") -> None:
         import sqlite3
         from lib.mind_context_broker import DB_PATH
         c = sqlite3.connect(str(DB_PATH), timeout=5)
-        pending = c.execute(
-            "SELECT COUNT(*) FROM sessions WHERE CAST(id AS TEXT) NOT IN "
-            "(SELECT item_id FROM canonical_assignments WHERE item_type='session')"
-        ).fetchone()[0] if c.execute(
-            "SELECT name FROM sqlite_master WHERE name='canonical_assignments'"
-        ).fetchone() else c.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        if c.execute("SELECT name FROM sqlite_master WHERE name='canonical_assignments'"
+                     ).fetchone():
+            pending = c.execute(
+                "SELECT COUNT(*) FROM sessions WHERE CAST(id AS TEXT) NOT IN "
+                "(SELECT item_id FROM canonical_assignments WHERE item_type='session')"
+            ).fetchone()[0]
+            pending += c.execute(
+                "SELECT COUNT(*) FROM memory WHERE superseded_by_memory_id IS NULL "
+                "AND LENGTH(COALESCE(content,'')) >= 30 AND CAST(id AS TEXT) NOT IN "
+                "(SELECT item_id FROM canonical_assignments WHERE item_type='memory')"
+            ).fetchone()[0]
+        else:
+            pending = c.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         c.close()
     except Exception as e:
         u.ok = True
@@ -634,6 +641,7 @@ def check_canonical(u: "Unit") -> None:
     code = ("import sys; sys.path.insert(0, r'{root}');"
             "from lib import canonical_classifier as cc, canonical_fs;"
             "cc.classify_sessions(limit=None, use_llm=True, only_unclassified=True);"
+            "cc.classify_memories(limit=None, use_llm=True, only_unclassified=True);"
             "print(canonical_fs.export_canonical())").format(root=str(ROOT))
     try:
         _canonical_proc = subprocess.Popen(

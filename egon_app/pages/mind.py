@@ -1132,6 +1132,95 @@ class _ConceptGraphTab(QWidget):
         self._detail_inner.setTextFormat(Qt.TextFormat.RichText)
 
 
+class _CanonicalTab(QWidget):
+    """Canonical Mind — visible proof of the exhaustive capture + the project
+    structure Egon built by classifying every AI's work by content.
+
+    Top: per-agent coverage (files seen / archived / parsed, with skip reasons)
+    from state/mind_coverage.json — the 'NOTHING left out' guarantee, auditable.
+    Below: the canonical projects with session + memory counts, pointing at the
+    browsable tree in ~/AI/projects. Read-only, lazy-loaded. Bruno 2026-07-02."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._loaded = False
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(10)
+
+        self._cov_head = QLabel("EXHAUSTIVE CAPTURE — coverage")
+        self._cov_head.setStyleSheet(f"color:{_TEXT}; font-weight:800; font-size:12px;")
+        lay.addWidget(self._cov_head)
+        self._cov = QLabel("Loading coverage…")
+        self._cov.setWordWrap(True)
+        self._cov.setTextFormat(Qt.RichText)
+        self._cov.setStyleSheet(f"color:{_MUTED}; font-size:12px; background:#0c0d0f; "
+                                "border-radius:8px; padding:10px;")
+        lay.addWidget(self._cov)
+
+        head2 = QHBoxLayout()
+        t2 = QLabel("CANONICAL PROJECTS — filed by Egon's content classifier")
+        t2.setStyleSheet(f"color:{_TEXT}; font-weight:800; font-size:12px;")
+        head2.addWidget(t2)
+        head2.addStretch(1)
+        self._tree_hint = QLabel("browsable tree: ~/AI/projects")
+        self._tree_hint.setStyleSheet(f"color:{_MUTED}; font-size:11px;")
+        head2.addWidget(self._tree_hint)
+        lay.addLayout(head2)
+
+        self._proj_list = QListWidget()
+        self._proj_list.setStyleSheet(
+            "QListWidget { background:#0c0d0f; border:none; border-radius:8px; "
+            f"color:{_TEXT}; font-size:12px; padding:6px; }}"
+            "QListWidget::item { padding:5px 8px; }")
+        lay.addWidget(self._proj_list, 1)
+
+    def load_data(self) -> None:
+        # coverage
+        try:
+            import json as _json
+            from pathlib import Path as _P
+            cov_p = _P(__file__).resolve().parents[2] / "state" / "mind_coverage.json"
+            cov = _json.loads(cov_p.read_text(encoding="utf-8"))
+            rows = []
+            for agent, a in (cov.get("agents") or {}).items():
+                gb = a.get("bytes_seen", 0) / 1e9
+                skips = ", ".join(f"{k}:{v}" for k, v in
+                                  (a.get("not_archived") or {}).items()) or "none"
+                rows.append(
+                    f"<b style='color:#f5f5f7'>{agent}</b> — {a.get('files_seen',0)} files "
+                    f"({gb:.2f} GB) · archived {a.get('archived',0)} · parsed "
+                    f"{a.get('parsed',0)} · not archived: {skips}")
+            import datetime as _dt
+            ts = cov.get("generated_at")
+            when = _dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "?"
+            self._cov.setText("<br>".join(rows) +
+                              f"<br><span style='color:#76767f'>last capture: {when}</span>")
+        except Exception:
+            self._cov.setText("No coverage report yet — the exhaustive unit runs at idle "
+                              "(egon_core: 'exhaustive').")
+        # canonical projects
+        try:
+            import sqlite3
+            from lib.mind_context_broker import DB_PATH
+            c = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=3)
+            rows = c.execute(
+                """SELECT canonical_project,
+                          SUM(CASE WHEN item_type='session' THEN 1 ELSE 0 END) AS s,
+                          SUM(CASE WHEN item_type='memory' THEN 1 ELSE 0 END) AS m
+                   FROM canonical_assignments GROUP BY canonical_project
+                   ORDER BY (s+m) DESC""").fetchall()
+            c.close()
+            self._proj_list.clear()
+            for proj, s, m in rows:
+                mark = "▫" if proj == "unfiled" else "▪"
+                self._proj_list.addItem(f"{mark}  {proj:<28} {s or 0} sessions · {m or 0} memories")
+        except Exception as e:
+            self._proj_list.clear()
+            self._proj_list.addItem(f"canonical assignments unavailable: {str(e)[:60]}")
+        self._loaded = True
+
+
 # ── Main MindPage QTabWidget wrapper ───────────────────────────────────────
 
 class MindPage(QWidget):
@@ -1188,6 +1277,11 @@ class MindPage(QWidget):
         self._categorical_tab = _CategoricalMindTab()
         self._tabs.addTab(self._categorical_tab, "Categorical Mind (ACT)")
 
+        # Tab 4: Canonical Mind — exhaustive-capture coverage + Egon's own
+        # content-classified project structure (~/AI/projects)
+        self._canonical_tab = _CanonicalTab()
+        self._tabs.addTab(self._canonical_tab, "Canonical")
+
         # Connect tab changes to load data dynamically
         self._tabs.currentChanged.connect(self._on_tab_changed)
 
@@ -1197,6 +1291,8 @@ class MindPage(QWidget):
             self._concept_tab.load_data()
         elif w is self._categorical_tab:
             self._categorical_tab.load_data()
+        elif w is self._canonical_tab:
+            self._canonical_tab.load_data()
 
     def refresh(self) -> None:
         # Check active tab first

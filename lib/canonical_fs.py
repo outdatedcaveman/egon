@@ -87,6 +87,19 @@ def export_canonical(root: Path | None = None) -> dict:
             )
             (pdir / "sessions" / fname).write_text(body, encoding="utf-8")
             written += 1
+        # memories filed under this project → memories.md
+        mem_rows = conn.execute(
+            """SELECT m.id, m.kind, m.content FROM canonical_assignments ca
+               JOIN memory m ON m.id = CAST(ca.item_id AS INTEGER)
+               WHERE ca.item_type='memory' AND ca.canonical_project=?
+               ORDER BY m.updated_at DESC LIMIT 400""", (proj,)).fetchall()
+        if mem_rows:
+            mem_md = [f"# {proj} — durable memory ({len(mem_rows)})\n"]
+            for m in mem_rows:
+                head = " ".join((m["content"] or "").split())[:220]
+                mem_md.append(f"- **[{m['kind']} #{m['id']}]** {head}")
+            (pdir / "memories.md").write_text("\n".join(mem_md) + "\n",
+                                              encoding="utf-8")
         # project README + manifest
         agents_seen = sorted({_agent_name(conn, r["agent_id"]) for r in sess})
         readme = (

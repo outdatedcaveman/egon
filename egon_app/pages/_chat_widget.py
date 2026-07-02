@@ -116,6 +116,83 @@ class ChatWidget(QWidget):
         self._cur_bubble: _Bubble | None = None
         self._build(title)
         self._refresh_providers()
+        self._load_persisted()
+
+    # ── persistence: the conversation survives restarts; Clear archives, never
+    # deletes (Bruno's hard rule). Attachment payloads are elided on disk (the
+    # text thread is what matters across sessions; base64 blobs would balloon
+    # the file). Bruno 2026-07-02. ───────────────────────────────────────────
+    @staticmethod
+    def _state_dir():
+        from pathlib import Path
+        d = Path(__file__).resolve().parents[2] / "state"
+        return d
+
+    @classmethod
+    def _history_path(cls):
+        return cls._state_dir() / "chat_history.json"
+
+    @staticmethod
+    def _elide(history: list[dict]) -> list[dict]:
+        import copy
+        out = copy.deepcopy(history)
+        for m in out:
+            if isinstance(m.get("content"), list):
+                for p in m["content"]:
+                    if isinstance(p, dict) and p.get("data"):
+                        p["data"] = ""
+                        p["elided"] = True
+        return out
+
+    def _persist(self):
+        import json
+        try:
+            self._history_path().parent.mkdir(parents=True, exist_ok=True)
+            self._history_path().write_text(
+                json.dumps(self._elide(self._history), ensure_ascii=False),
+                encoding="utf-8")
+        except Exception:
+            pass
+
+    def _load_persisted(self):
+        import json
+        try:
+            p = self._history_path()
+            if not p.exists():
+                return
+            hist = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(hist, list) or not hist:
+                return
+            self._history = hist
+            for m in hist:
+                role = "user" if m.get("role") == "user" else "assistant"
+                c = m.get("content")
+                if isinstance(c, list):
+                    text = " ".join(x.get("text", "") for x in c
+                                    if isinstance(x, dict) and x.get("type") == "text")
+                    names = [x.get("name", "") for x in c if isinstance(x, dict)
+                             and x.get("type") in ("image", "audio", "video", "document")]
+                    note = "  ".join("📎 " + n for n in names if n)
+                    self._add_bubble(role, text, note)
+                else:
+                    self._add_bubble(role, str(c or ""))
+            self._scroll_bottom()
+        except Exception:
+            pass
+
+    def _archive_current(self):
+        import json, datetime
+        if not self._history:
+            return
+        try:
+            d = self._state_dir() / "chat_sessions"
+            d.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            (d / f"chat_{stamp}.json").write_text(
+                json.dumps(self._elide(self._history), ensure_ascii=False, indent=1),
+                encoding="utf-8")
+        except Exception:
+            pass
 
     # ── build ────────────────────────────────────────────────────────────────
     def _combo_css(self):
@@ -269,9 +346,10 @@ class ChatWidget(QWidget):
     # ── attachments ─────────────────────────────────────────────────────────
     def _pick_files(self):
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Attach images or documents", "",
-            "Supported (*.png *.jpg *.jpeg *.gif *.webp *.bmp *.pdf *.docx *.txt "
-            "*.md *.json *.csv *.py *.js *.ts);;All files (*)")
+            self, "Attach files (images, audio, video, documents)", "",
+            "Supported (*.png *.jpg *.jpeg *.gif *.webp *.bmp "
+            "*.mp3 *.wav *.m4a *.ogg *.flac *.mp4 *.mov *.webm "
+            "*.pdf *.docx *.txt *.md *.json *.csv *.py *.js *.ts);;All files (*)")
         for p in paths or []:
             self._attach_path(p)
 
@@ -286,7 +364,8 @@ class ChatWidget(QWidget):
 
     def _add_attachment(self, part: dict):
         self._attachments.append(part)
-        kind = "🖼" if part.get("type") == "image" else "📄"
+        kind = {"image": "🖼", "audio": "🎵", "video": "🎬"}.get(
+            part.get("type"), "📄")
         name = part.get("name") or part.get("type")
         chip = QLabel(f"{kind} {name}  ✕")
         chip.setCursor(Qt.PointingHandCursor)
@@ -334,7 +413,9 @@ class ChatWidget(QWidget):
     def clear(self):
         if self._worker:
             self._worker.stop()
+        self._archive_current()          # never delete — archive to chat_sessions/
         self._history = []
+        self._persist()
         self._attachments = []
         while self._chips_row.count():
             it = self._chips_row.takeAt(0)
@@ -377,8 +458,9 @@ class ChatWidget(QWidget):
         else:
             content = text
         self._history.append({"role": "user", "content": content})
-        note = "  ".join(("🖼 " if a.get("type") == "image" else "📄 ")
-                         + (a.get("name") or "") for a in atts)
+        _ico = {"image": "🖼 ", "audio": "🎵 ", "video": "🎬 "}
+        note = "  ".join(_ico.get(a.get("type"), "📄 ") + (a.get("name") or "")
+                         for a in atts)
         self._add_bubble("user", text, note)
         # reset input + attachments
         self._input.clear()
@@ -428,3 +510,4 @@ class ChatWidget(QWidget):
         self._send.setEnabled(True)
         self._send.setText("Send")
         self._scroll_bottom()
+        self._persist()   # conversation survives app restarts
