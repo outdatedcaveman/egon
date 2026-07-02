@@ -532,22 +532,27 @@ def _avail_ram_gb() -> float:
         return 99.0
 
 
-_ANTIGRAVITY_EXE = Path.home() / "AppData" / "Local" / "Programs" / "Antigravity" / "Antigravity.exe"
-_AUTOLAUNCH_RAM_FLOOR_GB = float(os.environ.get("EGON_ANTIGRAVITY_LAUNCH_RAM_GB", "2.5"))
-_AUTOLAUNCH_COOLDOWN_S = int(os.environ.get("EGON_ANTIGRAVITY_LAUNCH_COOLDOWN_S", "600"))
+_ANTIGRAVITY_LS_EXE = (Path.home() / "AppData" / "Local" / "Programs" / "Antigravity"
+                       / "resources" / "bin" / "language_server.exe")
+# The Go language server is LIGHT (~200MB) — nothing like the Electron IDE.
+_AUTOLAUNCH_RAM_FLOOR_GB = float(os.environ.get("EGON_ANTIGRAVITY_LAUNCH_RAM_GB", "1.0"))
+_AUTOLAUNCH_COOLDOWN_S = int(os.environ.get("EGON_ANTIGRAVITY_LAUNCH_COOLDOWN_S", "300"))
 
 
 def _ensure_antigravity_running(state: dict, task_id: int) -> tuple[bool, str]:
-    """If Antigravity's language server isn't up, try to LAUNCH the app so
-    queued tasks can actually run (2026-07-02: every antigravity task hard-
-    failed simply because the app was closed). RAM-gated: an Electron IDE on
-    the 8GB box needs headroom — below the floor we DON'T launch and the task
-    defers instead. Launch attempts are rate-limited to one per cooldown so a
-    stuck boot can't storm. Returns (ls_up, reason)."""
+    """HEADLESS Antigravity (Bruno 2026-07-02: 'orchestrator shouldn't need to
+    call up apps — use the CLIs and save RAM. Why isn't that true for
+    Antigravity?'). It is now: language_server.exe supports --standalone
+    --headless, so we spawn the LS DIRECTLY — no Electron IDE, ~200MB Go binary
+    instead of ~1.5GB of app. Launch flags mirror what the IDE itself uses
+    (from AppData/Roaming/Antigravity/logs/main.log). Our own --csrf_token
+    appears on the spawned process's command line, so the existing discovery
+    (_antigravity_language_server_infos / _antigravity_ls_address) picks it up
+    with zero changes. Rate-limited; small RAM floor. Returns (ls_up, reason)."""
     if _antigravity_language_server_pids():
         return True, "already-running"
-    if not _ANTIGRAVITY_EXE.exists():
-        return False, "app-not-installed"
+    if not _ANTIGRAVITY_LS_EXE.exists():
+        return False, "language_server.exe not installed"
     avail = _avail_ram_gb()
     if avail < _AUTOLAUNCH_RAM_FLOOR_GB:
         return False, f"ram-floor ({avail:.1f}GB avail < {_AUTOLAUNCH_RAM_FLOOR_GB}GB)"
@@ -556,27 +561,46 @@ def _ensure_antigravity_running(state: dict, task_id: int) -> tuple[bool, str]:
         return False, "launch-cooldown"
     state["antigravity_last_autolaunch"] = _now()
     _save_state(state)
+    import uuid
+    csrf = str(uuid.uuid4())
+    cmd = [
+        str(_ANTIGRAVITY_LS_EXE),
+        "--standalone",
+        "--headless=true",
+        "--override_ide_name", "antigravity",
+        "--subclient_type", "hub",
+        "--override_user_agent_name", "antigravity",
+        "--https_server_port", "0",
+        "--csrf_token", csrf,
+        "--app_data_dir", "antigravity",
+        "--api_server_url", "https://generativelanguage.googleapis.com",
+        "--cloud_code_endpoint", "https://daily-cloudcode-pa.googleapis.com",
+    ]
     try:
-        subprocess.Popen(
-            [str(_ANTIGRAVITY_EXE)],
-            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008)
-            if sys.platform == "win32" else 0,
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000)
+            if sys.platform == "win32" else 0,   # CREATE_NO_WINDOW — no console
             close_fds=True,
         )
     except Exception as exc:
-        return False, f"launch-error: {str(exc)[:80]}"
+        return False, f"ls-launch-error: {str(exc)[:80]}"
+    state["antigravity_headless_ls_pid"] = proc.pid
+    _save_state(state)
     append_task_event(task_id, "antigravity", "wake_info",
-                      "Antigravity was not running — launched it for this task; "
-                      "waiting for its language server.")
-    boot_timeout = int(os.environ.get("EGON_ANTIGRAVITY_BOOT_TIMEOUT", "90"))
+                      f"Spawned HEADLESS Antigravity language server (pid {proc.pid}, "
+                      "~200MB — no IDE needed); waiting for it to bind.")
+    boot_timeout = int(os.environ.get("EGON_ANTIGRAVITY_BOOT_TIMEOUT", "60"))
     deadline = _now() + boot_timeout
     while _now() < deadline:
-        time.sleep(5)
+        time.sleep(4)
+        if proc.poll() is not None:
+            return False, f"ls-exited rc={proc.returncode}"
         _ANTIGRAVITY_INFO_CACHE["ts"] = 0   # bust the 15s discovery cache
-        if _antigravity_language_server_pids():
-            time.sleep(8)                    # let the LS bind its port
-            return True, "launched"
-    return False, "boot-timeout"
+        if _listening_local_ports_for_pid(proc.pid):
+            return True, "headless-ls-launched"
+    return False, "ls-boot-timeout"
 
 
 _LAST_DEFER_EVENT: dict[int, int] = {}   # task_id -> ts; damp event spam
