@@ -476,6 +476,26 @@ def is_quota_failure(text: str) -> bool:
     return False
 
 
+def is_auth_failure(text: str) -> bool:
+    """401/authentication failures. Transient in practice (expired OAuth token,
+    quota-lockout window) — task #43 hard-failed on one (2026-07-02) when it
+    should have been requeued for after the credentials/quota recover. Treated
+    like quota failures: cooldown the agent, keep the task alive."""
+    if not text:
+        return False
+    low = str(text).lower()
+    return any(marker in low for marker in (
+        "authentication_failed",
+        "invalid authentication credentials",
+        "api error: 401",
+        'error_status":401',
+        'error_status": 401',
+        "invalid api key",
+        "oauth token has expired",
+        "please run /login",
+    ))
+
+
 def _recent_agent_log_files(agent_name: str, max_files: int = 5) -> list[str]:
     paths: list[str] = []
     for pattern in _AGENT_LOG_GLOBS.get(agent_name, []):

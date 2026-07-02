@@ -24,9 +24,11 @@ from lib.orchestration_engine import (
     append_task_event,
     get_pending_task,
     get_tasks_status,
+    is_auth_failure,
     is_quota_failure,
     record_agent_heartbeat,
     report_agent_failure,
+    set_agent_cooldown,
     update_task_status,
 )
 from lib.orchestration_engine import DB_PATH
@@ -510,6 +512,96 @@ def _mark_queue_only(agent: str, task: dict, state: dict) -> dict:
     return dict(entry)
 
 
+def _avail_ram_gb() -> float:
+    """Available (not total!) physical RAM in GB — proper MEMORYSTATUSEX."""
+    try:
+        import ctypes
+
+        class _MS(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32),
+                        ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+                        ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
+                        ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+                        ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+
+        ms = _MS()
+        ms.dwLength = ctypes.sizeof(_MS)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms))
+        return ms.ullAvailPhys / 1e9
+    except Exception:
+        return 99.0
+
+
+_ANTIGRAVITY_EXE = Path.home() / "AppData" / "Local" / "Programs" / "Antigravity" / "Antigravity.exe"
+_AUTOLAUNCH_RAM_FLOOR_GB = float(os.environ.get("EGON_ANTIGRAVITY_LAUNCH_RAM_GB", "2.5"))
+_AUTOLAUNCH_COOLDOWN_S = int(os.environ.get("EGON_ANTIGRAVITY_LAUNCH_COOLDOWN_S", "600"))
+
+
+def _ensure_antigravity_running(state: dict, task_id: int) -> tuple[bool, str]:
+    """If Antigravity's language server isn't up, try to LAUNCH the app so
+    queued tasks can actually run (2026-07-02: every antigravity task hard-
+    failed simply because the app was closed). RAM-gated: an Electron IDE on
+    the 8GB box needs headroom — below the floor we DON'T launch and the task
+    defers instead. Launch attempts are rate-limited to one per cooldown so a
+    stuck boot can't storm. Returns (ls_up, reason)."""
+    if _antigravity_language_server_pids():
+        return True, "already-running"
+    if not _ANTIGRAVITY_EXE.exists():
+        return False, "app-not-installed"
+    avail = _avail_ram_gb()
+    if avail < _AUTOLAUNCH_RAM_FLOOR_GB:
+        return False, f"ram-floor ({avail:.1f}GB avail < {_AUTOLAUNCH_RAM_FLOOR_GB}GB)"
+    last = float(state.get("antigravity_last_autolaunch") or 0)
+    if _now() - last < _AUTOLAUNCH_COOLDOWN_S:
+        return False, "launch-cooldown"
+    state["antigravity_last_autolaunch"] = _now()
+    _save_state(state)
+    try:
+        subprocess.Popen(
+            [str(_ANTIGRAVITY_EXE)],
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008)
+            if sys.platform == "win32" else 0,
+            close_fds=True,
+        )
+    except Exception as exc:
+        return False, f"launch-error: {str(exc)[:80]}"
+    append_task_event(task_id, "antigravity", "wake_info",
+                      "Antigravity was not running — launched it for this task; "
+                      "waiting for its language server.")
+    boot_timeout = int(os.environ.get("EGON_ANTIGRAVITY_BOOT_TIMEOUT", "90"))
+    deadline = _now() + boot_timeout
+    while _now() < deadline:
+        time.sleep(5)
+        _ANTIGRAVITY_INFO_CACHE["ts"] = 0   # bust the 15s discovery cache
+        if _antigravity_language_server_pids():
+            time.sleep(8)                    # let the LS bind its port
+            return True, "launched"
+    return False, "boot-timeout"
+
+
+_LAST_DEFER_EVENT: dict[int, int] = {}   # task_id -> ts; damp event spam
+
+
+def _defer_antigravity(task_id: int, reason: str, detail: dict | None = None) -> dict:
+    """Defer instead of hard-fail: the task STAYS pending, so wake_pending_agents
+    retries it automatically on every tick — e.g. the moment Bruno opens
+    Antigravity or RAM frees up. Hard-failing on a closed app was the bug that
+    killed every antigravity dispatch (tasks #37-#46). The wake tick re-marks
+    the task 'assigned' on every retry (get_pending_task does that), so we damp
+    the event log to one wake_deferred per 15 min per task."""
+    if _now() - _LAST_DEFER_EVENT.get(task_id, 0) > 900:
+        _LAST_DEFER_EVENT[task_id] = _now()
+        append_task_event(
+            task_id, "antigravity", "wake_deferred",
+            f"Antigravity runner unavailable ({reason}) — task stays queued and "
+            "retries automatically (opening the app / freed RAM triggers it).",
+            detail or {})
+    update_task_status(task_id, "pending")
+    record_agent_heartbeat("antigravity", task_id, "wake_deferred", reason)
+    return {"agent": "antigravity", "task_id": task_id, "status": "deferred",
+            "reason": reason}
+
+
 def _start_antigravity_runner(task: dict, state: dict) -> dict:
     agent = "antigravity"
     task_id = int(task["id"])
@@ -523,22 +615,22 @@ def _start_antigravity_runner(task: dict, state: dict) -> dict:
 
     agentapi = _antigravity_agentapi()
     if not agentapi:
-        append_task_event(task_id, agent, "wake_failed", "No local Antigravity agentapi runner found.")
-        update_task_status(task_id, "failed")
-        return {"agent": agent, "task_id": task_id, "status": "failed", "reason": "agentapi_missing"}
+        # agentapi ships with the app — a missing runner means the app isn't
+        # installed/running; defer so the task survives until it is.
+        return _defer_antigravity(task_id, "agentapi_missing")
+    # The app must be RUNNING for its language server to answer. If it's not,
+    # try to launch it (RAM-gated, rate-limited); otherwise defer — never
+    # hard-fail a task just because the IDE window was closed. 2026-07-02.
+    ls_up, why = _ensure_antigravity_running(state, task_id)
+    if not ls_up:
+        return _defer_antigravity(task_id, why, {"agentapi": agentapi})
     csrf_token = _antigravity_csrf_token()
     project_id = _antigravity_project_id()
     address = _antigravity_ls_address(agentapi, csrf_token=csrf_token, project_id=project_id)
     if not address:
-        append_task_event(
-            task_id,
-            agent,
-            "wake_failed",
-            "Antigravity agentapi exists, but no local ANTIGRAVITY_LS_ADDRESS could be discovered.",
-            {"agentapi": agentapi},
-        )
-        update_task_status(task_id, "failed")
-        return {"agent": agent, "task_id": task_id, "status": "failed", "reason": "address_missing"}
+        return _defer_antigravity(
+            task_id, "address_missing (app up, LS port not discovered yet)",
+            {"agentapi": agentapi})
 
     model = os.environ.get("EGON_ANTIGRAVITY_MODEL", "pro").strip() or "pro"
     cmd = [
@@ -637,6 +729,19 @@ def _start_antigravity_runner(task: dict, state: dict) -> dict:
             detail,
             {"pid": proc.pid, "returncode": proc.returncode, "final_status": "rerouted_or_cooldown"},
         )
+    elif is_auth_failure(detail):
+        set_agent_cooldown(agent, 1800, "auth failure (401) — waiting for "
+                           "credentials/quota to recover")
+        update_task_status(task_id, "pending")
+        entry["status"] = "auth_requeued"
+        entry["final_task_status"] = "requeued_auth"
+        state.setdefault("tasks", {})[str(task_id)] = entry
+        state.setdefault("agents", {})[agent] = entry
+        append_task_event(
+            task_id, agent, "wake_auth_failed",
+            "Antigravity handoff hit a 401 authentication failure — agent "
+            "cooled down 30min, task requeued (not failed).",
+            {"pid": proc.pid, "returncode": proc.returncode})
     elif conversation_id:
         append_task_event(
             task_id,
@@ -769,6 +874,19 @@ def poll_wake_processes(state: dict | None = None) -> dict:
             if is_quota_failure(detail):
                 report_agent_failure(agent, _quota_summary(detail))
                 final_status = "rerouted_or_cooldown"
+            elif is_auth_failure(detail):
+                # 401s are transient (expired OAuth / quota lockout) — task #43
+                # was killed by one. Cool the agent down and REQUEUE the task so
+                # it runs once credentials recover. Bruno 2026-07-02.
+                set_agent_cooldown(agent, 1800, "auth failure (401) — waiting "
+                                   "for credentials/quota to recover")
+                update_task_status(task_id, "pending")
+                append_task_event(
+                    task_id, agent, "wake_auth_failed",
+                    "Runner hit a 401 authentication failure — agent cooled "
+                    "down 30min, task requeued (not failed).",
+                    {"pid": entry.get("pid")})
+                final_status = "requeued_auth"
             elif entry.get("handoff_mode") == "launch_only":
                 final_status = final_status or "assigned"
                 append_task_event(
