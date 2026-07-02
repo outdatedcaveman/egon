@@ -51,6 +51,11 @@ _DEFAULT_ROOTS = [
     # syncs PDFs to a Drive folder (cloud placeholders → cloud-hydration guard).
     str(_HOME / "Zotero" / "storage"),
     r"G:\My Drive\Paperpile",
+    # Exhaustive-mind extracts: full text pulled out of every AI's raw stores
+    # (Antigravity conversations, Claude prompt history/plans/tasks, …) by
+    # lib/mind_exhaustive. Indexing them here feeds the whole-vault embedding
+    # pipeline, so EVERYTHING the AIs produced is searchable. Bruno 2026-07-01.
+    str(ROOT / "state" / "mind_archive" / "_extracts"),
 ] + [r for r in os.environ.get("EGON_EXTRA_FILE_ROOTS", "").split(os.pathsep) if r.strip()]
 # Knowledge-bearing formats only — code trees and binaries stay out.
 _DEFAULT_EXTS = {".pdf", ".md", ".txt", ".docx", ".doc", ".epub", ".rtf",

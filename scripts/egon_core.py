@@ -353,7 +353,8 @@ def _any_heavy_running() -> bool:
     what blew the 8GB box past 12GB. Bruno 2026-06-30."""
     g = globals()
     for name in ("_hydrate_proc", "_index_proc", "_reembed_proc", "_concept_proc",
-                 "_mirror_proc", "_index_backup_proc", "_canonical_proc"):
+                 "_mirror_proc", "_index_backup_proc", "_canonical_proc",
+                 "_exhaustive_proc"):
         p = g.get(name)
         try:
             if p is not None and p.poll() is None:
@@ -375,7 +376,8 @@ def _reap_heavy(reason: str = "user-active") -> int:
     g = globals()
     killed = 0
     for name in ("_hydrate_proc", "_index_proc", "_reembed_proc", "_concept_proc",
-                 "_mirror_proc", "_index_backup_proc", "_canonical_proc"):
+                 "_mirror_proc", "_index_backup_proc", "_canonical_proc",
+                 "_exhaustive_proc"):
         p = g.get(name)
         try:
             if p is not None and p.poll() is None:
@@ -515,6 +517,72 @@ CONCEPT_COOLDOWN_S = int(os.environ.get("EGON_CONCEPT_COOLDOWN_S", str(24 * 3600
 _canonical_proc = None
 _canonical_last = 0.0
 CANONICAL_COOLDOWN_S = int(os.environ.get("EGON_CANONICAL_COOLDOWN_S", str(3 * 3600)))
+
+_exhaustive_proc = None
+_exhaustive_last = 0.0
+EXHAUSTIVE_COOLDOWN_S = int(os.environ.get("EGON_EXHAUSTIVE_COOLDOWN_S", str(6 * 3600)))
+
+
+def check_exhaustive(u: "Unit") -> None:
+    """The COMPREHENSIVE/EXHAUSTIVE mind guarantee (Bruno 2026-07-01: 'NOTHING
+    AT ALL that factors into my Claude, Antigravity and Codex use should be
+    left out'). lib/mind_exhaustive: byte-mirrors every AI-home file into
+    state/mind_archive (before the apps prune their own history), manifests
+    everything in mind.db, parses the stores the old ingest missed (Antigravity
+    conversations, Codex sqlite threads+memories, Claude history/plans/tasks),
+    and backfills full transcripts where the old 200-event cap dropped the
+    middle. Idle-gated, serialized, isolated subprocess with idle-abort."""
+    global _exhaustive_proc, _exhaustive_last
+    if _exhaustive_proc is not None and _exhaustive_proc.poll() is None:
+        u.ok = True
+        u.detail = "capturing everything…"
+        return
+    since = time.time() - _exhaustive_last
+    if _exhaustive_last and since < EXHAUSTIVE_COOLDOWN_S:
+        # coverage summary for visibility between runs
+        try:
+            cov = json.loads((ROOT / "state" / "mind_coverage.json").read_text(
+                encoding="utf-8"))
+            tot = sum(a.get("files_seen", 0) for a in cov.get("agents", {}).values())
+            arc = sum(a.get("archived", 0) for a in cov.get("agents", {}).values())
+            u.detail = f"covered {arc}/{tot} files (next in {int((EXHAUSTIVE_COOLDOWN_S - since)/3600)}h)"
+        except Exception:
+            u.detail = f"cooldown ({int((EXHAUSTIVE_COOLDOWN_S - since)/3600)}h)"
+        u.ok = True
+        return
+    allowed, why = _heavy_allowed()
+    if not allowed:
+        u.ok = True
+        u.detail = f"idle-wait ({why})"
+        return
+    if _any_heavy_running():
+        u.ok = True
+        u.detail = "waiting (another heavy job)"
+        return
+    code = (
+        "import sys, ctypes; sys.path.insert(0, r'{root}')\n"
+        "def _idle_s():\n"
+        "    class L(ctypes.Structure):\n"
+        "        _fields_ = [('cbSize', ctypes.c_uint), ('dwTime', ctypes.c_uint)]\n"
+        "    li = L(); li.cbSize = ctypes.sizeof(L)\n"
+        "    ctypes.windll.user32.GetLastInputInfo(ctypes.byref(li))\n"
+        "    return (ctypes.windll.kernel32.GetTickCount() - li.dwTime) / 1000.0\n"
+        "from lib import mind_exhaustive\n"
+        "r = mind_exhaustive.run_exhaustive(stop_check=lambda: _idle_s() < 30)\n"
+        "print(r.get('coverage', {{}}).get('agents'))\n"
+    ).format(root=str(ROOT))
+    try:
+        _exhaustive_proc = subprocess.Popen(
+            [str(PYW), "-c", code], cwd=str(ROOT), env=SPAWN_ENV,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008))
+        _exhaustive_last = time.time()
+        u.ok = True
+        u.detail = "exhaustive capture launched"
+        log("info", "exhaustive_capture_launched")
+    except Exception as e:
+        u.ok = True
+        u.detail = f"launch failed: {str(e)[:60]}"
 
 
 def check_canonical(u: "Unit") -> None:
@@ -1150,7 +1218,8 @@ def main() -> int:
              "daily_digest": Unit("daily_digest"),
              "snapshots": Unit("snapshots"),
              "mirror": Unit("mirror"),
-             "canonical": Unit("canonical")}
+             "canonical": Unit("canonical"),
+             "exhaustive": Unit("exhaustive")}
     _reap_heavy("startup-orphans")   # clear any heavy jobs a prior instance left
     while True:
         try:
@@ -1172,6 +1241,7 @@ def main() -> int:
             check_snapshots(units["snapshots"])
             check_mirror(units["mirror"])
             check_canonical(units["canonical"])
+            check_exhaustive(units["exhaustive"])
             write_health(units)
         except Exception as e:
             log("error", "core_cycle_error", error=str(e)[:200])

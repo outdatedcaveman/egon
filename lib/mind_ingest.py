@@ -39,12 +39,18 @@ MIND_API = "http://127.0.0.1:8000/api/v1/mind"
 STATE_PATH = EGON_ROOT / "state" / "mind_ingest_state.json"
 INGEST_INTERVAL_S = 60
 
-# Per-pass bounds. Claude transcripts can have thousands of events;
-# inserting them all synchronously via HTTP swamps Panop. We cap each
-# session's activity to a representative slice (first + last N) and
-# the number of new sessions processed per pass. Tunable via the
-# config block `egon-config.json.mind_ingest`.
-MAX_EVENTS_PER_SESSION = 200
+# Per-pass bounds. Bruno 2026-07-01, emphatic: the mind must be COMPREHENSIVE
+# and EXHAUSTIVE — "NOTHING AT ALL that factors into my Claude, Antigravity and
+# Codex use should be left out." Full fidelity is a GUARANTEE, but not through
+# this path: pushing every event of a 10k-event session through per-event HTTP
+# swamps the live service (verified 2026-07-01 — /memory stalled minutes behind
+# the ingest queue). So the LIVE path keeps a representative slice for instant
+# availability, and lib/mind_exhaustive does the rest with zero loss:
+#   • archives every transcript byte-for-byte the same day it appears, and
+#   • backfill_full_transcripts() bulk-inserts the COMPLETE event stream
+#     directly into mind.db (executemany, idle-gated) — including the middles
+#     this cap skips. End state in the mind: every event of every session.
+MAX_EVENTS_PER_SESSION = 200        # live slice only; exhaustive backfill completes it
 MAX_NEW_SESSIONS_PER_PASS = 30
 
 # Per-agent identity (registered once, reused for every session attribution)
@@ -267,10 +273,10 @@ def _ingest_claude_transcript(slug: str, uuid: str, path: Path) -> int | None:
                     events.append(json.loads(line))
                 except Exception:
                     continue
-        if len(events) > MAX_EVENTS_PER_SESSION:
+        if MAX_EVENTS_PER_SESSION and len(events) > MAX_EVENTS_PER_SESSION:
             head = events[:MAX_EVENTS_PER_SESSION // 2]
             tail = events[-(MAX_EVENTS_PER_SESSION // 2):]
-            events = head + tail
+            events = head + tail   # only when a cap is explicitly configured
         for e in events:
             ts_iso = e.get("timestamp")
             ts = _iso_to_epoch(ts_iso) if ts_iso else None
@@ -468,10 +474,10 @@ def _ingest_codex_rollout(uuid: str, path: Path) -> int | None:
     last_ts = None
     n = 0
     try:
-        if len(events) > MAX_EVENTS_PER_SESSION:
+        if MAX_EVENTS_PER_SESSION and len(events) > MAX_EVENTS_PER_SESSION:
             head = events[:MAX_EVENTS_PER_SESSION // 2]
             tail = events[-(MAX_EVENTS_PER_SESSION // 2):]
-            events = head + tail
+            events = head + tail   # only when a cap is explicitly configured
         for e in events:
             ts_iso = e.get("timestamp") or e.get("created_at")
             ts = _iso_to_epoch(ts_iso) if ts_iso else None
