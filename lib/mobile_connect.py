@@ -233,6 +233,11 @@ _PAGE = """<!doctype html><html><head>
   accept="image/*,audio/*,video/*,.pdf,.docx,.txt,.md,.json,.csv">
 </div>
 <div id="view-oversee" style="display:none">
+ <div class="composer" style="margin-bottom:12px">
+  <textarea id="ocmd" style="height:64px" placeholder="Give the orchestrator an order — it decomposes and dispatches to your agents…"></textarea>
+  <div class="actions"><button id="odispatch" style="background:linear-gradient(135deg,var(--gold),#d6a548)">🪄 Dispatch</button></div>
+ </div>
+ <div id="ost" style="color:var(--muted);font-size:13px;margin:0 2px 8px;min-height:16px"></div>
  <div id="orchbody"><div class="empty">loading…</div></div>
 </div>
 <script>
@@ -486,6 +491,22 @@ function renderOrch(d){
  }else{h+='<div class="ocard"><div class="meta">Nothing needs your call right now.</div></div>';}
  $('orchbody').innerHTML=h;
 }
+$('odispatch').onclick=async()=>{
+ const t=$('ocmd').value.trim();
+ if(t.length<5){$('ost').textContent='type an order first';return;}
+ $('odispatch').disabled=true;$('ost').textContent='dispatching…';
+ try{
+  const r=await fetch('/m/orch/dispatch?k='+encodeURIComponent(K),{method:'POST',
+   headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:t})});
+  const d=await r.json();
+  if(d.error){$('ost').textContent='⚠ '+d.error;}
+  else{$('ocmd').value='';
+   const n=(d.tasks||d.sub_tasks||[]).length||d.task_count||'';
+   $('ost').textContent='✓ dispatched'+(n?(' — '+n+' sub-tasks queued'):'')+' — agents pick up on their next wake';
+   setTimeout(loadOrch,800);}
+ }catch(e){$('ost').textContent='⚠ Egon not reachable';}
+ $('odispatch').disabled=false;
+};
 $('orchbody').addEventListener('click',ev=>{
  const b=ev.target.closest('button[data-act]');if(!b)return;
  b.disabled=true;b.textContent='…';
@@ -676,6 +697,29 @@ def build_app():
         except Exception as e:
             out["error"] = str(e)[:140]
         return JSONResponse(out)
+
+    @app.post("/m/orch/dispatch")
+    async def m_orch_dispatch(req: Request):
+        """Bruno-initiated dispatch from the phone (2026-07-02: he sent an order
+        via the phone expecting the orchestrator to pick it up — but Chat is
+        deliberately one-directional and never dispatches). This is the explicit
+        bridge: the Oversee tab's command box posts here, we proxy to the same
+        /orchestrator/dispatch the desktop COMMAND panel uses. User-initiated,
+        masterlaw-screened downstream — not model self-dispatch."""
+        if not _authed(req):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        body = await req.json()
+        prompt = str(body.get("prompt") or "").strip()
+        if len(prompt) < 5:
+            return JSONResponse({"error": "prompt too short"}, status_code=400)
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as c:
+                r = await c.post(_MIND + "/orchestrator/dispatch",
+                                 json={"prompt": prompt})
+                return JSONResponse(r.json())
+        except Exception as e:
+            return JSONResponse({"error": str(e)[:140]}, status_code=502)
 
     @app.post("/m/orch/act")
     async def m_orch_act(req: Request):
