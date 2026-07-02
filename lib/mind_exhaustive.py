@@ -211,6 +211,12 @@ def archive_all(stop_check=None) -> dict:
                 (agent, str(rel), sz, mt,
                  _sha1_head(p) if sz < 32 * 1024 * 1024 else "",
                  did_archive, skip, now, now))
+            # Commit in small batches: a per-agent transaction spans thousands
+            # of rows and holds the mind.db write lock for MINUTES, starving the
+            # live service and any classifier ('database is locked', verified
+            # 2026-07-02). Short transactions keep everyone responsive.
+            if st["seen"] % 200 == 0:
+                conn.commit()
         conn.commit()
     conn.close()
     return stats
