@@ -253,19 +253,30 @@ def _sweep_duplicate_mind_services() -> None:
         pids = {int(x) for x in res.stdout.split() if x.strip().isdigit()}
         if len(pids) <= 1:
             return
-        # find the :8000 owner — that one lives
+        # who owns which port?
         net = subprocess.run(["netstat", "-ano", "-p", "tcp"],
                              capture_output=True, text=True, timeout=10,
                              creationflags=0x08000000).stdout
-        owner = None
+        owner_8000 = owner_8765 = None
         for line in net.splitlines():
-            if "127.0.0.1:8000" in line and "LISTENING" in line:
-                try:
-                    owner = int(line.split()[-1])
-                except Exception:
-                    pass
-                break
-        victims = pids - ({owner} if owner in pids else {sorted(pids)[-1]})
+            if "LISTENING" not in line:
+                continue
+            try:
+                pid = int(line.split()[-1])
+            except Exception:
+                continue
+            if "127.0.0.1:8000" in line:
+                owner_8000 = pid
+            elif ":8765" in line:
+                owner_8765 = pid
+        if owner_8000 and owner_8000 == owner_8765:
+            victims = pids - {owner_8000}   # one healthy owner; cull the rest
+        else:
+            # SPLIT-BRAIN (verified 2026-07-03: two instances each holding one
+            # port, one serving stale code). No instance is fully healthy —
+            # kill them ALL; the next check_mind cycle respawns ONE that binds
+            # both ports. Convergence beats preservation here.
+            victims = set(pids)
         for pid in victims:
             try:
                 subprocess.run(["taskkill", "/PID", str(pid), "/F"],
@@ -274,7 +285,9 @@ def _sweep_duplicate_mind_services() -> None:
             except Exception:
                 pass
         log("warn", "duplicate_mind_services_swept",
-            killed=sorted(victims), kept=owner)
+            killed=sorted(victims),
+            kept=(owner_8000 if owner_8000 == owner_8765 else None),
+            split_brain=owner_8000 != owner_8765)
     except Exception as e:
         log("warn", "dup_sweep_failed", error=str(e)[:80])
 
