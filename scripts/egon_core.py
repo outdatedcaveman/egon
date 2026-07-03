@@ -229,7 +229,58 @@ class Unit:
         return {"ok": self.ok, "detail": self.detail, "restarts": self.restarts}
 
 
+_dup_sweep_last = 0.0
+
+
+def _sweep_duplicate_mind_services() -> None:
+    """Defense-in-depth against split-brain (Bruno 2026-07-02: three stale
+    mind_service instances split :8000/:8765 and served STALE CODE for hours;
+    'this should have been dealt with definitively'). The service now holds a
+    kernel mutex, but orphans that predate the mutex — or a leaked lock — must
+    be healed by the SUPERVISOR, automatically, every 5 min: keep only the
+    process that owns :8000; kill the rest."""
+    global _dup_sweep_last
+    if time.time() - _dup_sweep_last < 300:
+        return
+    _dup_sweep_last = time.time()
+    try:
+        ps = ("Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe' OR "
+              "Name='python.exe'\" | Where-Object { $_.CommandLine -match "
+              "'mind_service' } | Select-Object -ExpandProperty ProcessId")
+        res = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                             capture_output=True, text=True, timeout=15,
+                             creationflags=0x08000000)
+        pids = {int(x) for x in res.stdout.split() if x.strip().isdigit()}
+        if len(pids) <= 1:
+            return
+        # find the :8000 owner — that one lives
+        net = subprocess.run(["netstat", "-ano", "-p", "tcp"],
+                             capture_output=True, text=True, timeout=10,
+                             creationflags=0x08000000).stdout
+        owner = None
+        for line in net.splitlines():
+            if "127.0.0.1:8000" in line and "LISTENING" in line:
+                try:
+                    owner = int(line.split()[-1])
+                except Exception:
+                    pass
+                break
+        victims = pids - ({owner} if owner in pids else {sorted(pids)[-1]})
+        for pid in victims:
+            try:
+                subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                               capture_output=True, timeout=10,
+                               creationflags=0x08000000)
+            except Exception:
+                pass
+        log("warn", "duplicate_mind_services_swept",
+            killed=sorted(victims), kept=owner)
+    except Exception as e:
+        log("warn", "dup_sweep_failed", error=str(e)[:80])
+
+
 def check_mind(u: Unit) -> None:
+    _sweep_duplicate_mind_services()
     t0 = time.time()
     ok, body = _http_ok(MIND_STATS, timeout=8.0)
     ok = ok and '"status":"ok"' in body.replace(" ", "")

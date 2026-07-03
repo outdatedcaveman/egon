@@ -193,6 +193,39 @@ def _choose_fallback_agent(original_agent: str, conn: sqlite3.Connection) -> str
     return None
 
 
+def reassign_task_agent(task_id: int, reason: str) -> str | None:
+    """Reroute a stuck task to the best available fallback agent (respecting
+    cooldowns) and requeue it. Returns the new agent, or None if no fallback.
+    Built 2026-07-03 so antigravity tasks flow to codex/claude-code instead of
+    waiting forever on a closed IDE — work must never stall on plumbing."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT agent_name, sub_task_desc FROM orchestrator_tasks WHERE id=?",
+            (task_id,)).fetchone()
+        if not row:
+            return None
+        original = _normalize_agent_name(row[0])
+        fallback = _choose_fallback_agent(original, conn)
+        if not fallback:
+            return None
+        conn.execute(
+            "UPDATE orchestrator_tasks SET agent_name=?, sub_task_desc=?, "
+            "status='pending' WHERE id=?",
+            (fallback, _reroute_desc(row[1], original, reason), task_id))
+        conn.execute(
+            """INSERT INTO orchestrator_task_events (task_id, agent_name, event_type, content, payload_json, created_at)
+               VALUES (?, ?, 'rerouted', ?, ?, ?)""",
+            (task_id, fallback,
+             f"Rerouted from {original} to {fallback}: {reason[:120]}",
+             json.dumps({"from": original, "to": fallback}),
+             int(time.time())))
+        conn.commit()
+        return fallback
+    finally:
+        conn.close()
+
+
 def _reroute_desc(desc: str, original_agent: str, reason: str) -> str:
     desc = str(desc or "").strip()
     if desc.startswith("[Rerouted from "):
@@ -597,6 +630,8 @@ def _chat_decomposition(prompt: str, cfg: dict, timeout: float = 25.0) -> str | 
     system_content = (
         "You are Egon's Orchestrator agent. Decompose a high-level request into concrete sub-tasks "
         "for these specialized agents: 'claude-code' (writes/edits code, runs tests), "
+        "'codex' (writes/edits code, refactors, benchmarks — second engineer, use for "
+        "parallelizable code work or when claude-code is busy/cooling down), "
         "'antigravity' (high-level architecture, research, planning, mockups), "
         "'hermes' (background tasks, database checks, scripts).\n"
         "Output ONLY a raw JSON array of objects. Each object must have 'agent' (name string) and "

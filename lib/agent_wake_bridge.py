@@ -433,8 +433,36 @@ def _agent_command(agent: str, prompt_path: Path, out_path: Path, err_path: Path
     return None
 
 
+def _task_capsule(agent: str, task: dict) -> str:
+    """Shared-mind capsule for the task, embedded DIRECTLY in the wake prompt so
+    every woken agent is deterministically fed from the consolidated mind —
+    not merely asked to fetch it (Bruno 2026-07-03: 'you already ingest and
+    feed from the all-around-complete mind now too, right?'). Best-effort."""
+    try:
+        from lib.mind_context_broker import build_context_capsule
+        query = f"{task.get('parent_prompt') or ''} {task.get('sub_task_desc') or ''}"[:600]
+        project = None
+        try:
+            from lib.egon_chat import _detect_project
+            project = _detect_project(query)
+        except Exception:
+            pass
+        cap = build_context_capsule(project=project, query=query,
+                                    budget_chars=3000, limit_activity=5,
+                                    limit_memory=5, include_graph=False,
+                                    include_audit=False, agent=agent)
+        if isinstance(cap, dict) and cap.get("status") == "ok":
+            return (cap.get("briefing") or "").strip()[:3200]
+    except Exception:
+        pass
+    return ""
+
+
 def _runner_prompt(agent: str, task: dict) -> str:
     task_id = int(task["id"])
+    capsule = _task_capsule(agent, task)
+    capsule_block = (f"\nEGON SHARED-MIND CAPSULE (cross-agent context for this "
+                     f"task — treat as ground truth):\n{capsule}\n" if capsule else "")
     return f"""You are {agent}, woken automatically by Egon's Orchestrator.
 
 Task id: {task_id}
@@ -443,9 +471,9 @@ Parent prompt:
 
 Delegated task:
 {task.get('sub_task_desc') or ''}
-
+{capsule_block}
 Contract:
-1. Call Egon's mind/context tool, or GET /api/v1/mind/context/v2?project=egon&agent={agent}&query=<this task>.
+1. The capsule above is your starting context; for MORE, call Egon's mind/context tool or GET /api/v1/mind/context/v2?project=egon&agent={agent}&query=<this task>.
 2. Append a task event `started` before meaningful work.
 3. Append progress/output events while working so the Orchestrator UI can show your written working response in near real time.
 4. Before long steps, read /api/v1/mind/orchestrator/tasks/{task_id}/control and honor pause, stop/cancel, clarify, edit, and requeue.
@@ -604,6 +632,19 @@ def _ensure_antigravity_running(state: dict, task_id: int) -> tuple[bool, str]:
 
 
 _LAST_DEFER_EVENT: dict[int, int] = {}   # task_id -> ts; damp event spam
+_REROUTE_AFTER_S = int(os.environ.get("EGON_ANTIGRAVITY_REROUTE_S", "900"))
+
+
+def _first_defer_ts(task_id: int) -> int | None:
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=8)
+        row = conn.execute(
+            "SELECT MIN(created_at) FROM orchestrator_task_events "
+            "WHERE task_id=? AND event_type='wake_deferred'", (task_id,)).fetchone()
+        conn.close()
+        return int(row[0]) if row and row[0] else None
+    except Exception:
+        return None
 
 
 def _defer_antigravity(task_id: int, reason: str, detail: dict | None = None) -> dict:
@@ -613,12 +654,29 @@ def _defer_antigravity(task_id: int, reason: str, detail: dict | None = None) ->
     killed every antigravity dispatch (tasks #37-#46). The wake tick re-marks
     the task 'assigned' on every retry (get_pending_task does that), so we damp
     the event log to one wake_deferred per 15 min per task."""
+    # Grace window expired? Antigravity has no headless mode (its language
+    # server demands an IDE stdin handshake — verified 2026-07-03), so work must
+    # NOT wait forever on a closed window: reroute to the next available agent
+    # (codex/claude-code/hermes, cooldown-aware). Bruno: "work never stalls".
+    first = _first_defer_ts(task_id)
+    if first and _now() - first > _REROUTE_AFTER_S:
+        try:
+            from lib.orchestration_engine import reassign_task_agent
+            new_agent = reassign_task_agent(
+                task_id, f"antigravity unavailable {_REROUTE_AFTER_S // 60}min ({reason})")
+        except Exception:
+            new_agent = None
+        if new_agent:
+            _LAST_DEFER_EVENT.pop(task_id, None)
+            return {"agent": "antigravity", "task_id": task_id,
+                    "status": "rerouted", "reason": f"→ {new_agent}"}
     if _now() - _LAST_DEFER_EVENT.get(task_id, 0) > 900:
         _LAST_DEFER_EVENT[task_id] = _now()
         append_task_event(
             task_id, "antigravity", "wake_deferred",
-            f"Antigravity runner unavailable ({reason}) — task stays queued and "
-            "retries automatically (opening the app / freed RAM triggers it).",
+            f"Antigravity runner unavailable ({reason}) — task stays queued; "
+            "retries automatically, and reroutes to another agent after "
+            f"{_REROUTE_AFTER_S // 60}min.",
             detail or {})
     update_task_status(task_id, "pending")
     record_agent_heartbeat("antigravity", task_id, "wake_deferred", reason)
