@@ -115,12 +115,13 @@ class ChatWidget(QWidget):
         self._thread: QThread | None = None
         self._worker: _StreamWorker | None = None
         self._cur_bubble: _Bubble | None = None
+        self._session_id: str = ""
         self._build(title)
         self._refresh_providers()
         self._load_persisted()
-        # ONE conversation across devices: the phone writes the same server-side
-        # history file; watch its mtime and reload when someone else updates it
-        # (never mid-stream). Bruno 2026-07-04.
+        # Separate conversations, shared with the phone via lib/chat_store —
+        # watch the store and reload when another device changes it (never
+        # mid-stream). Bruno 2026-07-04.
         from PySide6.QtCore import QTimer
         self._hist_mtime = self._hist_stat()
         self._sync_timer = QTimer(self)
@@ -130,7 +131,8 @@ class ChatWidget(QWidget):
 
     def _hist_stat(self):
         try:
-            return self._history_path().stat().st_mtime
+            from lib import chat_store
+            return chat_store.mtime_signature()
         except Exception:
             return 0
 
@@ -140,93 +142,98 @@ class ChatWidget(QWidget):
         m = self._hist_stat()
         if m and m != self._hist_mtime:
             self._hist_mtime = m
-            # rebuild the view from the shared file
-            while self._thread_lay.count():
-                it = self._thread_lay.takeAt(0)
-                if it.widget():
-                    it.widget().deleteLater()
-            self._empty = None
-            self._history = []
-            self._thread_lay.addStretch(1)
+            self._reset_thread_view()
             self._load_persisted()
 
-    # ── persistence: the conversation survives restarts; Clear archives, never
-    # deletes (Bruno's hard rule). Attachment payloads are elided on disk (the
-    # text thread is what matters across sessions; base64 blobs would balloon
-    # the file). Bruno 2026-07-02. ───────────────────────────────────────────
-    @staticmethod
-    def _state_dir():
-        from pathlib import Path
-        d = Path(__file__).resolve().parents[2] / "state"
-        return d
-
-    @classmethod
-    def _history_path(cls):
-        return cls._state_dir() / "chat_history.json"
-
-    @staticmethod
-    def _elide(history: list[dict]) -> list[dict]:
-        import copy
-        out = copy.deepcopy(history)
-        for m in out:
-            if isinstance(m.get("content"), list):
-                for p in m["content"]:
-                    if isinstance(p, dict) and p.get("data"):
-                        p["data"] = ""
-                        p["elided"] = True
-        return out
-
+    # ── conversations: separate sessions, one store shared with the phone
+    # (lib/chat_store — no drift between surfaces). Bruno 2026-07-04. ────────
     def _persist(self):
-        import json
         try:
-            self._history_path().parent.mkdir(parents=True, exist_ok=True)
-            self._history_path().write_text(
-                json.dumps(self._elide(self._history), ensure_ascii=False),
-                encoding="utf-8")
+            from lib import chat_store
+            if self._session_id:
+                chat_store.save(self._session_id, self._history)
             if hasattr(self, "_hist_mtime"):
                 self._hist_mtime = self._hist_stat()   # own write ≠ reload
         except Exception:
             pass
 
     def _load_persisted(self):
-        import json
+        """Load the CURRENT session from the shared store and render it."""
         try:
-            p = self._history_path()
-            if not p.exists():
-                return
-            hist = json.loads(p.read_text(encoding="utf-8"))
-            if not isinstance(hist, list) or not hist:
-                return
-            self._history = hist
-            for m in hist:
-                role = "user" if m.get("role") == "user" else "assistant"
-                c = m.get("content")
-                if isinstance(c, list):
-                    text = " ".join(x.get("text", "") for x in c
-                                    if isinstance(x, dict) and x.get("type") == "text")
-                    names = [x.get("name", "") for x in c if isinstance(x, dict)
-                             and x.get("type") in ("image", "audio", "video", "document")]
-                    note = "  ".join("📎 " + n for n in names if n)
-                    self._add_bubble(role, text, note)
-                else:
-                    self._add_bubble(role, str(c or ""))
-            self._scroll_bottom()
+            from lib import chat_store
+            self._session_id = chat_store.current_id()
+            hist = chat_store.load(self._session_id)
         except Exception:
-            pass
+            hist = []
+        self._history = hist or []
+        for m in self._history:
+            role = "user" if m.get("role") == "user" else "assistant"
+            c = m.get("content")
+            if isinstance(c, list):
+                text = " ".join(x.get("text", "") for x in c
+                                if isinstance(x, dict) and x.get("type") == "text")
+                names = [x.get("name", "") for x in c if isinstance(x, dict)
+                         and x.get("type") in ("image", "audio", "video", "document")]
+                note = "  ".join("📎 " + n for n in names if n)
+                self._add_bubble(role, text, note)
+            else:
+                self._add_bubble(role, str(c or ""))
+        self._scroll_bottom()
+        self._refresh_sessions()
 
-    def _archive_current(self):
-        import json, datetime
-        if not self._history:
+    def _refresh_sessions(self):
+        if not hasattr(self, "_session_box"):
             return
         try:
-            d = self._state_dir() / "chat_sessions"
-            d.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            (d / f"chat_{stamp}.json").write_text(
-                json.dumps(self._elide(self._history), ensure_ascii=False, indent=1),
-                encoding="utf-8")
+            from lib import chat_store
+            sessions = chat_store.list_sessions()
         except Exception:
-            pass
+            sessions = []
+        self._session_box.blockSignals(True)
+        self._session_box.clear()
+        for s in sessions:
+            self._session_box.addItem(s["title"][:44], userData=s["id"])
+        idx = self._session_box.findData(self._session_id)
+        if idx >= 0:
+            self._session_box.setCurrentIndex(idx)
+        self._session_box.blockSignals(False)
+
+    def _switch_session(self, index: int):
+        sid = self._session_box.itemData(index)
+        if not sid or sid == self._session_id:
+            return
+        if self._worker:
+            self._worker.stop()
+        try:
+            from lib import chat_store
+            chat_store.set_current(sid)
+        except Exception:
+            return
+        self._reset_thread_view()
+        self._load_persisted()
+
+    def _new_session(self):
+        if self._worker:
+            self._worker.stop()
+        try:
+            from lib import chat_store
+            chat_store.new_session()
+        except Exception:
+            return
+        self._reset_thread_view()
+        self._load_persisted()
+        self._input.setFocus()
+
+    def _reset_thread_view(self):
+        self._history = []
+        while self._thread_lay.count():
+            it = self._thread_lay.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        self._empty = QLabel("No messages yet. Type below to start.")
+        self._empty.setStyleSheet(f"color:{_MUTED}; font-size:12px; font-style:italic;")
+        self._thread_lay.addWidget(self._empty)
+        self._thread_lay.addStretch(1)
 
     # ── build ────────────────────────────────────────────────────────────────
     def _combo_css(self):
@@ -251,6 +258,16 @@ class ChatWidget(QWidget):
         t = QLabel(title)
         t.setStyleSheet(f"color:{_TEXT}; font-weight:800; font-size:12px;")
         head.addWidget(t)
+        # conversation picker + New — separate sessions (Bruno 2026-07-04)
+        self._session_box = QComboBox(); self._session_box.setStyleSheet(self._combo_css())
+        self._session_box.setMinimumWidth(190)
+        self._session_box.currentIndexChanged.connect(self._switch_session)
+        head.addWidget(self._session_box)
+        newb = QPushButton("+ New"); newb.setCursor(Qt.PointingHandCursor)
+        newb.setStyleSheet(f"QPushButton {{ background:#212328; color:{_TEXT}; border:none; "
+                           "border-radius:6px; padding:4px 10px; font-size:11px; }}")
+        newb.clicked.connect(self._new_session)
+        head.addWidget(newb)
         head.addStretch(1)
         self._provider = QComboBox(); self._provider.setStyleSheet(self._combo_css())
         self._provider.currentIndexChanged.connect(self._refresh_models)
@@ -445,25 +462,15 @@ class ChatWidget(QWidget):
         return super().eventFilter(obj, event)
 
     def clear(self):
-        if self._worker:
-            self._worker.stop()
-        self._archive_current()          # never delete — archive to chat_sessions/
-        self._history = []
-        self._persist()
+        """'New chat': the old conversation stays in the sessions list (never
+        deleted); a fresh one becomes current."""
         self._attachments = []
         while self._chips_row.count():
             it = self._chips_row.takeAt(0)
             if it.widget():
                 it.widget().deleteLater()
         self._chips_host.setVisible(False)
-        while self._thread_lay.count():
-            it = self._thread_lay.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
-        self._empty = QLabel("No messages yet. Type below to start.")
-        self._empty.setStyleSheet(f"color:{_MUTED}; font-size:12px; font-style:italic;")
-        self._thread_lay.addWidget(self._empty)
-        self._thread_lay.addStretch(1)
+        self._new_session()
 
     def _add_bubble(self, role, text="", attach_note=""):
         if self._empty is not None:

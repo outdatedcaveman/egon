@@ -219,8 +219,11 @@ _PAGE = """<!doctype html><html><head>
  <!-- ONE surface (Bruno 2026-07-02): talk AND command here. Orders are
       auto-detected and dispatched to the orchestrator; the reply describes
       what was queued. The dashboard below shows agents + proposals live. -->
- <div class="prov">Model
-  <select id="cprov"><option value="gemini">gemini</option>
+ <div class="prov" style="flex-wrap:wrap">
+  <select id="csess" style="max-width:46%"></select>
+  <button id="cnew" style="flex:0 0 auto;padding:6px 10px;border-radius:8px;font-size:12.5px;
+   background:var(--surface2);color:var(--text);border:1px solid var(--line)">+ New</button>
+  Model <select id="cprov"><option value="gemini">gemini</option>
    <option value="claude">claude</option><option value="openai">openai</option></select>
   <span id="cnote"></span></div>
  <div id="chatlog"></div>
@@ -358,35 +361,59 @@ $('apkdl').href='/m/apk?k='+encodeURIComponent(K);
 // Persistence: the conversation (text only — attachments elided) survives
 // reloads via localStorage. Attachments: 📎 → /m/attach converts each file to a
 // message part (images/audio/video base64 through; documents text-extracted).
-let CHIST=[];let PROV_OK=false;let CATT=[];
-// ONE conversation across desktop + phone: the server file is the source of
-// truth; localStorage is only an offline cache.
-try{CHIST=JSON.parse(localStorage.getItem('egon_chat')||'[]')||[];}catch(e){CHIST=[];}
+let CHIST=[];let PROV_OK=false;let CATT=[];let CHID='';
+// Separate conversations, shared with the desktop (server = source of truth;
+// localStorage per-session = offline cache).
+function cacheKey(){return 'egon_chat_'+(CHID||'default');}
 function saveChat(){
  const el=CHIST.map(m=>({role:m.role,content:(typeof m.content==='string')?m.content:
   m.content.map(p=>p.data?{...p,data:'',elided:true}:p)}));
- try{localStorage.setItem('egon_chat',JSON.stringify(el));}catch(e){}
- fetch('/m/history?k='+encodeURIComponent(K),{method:'POST',
-  headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({history:el})}).catch(()=>{});
+ try{localStorage.setItem(cacheKey(),JSON.stringify(el));}catch(e){}
+ if(CHID) fetch('/m/chats/'+encodeURIComponent(CHID)+'?k='+encodeURIComponent(K),
+  {method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({history:el})}).catch(()=>{});
 }
-async function loadSharedChat(){
+function showChat(h){
+ CHIST=Array.isArray(h)?h:[];$('chatlog').innerHTML='';renderHist();
+ try{localStorage.setItem(cacheKey(),JSON.stringify(CHIST));}catch(e){}
+}
+async function openChat(id){
+ CHID=id;
  try{
-  const r=await fetch('/m/history?k='+encodeURIComponent(K));
+  const r=await fetch('/m/chats/'+encodeURIComponent(id)+'?k='+encodeURIComponent(K));
   const h=(await r.json()).history;
-  if(!Array.isArray(h))return;
-  // Never lose messages: adopt whichever thread is LONGER. If this device has
-  // messages the server lacks (e.g. chatted offline/on the street), push them
-  // up instead of overwriting local.
-  if(h.length>CHIST.length){
-   CHIST=h;$('chatlog').innerHTML='';renderHist();
-   try{localStorage.setItem('egon_chat',JSON.stringify(h));}catch(e){}
-  }else if(CHIST.length>h.length){
-   saveChat();
+  let local=[];try{local=JSON.parse(localStorage.getItem(cacheKey())||'[]')||[];}catch(e){}
+  // never lose messages: longer thread wins; push local up if it's ahead
+  if(Array.isArray(h)&&h.length>=local.length){showChat(h);}
+  else{showChat(local);saveChat();}
+ }catch(e){
+  let local=[];try{local=JSON.parse(localStorage.getItem(cacheKey())||'[]')||[];}catch(e2){}
+  showChat(local);
+ }
+}
+async function loadSessions(sel){
+ try{
+  const r=await fetch('/m/chats?k='+encodeURIComponent(K));
+  const d=await r.json();
+  const s=$('csess');s.innerHTML='';
+  for(const x of (d.sessions||[])){
+   const o=document.createElement('option');o.value=x.id;
+   o.textContent=(x.title||x.id).slice(0,34);s.appendChild(o);
   }
+  const pick=sel||d.current||(d.sessions[0]&&d.sessions[0].id);
+  if(pick){s.value=pick;await openChat(pick);}
  }catch(e){}
 }
-loadSharedChat();
+$('csess').addEventListener('change',()=>openChat($('csess').value));
+$('cnew').onclick=async()=>{
+ try{
+  const r=await fetch('/m/chats/new?k='+encodeURIComponent(K),{method:'POST'});
+  const d=await r.json();
+  await loadSessions(d.id);
+  $('cin').focus();
+ }catch(e){}
+};
+loadSessions();
 function scrollChat(){window.scrollTo(0,document.body.scrollHeight);}
 function addMsg(role,text){
  const d=document.createElement('div');d.className='msg '+role;
@@ -446,6 +473,7 @@ async function sendChat(){
  inp.value='';
  addMsg('u',t+(atts.length?(' '+atts.map(p=>' 📎'+(p.name||p.type)).join('')):''));
  CHIST.push({role:'user',content:content});saveChat();
+ if(CHIST.length===1&&t){const o=$('csess').selectedOptions[0];if(o)o.textContent=t.slice(0,34);}
  const a=addMsg('a','');const tx=a.querySelector('.txt');tx.textContent='…';
  $('csend').disabled=true;
  let acc='';let first=true;
@@ -751,41 +779,60 @@ def build_app():
     # keeping separate histories (chat_history.json vs localStorage). Now BOTH
     # read/write the same server-side file, so the thread follows you across
     # devices. Attachment payloads are elided as usual. ──────────────────────
-    _HISTORY = ROOT / "state" / "chat_history.json"
+    # Separate conversations (Bruno 2026-07-04) — one store for PC + phone via
+    # lib/chat_store. /m/history stays as the CURRENT-session alias.
+    from lib import chat_store
+
+    @app.get("/m/chats")
+    def m_chats(req: Request):
+        if not _authed(req):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        return JSONResponse({"sessions": chat_store.list_sessions(),
+                             "current": chat_store.current_id()})
+
+    @app.post("/m/chats/new")
+    def m_chats_new(req: Request):
+        if not _authed(req):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        return JSONResponse({"id": chat_store.new_session()})
+
+    @app.get("/m/chats/{sid}")
+    def m_chats_get(sid: str, req: Request):
+        if not _authed(req):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        chat_store.set_current(sid)
+        return JSONResponse({"id": sid, "history": chat_store.load(sid)})
+
+    @app.post("/m/chats/{sid}")
+    async def m_chats_set(sid: str, req: Request):
+        if not _authed(req):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        body = await req.json()
+        hist = body.get("history")
+        if not isinstance(hist, list):
+            return JSONResponse({"error": "history must be a list"}, status_code=400)
+        chat_store.save(sid, hist)
+        chat_store.set_current(sid)
+        return JSONResponse({"status": "ok", "id": sid, "messages": len(hist)})
 
     @app.get("/m/history")
     def m_history_get(req: Request):
         if not _authed(req):
             return JSONResponse({"error": "forbidden"}, status_code=403)
-        try:
-            if _HISTORY.exists():
-                return JSONResponse({"history": json.loads(
-                    _HISTORY.read_text(encoding="utf-8"))})
-        except Exception:
-            pass
-        return JSONResponse({"history": []})
+        sid = chat_store.current_id()
+        return JSONResponse({"id": sid, "history": chat_store.load(sid)})
 
     @app.post("/m/history")
     async def m_history_set(req: Request):
         if not _authed(req):
             return JSONResponse({"error": "forbidden"}, status_code=403)
-        try:
-            body = await req.json()
-            hist = body.get("history")
-            if not isinstance(hist, list):
-                return JSONResponse({"error": "history must be a list"}, status_code=400)
-            for m in hist:                       # elide base64 blobs
-                c = m.get("content") if isinstance(m, dict) else None
-                if isinstance(c, list):
-                    for p in c:
-                        if isinstance(p, dict) and p.get("data"):
-                            p["data"] = ""
-                            p["elided"] = True
-            _HISTORY.write_text(json.dumps(hist, ensure_ascii=False),
-                                encoding="utf-8")
-            return JSONResponse({"status": "ok", "messages": len(hist)})
-        except Exception as e:
-            return JSONResponse({"error": str(e)[:100]}, status_code=500)
+        body = await req.json()
+        hist = body.get("history")
+        if not isinstance(hist, list):
+            return JSONResponse({"error": "history must be a list"}, status_code=400)
+        sid = body.get("id") or chat_store.current_id()
+        chat_store.save(sid, hist)
+        return JSONResponse({"status": "ok", "id": sid, "messages": len(hist)})
 
     @app.get("/m/remote_url")
     def m_remote_url(req: Request):
