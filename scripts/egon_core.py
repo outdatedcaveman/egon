@@ -373,6 +373,47 @@ def check_tunnel(u: "Unit") -> None:
         u.detail = f"url publish err: {str(e)[:50]}"
 
 
+def check_reporter(u: "Unit") -> None:
+    """Verified task outcomes flow TO Bruno (chat + phone nudge) instead of
+    waiting to be discovered. lib/task_reporter; guard-flagged thread so the
+    LLM verify never blocks this loop. Bruno 2026-07-04 (improvement #1+#2)."""
+    try:
+        from lib import task_reporter
+        kicked = task_reporter.kick_async()
+        u.ok = True
+        u.detail = "reporting pass running" if not kicked else "watching for outcomes"
+    except Exception as e:
+        u.ok = True
+        u.detail = f"reporter err: {str(e)[:60]}"
+
+
+_ES_CONTINUOUS = 0x80000000
+_ES_SYSTEM_REQUIRED = 0x00000001
+_awake_held = False
+
+
+def _keep_awake_while_heavy() -> None:
+    """Improvement #4 (Bruno 2026-07-04): overnight idle is the data pipeline's
+    fuel, but Windows sleep kills it mid-job. While ANY heavy subprocess runs,
+    hold ES_SYSTEM_REQUIRED so the machine stays awake; release the moment
+    heavy work stops so normal power policy resumes. Display may still sleep."""
+    global _awake_held
+    try:
+        import ctypes
+        if _any_heavy_running():
+            if not _awake_held:
+                ctypes.windll.kernel32.SetThreadExecutionState(
+                    _ES_CONTINUOUS | _ES_SYSTEM_REQUIRED)
+                _awake_held = True
+                log("info", "keep_awake_on", reason="heavy job running")
+        elif _awake_held:
+            ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS)
+            _awake_held = False
+            log("info", "keep_awake_off")
+    except Exception:
+        pass
+
+
 def check_mind(u: Unit) -> None:
     _sweep_duplicate_mind_services()
     t0 = time.time()
@@ -1373,7 +1414,8 @@ def main() -> int:
              "mirror": Unit("mirror"),
              "canonical": Unit("canonical"),
              "exhaustive": Unit("exhaustive"),
-             "tunnel": Unit("tunnel")}
+             "tunnel": Unit("tunnel"),
+             "reporter": Unit("reporter")}
     _reap_heavy("startup-orphans")   # clear any heavy jobs a prior instance left
     while True:
         try:
@@ -1397,6 +1439,8 @@ def main() -> int:
             check_canonical(units["canonical"])
             check_exhaustive(units["exhaustive"])
             check_tunnel(units["tunnel"])
+            check_reporter(units["reporter"])
+            _keep_awake_while_heavy()
             write_health(units)
         except Exception as e:
             log("error", "core_cycle_error", error=str(e)[:200])
