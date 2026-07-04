@@ -448,7 +448,7 @@ class OrchestratorPage(QWidget):
         mission_lay.addWidget(mission_title)
         self._mission = QPlainTextEdit()
         self._mission.setReadOnly(True)
-        self._mission.setFixedHeight(76)
+        self._mission.setFixedHeight(150)   # room for the recent-outcomes feed
         self._mission.setStyleSheet(
             f"QPlainTextEdit {{ background:#0c0d0f; color:{_TEXT}; "
             f"border:none; border-radius:6px; padding:7px; font-size:11px; }}"
@@ -904,6 +904,20 @@ class OrchestratorPage(QWidget):
             if queue_only:
                 wake_bits.append("queued/no-runner " + ", ".join(sorted(queue_only)))
             lines.append("Wake: " + " | ".join(wake_bits))
+        # Visibility (Bruno 2026-07-04: "where's my visibility?"): what the
+        # agents actually DID, right here above the fold — newest finished
+        # tasks with their outcome, not just counters.
+        done = [t for t in (self._last_tasks or [])
+                if t.get("status") in ("completed", "failed")]
+        for t in done[:4]:
+            mark = "✓" if t.get("status") == "completed" else "✗"
+            desc = " ".join(str(t.get("sub_task_desc") or "").split())[:90]
+            ev = (t.get("latest_event") or {}).get("content") or ""
+            ev = " ".join(str(ev).split())[:80]
+            line = f"{mark} #{t.get('id')} {t.get('agent_name')}: {desc}"
+            if ev:
+                line += f"  →  {ev}"
+            lines.append(line)
         if len(lines) == 1:
             lines.append("Use the AI Command Deck below for per-agent action, stats, events, and controls.")
         self._mission.setPlainText("\n".join(lines))

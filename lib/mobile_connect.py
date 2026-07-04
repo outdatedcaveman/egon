@@ -475,6 +475,16 @@ function renderOrch(d){
    '<div class="meta">'+esc(ct.slice(0,150))+
    (le?('<br>latest: '+esc(le.slice(0,120))):'')+'</div></div>';
  }
+ // Visibility: what the agents actually DID — outcomes, not just status.
+ const done=(m.tasks||[]).filter(t=>['completed','failed'].includes(t.status)).slice(0,6);
+ if(done.length){h+='<div class="sec mind">Recent results</div>';
+  for(const t of done){const mark=t.status==='completed'?'✓':'✗';
+   const ev=((t.latest_event||{}).content||'').slice(0,110);
+   h+='<div class="ocard"><div class="ttl">'+mark+' #'+t.id+' · '+esc(t.agent_name||'')+'</div>'+
+    '<div class="meta">'+esc((t.sub_task_desc||'').slice(0,130))+
+    (ev?('<br><span style="color:var(--teal)">'+esc(ev)+'</span>'):'')+'</div></div>';
+  }
+ }
  const props=d.proposals||[];
  if(props.length){h+='<div class="sec arch">Hermes proposals — your call</div>';
   for(const p of props.slice(0,12)){const tier=p.masterlaw_tier||'ok';const tid=p.task_id;
@@ -679,6 +689,35 @@ def build_app():
         except Exception as e:
             out["error"] = str(e)[:140]
         return JSONResponse(out)
+
+    @app.get("/m/apk")
+    def m_apk(req: Request):
+        """Serve the latest EgonConnect.apk so the phone can self-update with
+        one tap (adb path needs wifi-debug on, which Bruno toggles off for
+        banking). Token-guarded like everything else."""
+        if not _authed(req):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        from fastapi.responses import FileResponse
+        apk = ROOT / "state" / "EgonConnect.apk"
+        if not apk.exists():
+            return JSONResponse({"error": "apk not built"}, status_code=404)
+        return FileResponse(str(apk), media_type="application/vnd.android.package-archive",
+                            filename="EgonConnect.apk")
+
+    @app.get("/m/remote_url")
+    def m_remote_url(req: Request):
+        """Current public tunnel URL. The Android app calls this on every
+        successful load and CACHES the result — so when the phone leaves the
+        LAN, it already knows today's remote address. Self-updating; no rebuild
+        when the quick-tunnel URL rotates. Bruno 2026-07-04."""
+        if not _authed(req):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        try:
+            p = ROOT / "state" / "mobile_connect_url_remote.txt"
+            url = p.read_text(encoding="utf-8").strip() if p.exists() else ""
+            return JSONResponse({"remote_url": url})
+        except Exception as e:
+            return JSONResponse({"error": str(e)[:80]}, status_code=500)
 
     @app.post("/m/orch/dispatch")
     async def m_orch_dispatch(req: Request):
