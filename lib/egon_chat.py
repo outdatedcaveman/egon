@@ -305,12 +305,37 @@ def _dispatch_order(text: str) -> dict | None:
     return None
 
 
+def _log_chat_turn(user_text: str, reply_text: str, dispatched: bool) -> None:
+    """Record the chat turn in the MIND (Bruno 2026-07-04: his street
+    conversation existed only in the phone's browser storage — invisible to the
+    exhaustive mind, gone from every other surface). One egon-chat session per
+    day, one activity row per turn. Best-effort, never blocks the reply."""
+    try:
+        import httpx
+        base = "http://127.0.0.1:8000/api/v1/mind"
+        day = time.strftime("%Y-%m-%d")
+        r = httpx.post(f"{base}/sessions/start",
+                       json={"agent": "egon-chat", "agent_kind": "chat-surface",
+                             "external_id": f"egon-chat-{day}"}, timeout=4)
+        sid = (r.json() or {}).get("session_id") or (r.json() or {}).get("id")
+        if not sid:
+            return
+        httpx.post(f"{base}/activity", json={
+            "session_id": sid, "kind": "chat_turn",
+            "payload": {"user": user_text[:4000], "assistant": reply_text[:6000],
+                        "dispatched": dispatched},
+        }, timeout=4)
+    except Exception:
+        pass
+
+
 def stream_chat_with_dispatch(messages: list[dict], provider: str = DEFAULT_PROVIDER,
                               model: str | None = None,
                               temperature: float | None = None,
                               max_tokens: int | None = None) -> Iterable[str]:
     """The consolidated surface: detect order → dispatch → stream a reply that
-    describes what was queued. Non-orders stream a normal grounded reply."""
+    describes what was queued. Non-orders stream a normal grounded reply.
+    Every completed turn is recorded in the mind (exhaustive — chats included)."""
     msgs = list(messages)
     last = _text_of(msgs[-1].get("content", "")) if msgs else ""
     dispatched: dict | None = None
@@ -327,9 +352,13 @@ def stream_chat_with_dispatch(messages: list[dict], provider: str = DEFAULT_PROV
                 "describe this to him):\n" + ("\n".join(lines) if lines
                 else json.dumps(dispatched)[:600]))
         msgs.insert(len(msgs) - 1, {"role": "user", "content": note})
-    yield from stream_chat(msgs, provider=provider, model=model,
-                           inject_context=True, temperature=temperature,
-                           max_tokens=max_tokens)
+    chunks: list[str] = []
+    for piece in stream_chat(msgs, provider=provider, model=model,
+                             inject_context=True, temperature=temperature,
+                             max_tokens=max_tokens):
+        chunks.append(piece)
+        yield piece
+    _log_chat_turn(last, "".join(chunks), dispatched is not None)
 
 
 def _text_of(content) -> str:
