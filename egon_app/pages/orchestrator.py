@@ -457,6 +457,36 @@ class OrchestratorPage(QWidget):
         mission_lay.addWidget(self._mission)
         root.addWidget(mission_panel)
 
+        # ── SESSIONS — every AI's recent sessions, canonical project attached
+        # (Bruno 2026-07-04: sessions on the console for better control) ──────
+        sess_panel = QFrame()
+        sess_panel.setStyleSheet(
+            f"QFrame {{ background:{_BG_CARD}; border:none; border-radius:8px; }}")
+        sess_lay = QVBoxLayout(sess_panel)
+        sess_lay.setContentsMargins(12, 10, 12, 10)
+        sess_lay.setSpacing(6)
+        sess_head = QHBoxLayout()
+        st = QLabel("SESSIONS  ·  all AIs, newest first")
+        st.setStyleSheet(f"color:{_TEXT}; font-weight:800; font-size:11px;")
+        sess_head.addWidget(st)
+        sh = QLabel("click a session for its full summary")
+        sh.setStyleSheet(f"color:{_MUTED}; font-size:10px;")
+        sess_head.addWidget(sh)
+        sess_head.addStretch(1)
+        sess_lay.addLayout(sess_head)
+        sess_scroll = QScrollArea()
+        sess_scroll.setWidgetResizable(True)
+        sess_scroll.setStyleSheet("QScrollArea { border:none; background:transparent; }")
+        sess_scroll.setFixedHeight(150)
+        self._sessions_host = QWidget()
+        self._sessions_list = QVBoxLayout(self._sessions_host)
+        self._sessions_list.setContentsMargins(0, 0, 0, 0)
+        self._sessions_list.setSpacing(4)
+        self._sessions_list.addStretch(1)
+        sess_scroll.setWidget(self._sessions_host)
+        sess_lay.addWidget(sess_scroll)
+        root.addWidget(sess_panel)
+
         root.addWidget(self._build_agent_overview_panel())
 
         # Legacy command box was moved to the top command panel.
@@ -729,11 +759,13 @@ class OrchestratorPage(QWidget):
             self._threads = [t for t in self._threads if t is not None and t.isRunning()]
         except Exception:
             self._threads = []
-        if len(self._threads) >= 4:
+        if len(self._threads) >= 5:
             return
         self._threads.append(_spawn_http(
             self, "GET", f"{_API}/orchestrator/status", self._on_status_loaded
         ))
+        self._threads.append(_spawn_http(
+            self, "GET", f"{_API}/sessions?limit=12", self._on_sessions_loaded))
         self._threads.append(_spawn_http(
             self, "GET", f"{_API}/orchestrator/mission-control?limit_events=30",
             self._on_mission_loaded,
@@ -743,6 +775,56 @@ class OrchestratorPage(QWidget):
             self, "GET", f"{_API}/orchestrator/hermes", self._on_hermes_loaded))
         self._threads.append(_spawn_http(
             self, "GET", f"{_API}/orchestrator/autonomy/status", self._on_autonomy_loaded))
+
+    def _on_sessions_loaded(self, res: dict) -> None:
+        while self._sessions_list.count():
+            it = self._sessions_list.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        data = (res.get("data") or {}) if res.get("ok") else {}
+        sessions = data.get("sessions") or []
+        if not sessions:
+            lbl = QLabel("No sessions recorded yet.")
+            lbl.setStyleSheet(f"color:{_MUTED}; font-size:11px; font-style:italic;")
+            self._sessions_list.addWidget(lbl)
+            self._sessions_list.addStretch(1)
+            return
+        import datetime as _dt
+        for s in sessions:
+            row = QFrame()
+            row.setCursor(Qt.PointingHandCursor)
+            row.setStyleSheet("QFrame { background:#0c0d0f; border:none; border-radius:6px; }"
+                              "QFrame:hover { background:#14161b; }")
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(8, 4, 8, 4)
+            rl.setSpacing(8)
+            agent = s.get("agent") or "?"
+            color = _AGENT_COLORS.get(agent, _AGENT_COLORS.get(f"{agent}-code", _ACCENT))
+            when = ""
+            if s.get("started_at"):
+                when = _dt.datetime.fromtimestamp(s["started_at"]).strftime("%m-%d %H:%M")
+            tag = QLabel(f"{agent}")
+            tag.setStyleSheet(f"color:{color}; font-size:10px; font-weight:800;")
+            tag.setFixedWidth(80)
+            rl.addWidget(tag)
+            proj = QLabel(s.get("project") or "")
+            proj.setStyleSheet(f"color:{_GOLD}; font-size:10px;")
+            proj.setFixedWidth(90)
+            rl.addWidget(proj)
+            goal = QLabel(self._one_line(s.get("goal") or s.get("external_id") or "", 120))
+            goal.setStyleSheet(f"color:{_TEXT}; font-size:11px;")
+            rl.addWidget(goal, 1)
+            ts = QLabel(when)
+            ts.setStyleSheet(f"color:{_MUTED}; font-size:10px;")
+            rl.addWidget(ts)
+            # click → full summary in the timeline box (control: inspect any
+            # session's goal/actions without leaving the console)
+            summary = s.get("summary") or "(no summary)"
+            hdr = f"Session {s.get('external_id')} — {agent} / {s.get('project')}\n\n"
+            row.mousePressEvent = (lambda ev, txt=hdr + summary:
+                                   self._timeline.setPlainText(txt))
+            self._sessions_list.addWidget(row)
+        self._sessions_list.addStretch(1)
 
     def _on_autonomy_loaded(self, res: dict) -> None:
         d = (res.get("data") or {}) if res.get("ok") else {}

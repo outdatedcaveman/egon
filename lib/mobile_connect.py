@@ -479,6 +479,16 @@ function renderOrch(d){
    '<div class="meta">'+esc(ct.slice(0,150))+
    (le?('<br>latest: '+esc(le.slice(0,120))):'')+'</div></div>';
  }
+ // Sessions across all AIs, newest first (canonical project attached).
+ const sess=d.sessions||[];
+ if(sess.length){h+='<div class="sec mind">Sessions</div>';
+  for(const s of sess.slice(0,8)){
+   const when=s.started_at?new Date(s.started_at*1000).toLocaleString([],{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+   h+='<div class="ocard"><div class="ttl">'+esc(s.agent||'?')+' · '+esc(s.project||'')+
+    ' <span style="color:var(--muted);font-weight:400;font-size:11px">'+esc(when)+'</span></div>'+
+    '<div class="meta">'+esc((s.goal||s.external_id||'').slice(0,120))+'</div></div>';
+  }
+ }
  // Visibility: what the agents actually DID — outcomes, not just status.
  const done=(m.tasks||[]).filter(t=>['completed','failed'].includes(t.status)).slice(0,6);
  if(done.length){h+='<div class="sec mind">Recent results</div>';
@@ -685,6 +695,11 @@ def build_app():
                 out["mission"] = r1.json()
                 r2 = await c.get(_MIND + "/orchestrator/hermes")
                 out["proposals"] = (r2.json() or {}).get("proposals") or []
+                try:
+                    r4 = await c.get(_MIND + "/sessions?limit=8")
+                    out["sessions"] = (r4.json() or {}).get("sessions") or []
+                except Exception:
+                    out["sessions"] = []
                 try:
                     r3 = await c.get(_MIND + "/orchestrator/autonomy/status")
                     out["autonomy"] = r3.json()

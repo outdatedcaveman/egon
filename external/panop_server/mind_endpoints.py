@@ -662,6 +662,49 @@ async def mind_orchestrator_complete(req: Request):
 
 
 
+@app.get("/api/v1/mind/sessions")
+def mind_sessions_list(limit: int = 15, agent: str | None = None):
+    """Recent AI sessions across all agents, newest first — the orchestrator
+    console's session feed (Bruno 2026-07-04: 'add sessions for better
+    control'). Includes the canonical project Egon's classifier filed each
+    session under, so the console shows WHOSE work and WHICH project."""
+    try:
+        limit = max(1, min(int(limit), 50))
+        with _DB_LOCK:
+            conn = _connect()
+            try:
+                q = ("SELECT s.id, s.external_id, s.started_at, s.ended_at, "
+                     "s.summary, a.name AS agent, ca.canonical_project "
+                     "FROM sessions s "
+                     "LEFT JOIN agents a ON a.id = s.agent_id "
+                     "LEFT JOIN canonical_assignments ca "
+                     "  ON ca.item_type='session' AND ca.item_id = CAST(s.id AS TEXT) ")
+                args: list = []
+                if agent:
+                    q += "WHERE a.name LIKE ? "
+                    args.append(f"%{agent}%")
+                q += "ORDER BY COALESCE(s.started_at, 0) DESC LIMIT ?"
+                args.append(limit)
+                rows = conn.execute(q, args).fetchall()
+            finally:
+                conn.close()
+        out = []
+        for r in rows:
+            summary = (r["summary"] or "").strip()
+            goal = summary.splitlines()[0][:160] if summary else ""
+            out.append({
+                "id": r["id"], "external_id": r["external_id"],
+                "agent": (r["agent"] or "?").split(":")[0],
+                "project": r["canonical_project"] or "unfiled",
+                "started_at": r["started_at"], "ended_at": r["ended_at"],
+                "goal": goal,
+                "summary": summary[:2000],
+            })
+        return {"status": "ok", "sessions": out}
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
 @app.post("/api/v1/mind/sessions/start")
 async def mind_session_start(req: Request):
     try:
