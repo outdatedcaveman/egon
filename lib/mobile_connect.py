@@ -359,11 +359,28 @@ $('apkdl').href='/m/apk?k='+encodeURIComponent(K);
 // reloads via localStorage. Attachments: 📎 → /m/attach converts each file to a
 // message part (images/audio/video base64 through; documents text-extracted).
 let CHIST=[];let PROV_OK=false;let CATT=[];
+// ONE conversation across desktop + phone: the server file is the source of
+// truth; localStorage is only an offline cache.
 try{CHIST=JSON.parse(localStorage.getItem('egon_chat')||'[]')||[];}catch(e){CHIST=[];}
 function saveChat(){
- try{const el=CHIST.map(m=>({role:m.role,content:(typeof m.content==='string')?m.content:
+ const el=CHIST.map(m=>({role:m.role,content:(typeof m.content==='string')?m.content:
   m.content.map(p=>p.data?{...p,data:'',elided:true}:p)}));
-  localStorage.setItem('egon_chat',JSON.stringify(el));}catch(e){}}
+ try{localStorage.setItem('egon_chat',JSON.stringify(el));}catch(e){}
+ fetch('/m/history?k='+encodeURIComponent(K),{method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({history:el})}).catch(()=>{});
+}
+async function loadSharedChat(){
+ try{
+  const r=await fetch('/m/history?k='+encodeURIComponent(K));
+  const h=(await r.json()).history;
+  if(Array.isArray(h)&&h.length){
+   CHIST=h;$('chatlog').innerHTML='';renderHist();
+   try{localStorage.setItem('egon_chat',JSON.stringify(h));}catch(e){}
+  }
+ }catch(e){}
+}
+loadSharedChat();
 function scrollChat(){window.scrollTo(0,document.body.scrollHeight);}
 function addMsg(role,text){
  const d=document.createElement('div');d.className='msg '+role;
@@ -722,6 +739,47 @@ def build_app():
             return JSONResponse({"error": "apk not built"}, status_code=404)
         return FileResponse(str(apk), media_type="application/vnd.android.package-archive",
                             filename="EgonConnect.apk")
+
+    # ── ONE conversation everywhere (Bruno 2026-07-04: "the app shows a
+    # previous conversation, not the one I had today"). Desktop and phone were
+    # keeping separate histories (chat_history.json vs localStorage). Now BOTH
+    # read/write the same server-side file, so the thread follows you across
+    # devices. Attachment payloads are elided as usual. ──────────────────────
+    _HISTORY = ROOT / "state" / "chat_history.json"
+
+    @app.get("/m/history")
+    def m_history_get(req: Request):
+        if not _authed(req):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        try:
+            if _HISTORY.exists():
+                return JSONResponse({"history": json.loads(
+                    _HISTORY.read_text(encoding="utf-8"))})
+        except Exception:
+            pass
+        return JSONResponse({"history": []})
+
+    @app.post("/m/history")
+    async def m_history_set(req: Request):
+        if not _authed(req):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        try:
+            body = await req.json()
+            hist = body.get("history")
+            if not isinstance(hist, list):
+                return JSONResponse({"error": "history must be a list"}, status_code=400)
+            for m in hist:                       # elide base64 blobs
+                c = m.get("content") if isinstance(m, dict) else None
+                if isinstance(c, list):
+                    for p in c:
+                        if isinstance(p, dict) and p.get("data"):
+                            p["data"] = ""
+                            p["elided"] = True
+            _HISTORY.write_text(json.dumps(hist, ensure_ascii=False),
+                                encoding="utf-8")
+            return JSONResponse({"status": "ok", "messages": len(hist)})
+        except Exception as e:
+            return JSONResponse({"error": str(e)[:100]}, status_code=500)
 
     @app.get("/m/remote_url")
     def m_remote_url(req: Request):

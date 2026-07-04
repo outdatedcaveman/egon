@@ -118,6 +118,37 @@ class ChatWidget(QWidget):
         self._build(title)
         self._refresh_providers()
         self._load_persisted()
+        # ONE conversation across devices: the phone writes the same server-side
+        # history file; watch its mtime and reload when someone else updates it
+        # (never mid-stream). Bruno 2026-07-04.
+        from PySide6.QtCore import QTimer
+        self._hist_mtime = self._hist_stat()
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setInterval(10000)
+        self._sync_timer.timeout.connect(self._maybe_reload_shared)
+        self._sync_timer.start()
+
+    def _hist_stat(self):
+        try:
+            return self._history_path().stat().st_mtime
+        except Exception:
+            return 0
+
+    def _maybe_reload_shared(self):
+        if self._thread is not None and self._thread.isRunning():
+            return                      # streaming — don't yank the thread
+        m = self._hist_stat()
+        if m and m != self._hist_mtime:
+            self._hist_mtime = m
+            # rebuild the view from the shared file
+            while self._thread_lay.count():
+                it = self._thread_lay.takeAt(0)
+                if it.widget():
+                    it.widget().deleteLater()
+            self._empty = None
+            self._history = []
+            self._thread_lay.addStretch(1)
+            self._load_persisted()
 
     # ── persistence: the conversation survives restarts; Clear archives, never
     # deletes (Bruno's hard rule). Attachment payloads are elided on disk (the
@@ -152,6 +183,8 @@ class ChatWidget(QWidget):
             self._history_path().write_text(
                 json.dumps(self._elide(self._history), ensure_ascii=False),
                 encoding="utf-8")
+            if hasattr(self, "_hist_mtime"):
+                self._hist_mtime = self._hist_stat()   # own write ≠ reload
         except Exception:
             pass
 
