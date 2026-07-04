@@ -258,16 +258,6 @@ class ChatWidget(QWidget):
         t = QLabel(title)
         t.setStyleSheet(f"color:{_TEXT}; font-weight:800; font-size:12px;")
         head.addWidget(t)
-        # conversation picker + New — separate sessions (Bruno 2026-07-04)
-        self._session_box = QComboBox(); self._session_box.setStyleSheet(self._combo_css())
-        self._session_box.setMinimumWidth(190)
-        self._session_box.currentIndexChanged.connect(self._switch_session)
-        head.addWidget(self._session_box)
-        newb = QPushButton("+ New"); newb.setCursor(Qt.PointingHandCursor)
-        newb.setStyleSheet(f"QPushButton {{ background:#212328; color:{_TEXT}; border:none; "
-                           "border-radius:6px; padding:4px 10px; font-size:11px; }}")
-        newb.clicked.connect(self._new_session)
-        head.addWidget(newb)
         head.addStretch(1)
         self._provider = QComboBox(); self._provider.setStyleSheet(self._combo_css())
         self._provider.currentIndexChanged.connect(self._refresh_models)
@@ -294,6 +284,32 @@ class ChatWidget(QWidget):
         clr.clicked.connect(self.clear)
         head.addWidget(clr)
         lay.addLayout(head)
+
+        # conversation row — its OWN line so it can't disappear next to the
+        # model picker (Bruno 2026-07-04)
+        conv_row = QHBoxLayout()
+        conv_row.setSpacing(8)
+        cl = QLabel("💬 Conversation")
+        cl.setStyleSheet(f"color:{_GOLD}; font-weight:800; font-size:11px;")
+        conv_row.addWidget(cl)
+        self._session_box = QComboBox()
+        self._session_box.setStyleSheet(
+            f"QComboBox {{ background:{_PANEL_BG}; color:{_TEXT}; border:1px solid #2c3140; "
+            "border-radius:6px; padding:5px 10px; font-size:12px; }}"
+            f"QComboBox QAbstractItemView {{ background:{_PANEL_BG}; color:{_TEXT}; "
+            f"selection-background-color:{_ACCENT}; }}")
+        self._session_box.setMinimumWidth(340)
+        self._session_box.currentIndexChanged.connect(self._switch_session)
+        conv_row.addWidget(self._session_box, 1)
+        newb = QPushButton("＋ New chat")
+        newb.setCursor(Qt.PointingHandCursor)
+        newb.setStyleSheet(
+            f"QPushButton {{ background:#26292f; color:{_GOLD}; border:1px solid #2c3140; "
+            "border-radius:6px; padding:5px 14px; font-size:11px; font-weight:700; }}")
+        newb.clicked.connect(self._new_session)
+        conv_row.addWidget(newb)
+        lay.addLayout(conv_row)
+
         sub = QLabel("Grounded in your vault + project repos. Attach images/documents, "
                      "paste a screenshot (Ctrl+V), pick model & parameters.")
         sub.setStyleSheet(f"color:{_MUTED}; font-size:11px;")

@@ -219,11 +219,15 @@ _PAGE = """<!doctype html><html><head>
  <!-- ONE surface (Bruno 2026-07-02): talk AND command here. Orders are
       auto-detected and dispatched to the orchestrator; the reply describes
       what was queued. The dashboard below shows agents + proposals live. -->
- <div class="prov" style="flex-wrap:wrap">
-  <select id="csess" style="max-width:46%"></select>
-  <button id="cnew" style="flex:0 0 auto;padding:6px 10px;border-radius:8px;font-size:12.5px;
-   background:var(--surface2);color:var(--text);border:1px solid var(--line)">+ New</button>
-  Model <select id="cprov"><option value="gemini">gemini</option>
+ <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+  <span style="color:var(--gold);font-size:11px;font-weight:800;letter-spacing:.5px">💬</span>
+  <select id="csess" style="flex:1;background:var(--surface2);color:var(--text);
+   border:1px solid var(--line);border-radius:9px;padding:9px 10px;font-size:13.5px"></select>
+  <button id="cnew" style="flex:0 0 auto;padding:9px 13px;border-radius:9px;font-size:13px;
+   font-weight:700;background:var(--surface2);color:var(--gold);border:1px solid var(--line)">＋ New</button>
+ </div>
+ <div class="prov">Model
+  <select id="cprov"><option value="gemini">gemini</option>
    <option value="claude">claude</option><option value="openai">openai</option></select>
   <span id="cnote"></span></div>
  <div id="chatlog"></div>
