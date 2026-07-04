@@ -235,6 +235,9 @@ _PAGE = """<!doctype html><html><head>
   accept="image/*,audio/*,video/*,.pdf,.docx,.txt,.md,.json,.csv">
  <div class="sec mind" style="margin-top:20px">Agents &amp; proposals</div>
  <div id="orchbody"><div class="empty">loading…</div></div>
+ <div style="text-align:center;margin:18px 0 6px">
+  <a id="apkdl" style="color:var(--muted);font-size:12px" href="#">⬇ update Egon app</a>
+ </div>
 </div>
 <script>
 const K=new URLSearchParams(location.search).get('k')||'';
@@ -349,6 +352,7 @@ function tab(name){
 }
 document.querySelector('.tabs').addEventListener('click',ev=>{
  const b=ev.target.closest('button[data-t]');if(b)tab(b.dataset.t);});
+$('apkdl').href='/m/apk?k='+encodeURIComponent(K);
 
 // ── Chat (streaming SSE) ─────────────────────────────────────────────────────
 // Persistence: the conversation (text only — attachments elided) survives
