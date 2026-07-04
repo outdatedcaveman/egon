@@ -292,6 +292,86 @@ def _sweep_duplicate_mind_services() -> None:
         log("warn", "dup_sweep_failed", error=str(e)[:80])
 
 
+_TUNNEL_EXE = ROOT / "external" / "cloudflared" / "cloudflared.exe"
+_TUNNEL_LOG = ROOT / "state" / "cloudflared.log"
+_TUNNEL_URL_LOCAL = ROOT / "state" / "mobile_connect_url_remote.txt"
+_TUNNEL_URL_DRIVE = Path(os.environ.get(
+    "EGON_REMOTE_URL_FILE", r"G:\My Drive\EgonData\EGON_REMOTE_URL.txt"))
+_tunnel_proc_check_last = 0.0
+
+
+def check_tunnel(u: "Unit") -> None:
+    """Egon-anywhere (Bruno 2026-07-04: 'finish setting up my egon app so that I
+    can use it wherever'). Keeps a cloudflared quick tunnel to :8765 alive and
+    publishes the CURRENT public URL to a Google-Drive file — Drive syncs to the
+    phone, so even when the URL changes (PC reboot), the phone can always find
+    it in the Drive app. Lightweight, in-thread, self-healing."""
+    global _tunnel_proc_check_last
+    if not _TUNNEL_EXE.exists():
+        u.ok = True
+        u.detail = "cloudflared not installed — remote access off"
+        return
+    if time.time() - _tunnel_proc_check_last < 60:
+        u.ok = True
+        return
+    _tunnel_proc_check_last = time.time()
+    # alive?
+    try:
+        res = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-Process cloudflared -ErrorAction SilentlyContinue | "
+             "Measure-Object).Count"],
+            capture_output=True, text=True, timeout=15, creationflags=0x08000000)
+        alive = int((res.stdout or "0").strip() or 0) > 0
+    except Exception:
+        alive = False
+    if not alive:
+        try:
+            with _TUNNEL_LOG.open("w", encoding="utf-8") as lf:
+                subprocess.Popen(
+                    [str(_TUNNEL_EXE), "tunnel", "--url", "http://127.0.0.1:8765"],
+                    stdout=lf, stderr=lf,
+                    creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000))
+            u.ok = True
+            u.detail = "tunnel (re)launched — URL in ~30s"
+            log("info", "tunnel_relaunched")
+            return
+        except Exception as e:
+            u.ok = True
+            u.detail = f"tunnel launch failed: {str(e)[:50]}"
+            return
+    # parse the newest URL and publish it wherever the phone can see it
+    try:
+        import re as _re
+        text = _TUNNEL_LOG.read_text(encoding="utf-8", errors="ignore")
+        urls = _re.findall(r"https://[a-z0-9-]+\.trycloudflare\.com", text)
+        if not urls:
+            u.ok = True
+            u.detail = "tunnel up, URL pending"
+            return
+        url = urls[-1]
+        # token comes from the same store the phone page uses
+        from lib.mobile_connect import get_token
+        full = f"{url}/m?k={get_token()}"
+        prev = _TUNNEL_URL_LOCAL.read_text(encoding="utf-8").strip() \
+            if _TUNNEL_URL_LOCAL.exists() else ""
+        if prev != full:
+            _TUNNEL_URL_LOCAL.write_text(full, encoding="utf-8")
+            try:
+                _TUNNEL_URL_DRIVE.parent.mkdir(parents=True, exist_ok=True)
+                _TUNNEL_URL_DRIVE.write_text(
+                    "Egon anywhere — open this on your phone (keep private):\n"
+                    + full + "\n", encoding="utf-8")
+            except Exception:
+                pass
+            log("info", "tunnel_url_published", url=url)
+        u.ok = True
+        u.detail = f"remote up: {url.split('//')[1][:34]}"
+    except Exception as e:
+        u.ok = True
+        u.detail = f"url publish err: {str(e)[:50]}"
+
+
 def check_mind(u: Unit) -> None:
     _sweep_duplicate_mind_services()
     t0 = time.time()
@@ -1291,7 +1371,8 @@ def main() -> int:
              "snapshots": Unit("snapshots"),
              "mirror": Unit("mirror"),
              "canonical": Unit("canonical"),
-             "exhaustive": Unit("exhaustive")}
+             "exhaustive": Unit("exhaustive"),
+             "tunnel": Unit("tunnel")}
     _reap_heavy("startup-orphans")   # clear any heavy jobs a prior instance left
     while True:
         try:
@@ -1314,6 +1395,7 @@ def main() -> int:
             check_mirror(units["mirror"])
             check_canonical(units["canonical"])
             check_exhaustive(units["exhaustive"])
+            check_tunnel(units["tunnel"])
             write_health(units)
         except Exception as e:
             log("error", "core_cycle_error", error=str(e)[:200])
