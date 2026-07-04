@@ -355,7 +355,8 @@ def check_tunnel(u: "Unit") -> None:
         full = f"{url}/m?k={get_token()}"
         prev = _TUNNEL_URL_LOCAL.read_text(encoding="utf-8").strip() \
             if _TUNNEL_URL_LOCAL.exists() else ""
-        if prev != full:
+        # publish when the URL changed OR the Drive copy is missing (first run)
+        if prev != full or not _TUNNEL_URL_DRIVE.exists():
             _TUNNEL_URL_LOCAL.write_text(full, encoding="utf-8")
             try:
                 _TUNNEL_URL_DRIVE.parent.mkdir(parents=True, exist_ok=True)
