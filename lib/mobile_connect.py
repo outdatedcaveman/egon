@@ -374,9 +374,15 @@ async function loadSharedChat(){
  try{
   const r=await fetch('/m/history?k='+encodeURIComponent(K));
   const h=(await r.json()).history;
-  if(Array.isArray(h)&&h.length){
+  if(!Array.isArray(h))return;
+  // Never lose messages: adopt whichever thread is LONGER. If this device has
+  // messages the server lacks (e.g. chatted offline/on the street), push them
+  // up instead of overwriting local.
+  if(h.length>CHIST.length){
    CHIST=h;$('chatlog').innerHTML='';renderHist();
    try{localStorage.setItem('egon_chat',JSON.stringify(h));}catch(e){}
+  }else if(CHIST.length>h.length){
+   saveChat();
   }
  }catch(e){}
 }
