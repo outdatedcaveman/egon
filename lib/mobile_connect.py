@@ -235,6 +235,8 @@ _PAGE = """<!doctype html><html><head>
  <div class="chatbar">
   <button id="cattach" style="flex:0 0 46px;background:var(--surface2);color:var(--text);
    border:1px solid var(--line);font-size:17px">📎</button>
+  <button id="cmic" style="flex:0 0 46px;background:var(--surface2);color:var(--text);
+   border:1px solid var(--line);font-size:17px">🎤</button>
   <textarea id="cin" placeholder="Talk to Egon or give an order — orders are dispatched to your agents…"></textarea>
   <button id="csend">Send</button>
  </div>
@@ -442,6 +444,35 @@ $('cchips').addEventListener('click',ev=>{
  const s=ev.target.closest('span[data-i]');if(!s)return;
  CATT.splice(parseInt(s.dataset.i,10),1);renderChips();});
 $('cattach').onclick=()=>$('cfile').click();
+// ── Voice input (improvement #3): tap 🎤 to record, tap again to stop — the
+// clip attaches as an audio part (Gemini consumes it natively; pick gemini in
+// the model row). ogg/opus preferred (Gemini-supported), webm fallback.
+let REC=null,RCHUNKS=[];
+$('cmic').onclick=async()=>{
+ if(REC&&REC.state==='recording'){REC.stop();return;}
+ try{
+  const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+  const mime=MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')?'audio/ogg;codecs=opus':
+             MediaRecorder.isTypeSupported('audio/webm;codecs=opus')?'audio/webm;codecs=opus':'';
+  REC=new MediaRecorder(stream,mime?{mimeType:mime}:{});RCHUNKS=[];
+  REC.ondataavailable=e=>{if(e.data.size)RCHUNKS.push(e.data);};
+  REC.onstop=async()=>{
+   stream.getTracks().forEach(t=>t.stop());
+   $('cmic').style.background='var(--surface2)';$('cmic').textContent='🎤';
+   const blob=new Blob(RCHUNKS,{type:REC.mimeType||'audio/webm'});
+   if(blob.size<800){addMsg('a','⚠ recording too short');return;}
+   if(blob.size>20*1024*1024){addMsg('a','⚠ recording too long (>20MB)');return;}
+   const b64=await new Promise(res=>{const r=new FileReader();
+    r.onload=()=>res(String(r.result).split(',')[1]||'');r.readAsDataURL(blob);});
+   const ext=(REC.mimeType||'').includes('ogg')?'ogg':'webm';
+   CATT.push({type:'audio',mime:REC.mimeType||'audio/webm',data:b64,name:'voice.'+ext});
+   renderChips();
+   if($('cprov').value!=='gemini'){addMsg('a','ℹ voice needs Gemini — switched the model for you');$('cprov').value='gemini';}
+  };
+  REC.start();
+  $('cmic').style.background='rgba(255,90,90,.35)';$('cmic').textContent='⏹';
+ }catch(e){addMsg('a','⚠ mic unavailable — allow microphone for Egon in Android settings');}
+};
 $('cfile').addEventListener('change',async ev=>{
  for(const f of ev.target.files||[]){
   if(f.size>20*1024*1024){addMsg('a','⚠ '+f.name+' too large (>20MB)');continue;}
