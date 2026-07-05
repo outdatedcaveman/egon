@@ -466,8 +466,10 @@ def tool_meta_project(args: dict) -> dict:
                 "other agents won't see this conversation)"}
     title = (args.get("title") or "").strip()
     tag = f"[meta-project{': ' + title if title else ''}]"
+    # dispatch runs an LLM decomposition server-side — needs a REAL timeout
+    # (the 1.5s default made every dispatch look offline, 2026-07-05)
     s, b = _http("POST", "/orchestrator/dispatch",
-                 body={"prompt": f"{tag} {prompt}"})
+                 body={"prompt": f"{tag} {prompt}"}, timeout=90.0)
     out = _ok_or_error(s, b)
     if isinstance(out, dict) and out.get("status") != "error":
         out["supervisor_contract"] = (
@@ -480,7 +482,7 @@ def tool_meta_project(args: dict) -> dict:
 
 
 def tool_meta_project_status(args: dict) -> dict:
-    s, b = _http("GET", "/orchestrator/status")
+    s, b = _http("GET", "/orchestrator/status", timeout=15.0)
     if s >= 400 or not isinstance(b, dict):
         return _ok_or_error(s, b)
     needle = "[meta-project"
@@ -505,7 +507,8 @@ def tool_meta_project_control(args: dict) -> dict:
                 "error": "task_id + action (requeue|cancel|pause|resume|stop) required"}
     s, b = _http("POST", f"/orchestrator/tasks/{int(tid)}/control",
                  body={"action": action,
-                       "note": args.get("note") or "meta-project supervisor"})
+                       "note": args.get("note") or "meta-project supervisor"},
+                 timeout=15.0)
     return _ok_or_error(s, b)
 
 
