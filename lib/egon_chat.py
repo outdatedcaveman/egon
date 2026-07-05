@@ -329,6 +329,38 @@ def _log_chat_turn(user_text: str, reply_text: str, dispatched: bool) -> None:
         pass
 
 
+_GOAL_CMD = re.compile(r"^\s*(continue|resume|pause|cancel)\s+goal\s+([\w.-]+)\s*$",
+                       re.IGNORECASE)
+
+
+def _maybe_register_goal(order_text: str) -> str | None:
+    """If the dispatched order is a PERSISTENT goal (an outcome to keep pursuing,
+    not a one-shot task), auto-register it as an LLM-judged goal so the tracker
+    keeps waves flowing without Bruno re-prompting. Returns the goal id."""
+    try:
+        prompt = (
+            "Is this instruction a PERSISTENT GOAL (an outcome to keep working "
+            "toward across many sessions until measurably achieved), rather than "
+            "a one-shot task? Reply strict JSON: "
+            '{"goal": true|false, "slug": "<kebab-id>", '
+            '"success": "<one-sentence success criterion>"}\n\n'
+            f"INSTRUCTION:\n{order_text[:800]}")
+        out = chat([{"role": "user", "content": prompt}], provider="claude",
+                   model="claude-haiku-4-5-20251001", inject_context=False,
+                   temperature=0.0, max_tokens=90)
+        i, j = out.find("{"), out.rfind("}")
+        d = json.loads(out[i:j + 1])
+        if not d.get("goal"):
+            return None
+        slug = re.sub(r"[^\w-]", "-", str(d.get("slug") or "goal"))[:40].strip("-")
+        from lib import goal_tracker
+        if goal_tracker.register_goal(slug, order_text, str(d.get("success") or "")):
+            return slug
+    except Exception:
+        pass
+    return None
+
+
 def stream_chat_with_dispatch(messages: list[dict], provider: str = DEFAULT_PROVIDER,
                               model: str | None = None,
                               temperature: float | None = None,
@@ -338,6 +370,17 @@ def stream_chat_with_dispatch(messages: list[dict], provider: str = DEFAULT_PROV
     Every completed turn is recorded in the mind (exhaustive — chats included)."""
     msgs = list(messages)
     last = _text_of(msgs[-1].get("content", "")) if msgs else ""
+    # Deterministic goal controls first — approval loop, no LLM involved:
+    #   'continue goal <id>' / 'pause goal <id>' / 'cancel goal <id>'
+    cmd = _GOAL_CMD.match(last or "")
+    if cmd and msgs and msgs[-1].get("role") == "user":
+        from lib import goal_tracker
+        action = cmd.group(1).lower()
+        action = "continue" if action == "resume" else action
+        result = goal_tracker.goal_control(action, cmd.group(2))
+        _log_chat_turn(last, result, False)
+        yield f"✅ {result}"
+        return
     dispatched: dict | None = None
     if msgs and msgs[-1].get("role") == "user" and _detect_order(last):
         dispatched = _dispatch_order(last)
@@ -348,9 +391,15 @@ def stream_chat_with_dispatch(messages: list[dict], provider: str = DEFAULT_PROV
             if isinstance(t, dict):
                 lines.append(f"- #{t.get('id','?')} → {t.get('agent_name') or t.get('agent','?')}: "
                              f"{(t.get('sub_task_desc') or t.get('description') or '')[:110]}")
+        goal_id = _maybe_register_goal(last)
+        goal_note = (f"\nALSO: this was recognized as a PERSISTENT GOAL and "
+                     f"registered as '{goal_id}' — Egon will keep evaluating "
+                     f"progress and dispatching waves autonomously until it's "
+                     f"achieved (Bruno approves extra wave budgets when asked)."
+                     if goal_id else "")
         note = ("DISPATCH RESULT (the orchestrator already queued Bruno's order; "
                 "describe this to him):\n" + ("\n".join(lines) if lines
-                else json.dumps(dispatched)[:600]))
+                else json.dumps(dispatched)[:600]) + goal_note)
         msgs.insert(len(msgs) - 1, {"role": "user", "content": note})
     chunks: list[str] = []
     for piece in stream_chat(msgs, provider=provider, model=model,
@@ -519,6 +568,11 @@ def _gemini_stream(messages, model, key, params):
                 continue
             try:
                 obj = json.loads(line[5:].strip())
+                um = obj.get("usageMetadata") or {}
+                if um.get("promptTokenCount"):
+                    _LAST_USAGE.update({"model": model,
+                                        "input_tokens": um.get("promptTokenCount", 0),
+                                        "output_tokens": um.get("candidatesTokenCount", 0)})
                 for part in obj["candidates"][0]["content"]["parts"]:
                     if part.get("text"):
                         yield part["text"]
@@ -562,6 +616,15 @@ def _anthropic_stream(messages, model, key, params):
                 continue
             try:
                 obj = json.loads(line[5:].strip())
+                if obj.get("type") == "message_start":
+                    u = (obj.get("message") or {}).get("usage") or {}
+                    _LAST_USAGE.update({"model": model,
+                                        "input_tokens": u.get("input_tokens", 0),
+                                        "output_tokens": 0})
+                elif obj.get("type") == "message_delta":
+                    u = obj.get("usage") or {}
+                    if u.get("output_tokens"):
+                        _LAST_USAGE["output_tokens"] = u["output_tokens"]
                 if obj.get("type") == "content_block_delta":
                     t = obj["delta"].get("text")
                     if t:
@@ -618,6 +681,40 @@ def _openai_stream(messages, model, key, params):
 
 _STREAMERS = {"gemini": _gemini_stream, "claude": _anthropic_stream, "openai": _openai_stream}
 
+# Improvement #5 (Bruno 2026-07-04): Egon's OWN model spend is visible in the
+# Token Ledger. Streams stash usage here; stream_chat records it after each
+# call, so verifier/decomposer/goal-judge/chat costs all land in turns_ledger.
+_LAST_USAGE: dict = {}
+
+
+def _record_ledger() -> None:
+    if not _LAST_USAGE.get("model"):
+        return
+    snap = dict(_LAST_USAGE)
+    _LAST_USAGE.clear()
+
+    def _post():
+        try:
+            import httpx
+            base = "http://127.0.0.1:8000/api/v1/mind"
+            day = time.strftime("%Y-%m-%d")
+            r = httpx.post(f"{base}/sessions/start",
+                           json={"agent": "egon-chat", "agent_kind": "chat-surface",
+                                 "external_id": f"egon-chat-{day}"}, timeout=4)
+            sid = (r.json() or {}).get("id") or (r.json() or {}).get("session_id")
+            if not sid:
+                return
+            httpx.post(f"{base}/ledger/turns", json={
+                "session_id": sid, "ts": int(time.time()),
+                "model": snap["model"],
+                "usage": {"input_tokens": snap.get("input_tokens", 0),
+                          "output_tokens": snap.get("output_tokens", 0)},
+                "tools": []}, timeout=4)
+        except Exception:
+            pass
+    import threading
+    threading.Thread(target=_post, daemon=True).start()
+
 
 def _is_transient(err: Exception) -> bool:
     """Capacity/quota errors we can retry on a cheaper model of the same provider
@@ -662,6 +759,7 @@ def stream_chat(messages: list[dict], provider: str = DEFAULT_PROVIDER,
         try:
             first = next(gen)             # triggers the request; may raise here
         except StopIteration:
+            _record_ledger()
             return                         # clean empty response
         except Exception as e:             # noqa: BLE001
             last_err = e
@@ -670,6 +768,7 @@ def stream_chat(messages: list[dict], provider: str = DEFAULT_PROVIDER,
             raise
         yield first
         yield from gen
+        _record_ledger()                   # spend visible in the Token Ledger
         return
     if last_err:
         raise last_err

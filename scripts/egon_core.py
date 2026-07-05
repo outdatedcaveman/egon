@@ -406,6 +406,36 @@ def check_goals(u: "Unit") -> None:
         u.detail = f"goals err: {str(e)[:50]}"
 
 
+BRIEF_HOUR = int(os.environ.get("EGON_BRIEF_HOUR", "8"))
+_brief_running = False
+
+
+def check_brief(u: "Unit") -> None:
+    """Morning briefing (Bruno 2026-07-04, improvement #1): once a day after
+    BRIEF_HOUR, one proactive digest to the chat + a push — overnight deltas,
+    goal movement, agent work, spend, anything needing his call."""
+    global _brief_running
+    try:
+        from lib import morning_brief
+        if morning_brief.due(BRIEF_HOUR) and not _brief_running:
+            _brief_running = True
+            def _run():
+                global _brief_running
+                try:
+                    morning_brief.deliver()
+                    log("info", "morning_brief_delivered")
+                finally:
+                    _brief_running = False
+            threading.Thread(target=_run, name="morning-brief", daemon=True).start()
+            u.detail = "delivering briefing…"
+        else:
+            u.detail = f"next briefing after {BRIEF_HOUR:02d}:00"
+        u.ok = True
+    except Exception as e:
+        u.ok = True
+        u.detail = f"brief err: {str(e)[:50]}"
+
+
 def check_reporter(u: "Unit") -> None:
     """Verified task outcomes flow TO Bruno (chat + phone nudge) instead of
     waiting to be discovered. lib/task_reporter; guard-flagged thread so the
@@ -1452,7 +1482,8 @@ def main() -> int:
              "exhaustive": Unit("exhaustive"),
              "tunnel": Unit("tunnel"),
              "reporter": Unit("reporter"),
-             "goals": Unit("goals")}
+             "goals": Unit("goals"),
+             "brief": Unit("brief")}
     _reap_heavy("startup-orphans")   # clear any heavy jobs a prior instance left
     while True:
         try:
@@ -1478,6 +1509,7 @@ def main() -> int:
             check_tunnel(units["tunnel"])
             check_reporter(units["reporter"])
             check_goals(units["goals"])
+            check_brief(units["brief"])
             _keep_awake_while_heavy()
             write_health(units)
         except Exception as e:

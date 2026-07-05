@@ -85,7 +85,84 @@ def measure_mouseion_8080() -> dict:
         c.close()
 
 
+def _measure_llm(goal: dict) -> dict:
+    """Generic self-evaluation for goals WITHOUT a programmatic metric (Bruno
+    2026-07-04: 'I say what I want and the AI keeps doing work, evaluating it
+    herself'). Evidence = this goal's tagged task events + verifier outcomes;
+    a cheap model judges progress and names what's missing — which feeds the
+    next wave's prompt."""
+    from lib.orchestration_engine import DB_PATH
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=8)
+    rows = conn.execute(
+        "SELECT e.event_type, substr(e.content,1,220) AS c "
+        "FROM orchestrator_task_events e JOIN orchestrator_tasks t "
+        "ON t.id=e.task_id WHERE t.parent_prompt LIKE ? "
+        "ORDER BY e.id DESC LIMIT 30", (f"%[goal:{goal['id']}%",)).fetchall()
+    conn.close()
+    evidence = "\n".join(f"[{r[0]}] {r[1]}" for r in reversed(rows))[-3500:]
+    if not evidence.strip():
+        return {"pct_progress": 0.0, "met": False,
+                "missing": "no agent work attributed to this goal yet",
+                "measured_at": int(time.time())}
+    try:
+        from lib import egon_chat
+        prompt = (
+            "You are evaluating progress on a standing goal from the evidence of "
+            "agent work. Reply strict JSON: "
+            '{"progress_pct": 0-100, "met": true|false, "missing": "<20 words>"}\n\n'
+            f"GOAL / SUCCESS CRITERION:\n{goal.get('success') or goal['description']}\n\n"
+            f"EVIDENCE (task events, oldest first):\n{evidence}")
+        out = egon_chat.chat([{"role": "user", "content": prompt}],
+                             provider="claude", model="claude-haiku-4-5-20251001",
+                             inject_context=False, temperature=0.0, max_tokens=90)
+        i, j = out.find("{"), out.rfind("}")
+        d = json.loads(out[i:j + 1])
+        return {"pct_progress": float(d.get("progress_pct") or 0),
+                "met": bool(d.get("met")),
+                "missing": str(d.get("missing") or "")[:200],
+                "measured_at": int(time.time())}
+    except Exception as e:
+        return {"pct_progress": 0.0, "met": False,
+                "missing": f"evaluator unavailable ({str(e)[:40]})",
+                "measured_at": int(time.time())}
+
+
 _METRICS = {"mouseion_8080": measure_mouseion_8080}
+
+
+def goal_control(action: str, goal_id: str) -> str:
+    """Deterministic chat commands: continue/pause/cancel goal <id>."""
+    goals = _load_goals()
+    for g in goals:
+        if g["id"].lower() == goal_id.lower():
+            if action == "continue":
+                g["status"] = "active"
+                g["wave_budget"] = int(g.get("waves") or 0) + MAX_WAVES
+                msg = f"goal {g['id']} continued — {MAX_WAVES} more waves approved"
+            elif action == "pause":
+                g["status"] = "paused"
+                msg = f"goal {g['id']} paused"
+            elif action == "cancel":
+                g["status"] = "cancelled"
+                msg = f"goal {g['id']} cancelled (kept in the list, never deleted)"
+            else:
+                return f"unknown action {action}"
+            _save_goals(goals)
+            return msg
+    return f"no goal named '{goal_id}' — known: " + ", ".join(x["id"] for x in goals)
+
+
+def register_goal(goal_id: str, description: str, success: str) -> bool:
+    """Add an LLM-judged goal (used by chat auto-registration)."""
+    goals = _load_goals()
+    if any(g["id"].lower() == goal_id.lower() for g in goals):
+        return False
+    goals.append({"id": goal_id, "metric": "llm", "status": "active",
+                  "target": {"met": True}, "description": description[:600],
+                  "success": success[:400], "waves": 1,
+                  "last_wave_at": int(time.time()), "history": []})
+    _save_goals(goals)
+    return True
 
 
 # ── goal store ───────────────────────────────────────────────────────────────
@@ -142,23 +219,37 @@ def _goal_tasks_active(goal_id: str) -> int:
         return 0
 
 
+def _fmt_measure(m: dict) -> str:
+    if "pct_pdf" in m:
+        return f"{m['pct_pdf']}% PDFs / {m['pct_complete']}% complete"
+    return f"progress {m.get('pct_progress', 0):.0f}%"
+
+
 def _dispatch_wave(goal: dict, m: dict) -> bool:
-    prev = (goal.get("history") or [{}])[-1] if goal.get("history") else {}
-    delta_pdf = round(m["pct_pdf"] - prev.get("pct_pdf", m["pct_pdf"]), 2)
-    delta_c = round(m["pct_complete"] - prev.get("pct_complete", m["pct_complete"]), 2)
     wave = int(goal.get("waves") or 0) + 1
-    prompt = (
-        f"[goal:{goal['id']} wave {wave}] {goal['description']}\n"
-        f"CURRENT MEASURED STATE (live from the Zotero library, "
-        f"{m['total']:,} items): {m['pct_pdf']}% have PDFs "
-        f"({m['with_pdf']:,}), {m['pct_complete']}% are metadata-complete "
-        f"({m['complete']:,}). Change since last wave: PDFs {delta_pdf:+}pp, "
-        f"completion {delta_c:+}pp.\n"
-        "Continue closing the gap AT SCALE: prioritize batch pipelines over "
-        "one-off fixes (bulk metadata enrichment via crossref/openalex, bulk "
-        "PDF resolution via unpaywall/openalex OA links), respect the shared "
-        "network budget, and report concrete counts processed in your task "
-        "events so the next measurement can attribute progress.")
+    if "pct_pdf" in m:      # programmatic metric (mouseion-style)
+        prev = (goal.get("history") or [{}])[-1] if goal.get("history") else {}
+        delta_pdf = round(m["pct_pdf"] - prev.get("pct_pdf", m["pct_pdf"]), 2)
+        delta_c = round(m["pct_complete"] - prev.get("pct_complete", m["pct_complete"]), 2)
+        state = (f"CURRENT MEASURED STATE (live from the Zotero library, "
+                 f"{m['total']:,} items): {m['pct_pdf']}% have PDFs "
+                 f"({m['with_pdf']:,}), {m['pct_complete']}% are metadata-complete "
+                 f"({m['complete']:,}). Change since last wave: PDFs {delta_pdf:+}pp, "
+                 f"completion {delta_c:+}pp.\n"
+                 "Continue closing the gap AT SCALE: prioritize batch pipelines "
+                 "over one-off fixes (bulk metadata enrichment via crossref/"
+                 "openalex, bulk PDF resolution via unpaywall/openalex OA links), "
+                 "respect the shared network budget, and report concrete counts "
+                 "processed in your task events so the next measurement can "
+                 "attribute progress.")
+    else:                    # LLM-judged goal
+        state = (f"SELF-EVALUATION of prior waves: progress "
+                 f"{m.get('pct_progress', 0):.0f}%. What is still missing: "
+                 f"{m.get('missing', 'unknown')}.\n"
+                 "Focus this wave on exactly what is missing; leave concrete "
+                 "evidence in your task events so the next evaluation can "
+                 "attribute progress.")
+    prompt = f"[goal:{goal['id']} wave {wave}] {goal['description']}\n{state}"
     try:
         import httpx
         r = httpx.post("http://127.0.0.1:8000/api/v1/mind/orchestrator/dispatch",
@@ -187,53 +278,71 @@ def evaluate() -> dict:
         if g.get("status") != "active":
             out.append({"id": g["id"], "status": g.get("status")})
             continue
-        metric = _METRICS.get(g.get("metric"))
-        if not metric:
-            out.append({"id": g["id"], "error": "unknown metric"})
-            continue
-        try:
-            m = metric()
-        except Exception as e:
-            out.append({"id": g["id"], "error": str(e)[:100]})
-            continue
+        if g.get("metric") == "llm":
+            m = _measure_llm(g)
+            met = bool(m.get("met"))
+        else:
+            metric = _METRICS.get(g.get("metric"))
+            if not metric:
+                out.append({"id": g["id"], "error": "unknown metric"})
+                continue
+            try:
+                m = metric()
+            except Exception as e:
+                out.append({"id": g["id"], "error": str(e)[:100]})
+                continue
+            tgt0 = g.get("target") or {}
+            met = all(m.get(k, 0) >= v for k, v in tgt0.items()
+                      if isinstance(v, (int, float)))
         tgt = g.get("target") or {}
-        met = all(m.get(k, 0) >= v for k, v in tgt.items())
         note = ""
         if met:
             g["status"] = "achieved"
             note = "achieved"
-            _post_chat(f"🎯 GOAL ACHIEVED — {g['id']}: "
-                       f"{m['pct_pdf']}% PDFs / {m['pct_complete']}% complete "
-                       f"(target {tgt.get('pct_pdf')}/{tgt.get('pct_complete')}).")
+            _post_chat(f"🎯 GOAL ACHIEVED — {g['id']}: {_fmt_measure(m)}.")
             try:
                 from lib import push_notify
                 push_notify.push("Egon 🎯 goal achieved",
-                                 f"{g['id']}: {m['pct_pdf']}% / {m['pct_complete']}%",
+                                 f"{g['id']}: {_fmt_measure(m)}",
                                  priority=4, tags="tada")
             except Exception:
                 pass
         else:
             active = _goal_tasks_active(g["id"])
             since_wave = time.time() - float(g.get("last_wave_at") or 0)
+            budget = int(g.get("wave_budget") or MAX_WAVES)
             if active > 0:
                 note = f"wave in flight ({active} tasks)"
-            elif int(g.get("waves") or 0) >= MAX_WAVES:
-                note = f"max waves ({MAX_WAVES}) reached — needs Bruno"
+            elif int(g.get("waves") or 0) >= budget:
+                # APPROVAL GATE (Bruno 2026-07-04: 'proposing the changes for
+                # me to only approve') — don't stop silently, ask once.
+                if g.get("status") != "awaiting_approval":
+                    g["status"] = "awaiting_approval"
+                    _post_chat(
+                        f"🎯 {g['id']} used its {budget}-wave budget "
+                        f"({_fmt_measure(m)}). Reply 'continue goal {g['id']}' "
+                        f"to approve {MAX_WAVES} more waves, or "
+                        f"'pause goal {g['id']}'.")
+                    try:
+                        from lib import push_notify
+                        push_notify.push("Egon 🎯 needs your call",
+                                         f"{g['id']}: wave budget used — "
+                                         "approve more in Egon chat", priority=4)
+                    except Exception:
+                        pass
+                note = "awaiting your approval (wave budget used)"
             elif since_wave < WAVE_COOLDOWN_S:
                 note = f"cooldown ({int((WAVE_COOLDOWN_S - since_wave)/3600)}h)"
             elif _dispatch_wave(g, m):
                 g["waves"] = int(g.get("waves") or 0) + 1
                 g["last_wave_at"] = int(time.time())
                 note = f"wave {g['waves']} dispatched"
-                _post_chat(f"🎯 {g['id']}: {m['pct_pdf']}% PDFs / "
-                           f"{m['pct_complete']}% complete (target "
-                           f"{tgt.get('pct_pdf')}/{tgt.get('pct_complete')}) — "
+                _post_chat(f"🎯 {g['id']}: {_fmt_measure(m)} — "
                            f"wave {g['waves']} dispatched to the agents.")
                 try:
                     from lib import push_notify
                     push_notify.push("Egon 🎯 wave dispatched",
-                                     f"{g['id']} wave {g['waves']}: "
-                                     f"{m['pct_pdf']}% / {m['pct_complete']}%")
+                                     f"{g['id']} wave {g['waves']}: {_fmt_measure(m)}")
                 except Exception:
                     pass
             else:
