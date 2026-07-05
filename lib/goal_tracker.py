@@ -205,6 +205,13 @@ def evaluate() -> dict:
             _post_chat(f"🎯 GOAL ACHIEVED — {g['id']}: "
                        f"{m['pct_pdf']}% PDFs / {m['pct_complete']}% complete "
                        f"(target {tgt.get('pct_pdf')}/{tgt.get('pct_complete')}).")
+            try:
+                from lib import push_notify
+                push_notify.push("Egon 🎯 goal achieved",
+                                 f"{g['id']}: {m['pct_pdf']}% / {m['pct_complete']}%",
+                                 priority=4, tags="tada")
+            except Exception:
+                pass
         else:
             active = _goal_tasks_active(g["id"])
             since_wave = time.time() - float(g.get("last_wave_at") or 0)
@@ -222,6 +229,13 @@ def evaluate() -> dict:
                            f"{m['pct_complete']}% complete (target "
                            f"{tgt.get('pct_pdf')}/{tgt.get('pct_complete')}) — "
                            f"wave {g['waves']} dispatched to the agents.")
+                try:
+                    from lib import push_notify
+                    push_notify.push("Egon 🎯 wave dispatched",
+                                     f"{g['id']} wave {g['waves']}: "
+                                     f"{m['pct_pdf']}% / {m['pct_complete']}%")
+                except Exception:
+                    pass
             else:
                 note = "dispatch failed (orchestrator unreachable)"
         hist = g.setdefault("history", [])

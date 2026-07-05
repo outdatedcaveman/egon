@@ -99,16 +99,22 @@ def _post_to_chat(lines: list[str]) -> None:
         pass
 
 
-def _notify_phone(text: str) -> None:
-    """Best-effort Android notification via adb (LAN only, 6s budget)."""
+def _notify_phone(text: str, counts: str = "") -> None:
+    """Two channels: rich adb notification on the home LAN, plus an anywhere
+    push via ntfy (GENERIC content only — counts, never task text)."""
     try:
         adb = ROOT / "panop_output" / "platform-tools" / "platform-tools" / "adb.exe"
-        if not adb.exists():
-            return
-        subprocess.run(
-            [str(adb), "shell", "cmd", "notification", "post",
-             "-t", "Egon orchestrator", "egon_task", text[:120]],
-            capture_output=True, timeout=6, creationflags=0x08000000)
+        if adb.exists():
+            subprocess.run(
+                [str(adb), "shell", "cmd", "notification", "post",
+                 "-t", "Egon orchestrator", "egon_task", text[:120]],
+                capture_output=True, timeout=6, creationflags=0x08000000)
+    except Exception:
+        pass
+    try:
+        from lib import push_notify
+        push_notify.push("Egon orchestrator",
+                         counts or "task outcomes ready — open Egon")
     except Exception:
         pass
 
@@ -151,8 +157,13 @@ def report_new_outcomes() -> dict:
     conn.close()
     if lines:
         _post_to_chat(lines)
+        done = sum(1 for l in lines if l.startswith("✓"))
+        failed = sum(1 for l in lines if l.startswith("✗"))
+        counts = (f"{done} verified done · {failed} failed · {requeued} requeued "
+                  "— details in Egon chat")
         _notify_phone(lines[0] if len(lines) == 1
-                      else f"{len(lines)} task outcomes — see Egon chat")
+                      else f"{len(lines)} task outcomes — see Egon chat",
+                      counts=counts)
     st["last_id"] = max_id
     _save_state(st)
     return {"reported": len(lines), "requeued": requeued, "last_id": max_id}
