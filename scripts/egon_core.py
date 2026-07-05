@@ -269,6 +269,12 @@ def _sweep_duplicate_mind_services() -> None:
                 owner_8000 = pid
             elif ":8765" in line:
                 owner_8765 = pid
+        if owner_8000 and owner_8000 not in pids:
+            # :8000 held by something that is NOT a mind_service (2026-07-05:
+            # it was the GUI's legacy in-process Panop — froze the Qt thread).
+            # In-process hosting is now disabled; if this fires again it's a
+            # foreign process and needs eyes, not an auto-kill.
+            log("warn", "foreign_8000_owner", pid=owner_8000)
         if owner_8000 and owner_8000 == owner_8765:
             victims = pids - {owner_8000}   # one healthy owner; cull the rest
         else:

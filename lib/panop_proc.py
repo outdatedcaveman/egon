@@ -70,7 +70,19 @@ def ensure_running(log_fn=None) -> bool:
 
     Idempotent: if Panop is already up (in this thread OR an external
     leftover binding :8000), returns True without doing anything.
-    """
+
+    DISABLED BY DEFAULT since 2026-07-05 (set EGON_INPROC_PANOP=1 to force):
+    when the GUI won the :8000 race after a restart, the ENTIRE mind API —
+    ingest loop, wake ticks, dispatch decompose (25s+ LLM calls), context
+    capsules — ran inside the Qt process and froze it ('Not Responding',
+    repeatedly). The standalone mind_service mounts the same app and is
+    guaranteed by egon_core; the GUI must never host the API."""
+    import os as _os
+    if _os.environ.get("EGON_INPROC_PANOP", "0") not in ("1", "true", "yes"):
+        if log_fn:
+            log_fn("info", event="inproc_panop_disabled",
+                   note="standalone mind_service owns :8000 (egon_core-guaranteed)")
+        return is_running()   # report whether the STANDALONE is serving
     global _server_obj, _server_thread
 
     if is_running():
