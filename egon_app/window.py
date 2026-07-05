@@ -13,7 +13,7 @@ from egon_app import data
 from egon_app.theme import QSS
 from egon_app.pages import (
     HomePage, InboxPage, NavigationPage, LedgerPage, SyncPage, MemoryPage, SettingsPage,
-    ReferencesPage, MediaPage, SearchPage, MindPage, ProjectsPage, ConnectPage,
+    ReferencesPage, DiscoveryPage, MediaPage, SearchPage, MindPage, ProjectsPage, ConnectPage,
     make_generic_page,
 )
 
@@ -29,6 +29,7 @@ NAV = [
     ("navigation", "🧭", "Navigation",     False),
     ("media",      "🎬", "Media",          False),
     ("references", "📚", "References",     False),
+    ("discovery",  "🔎", "Discovery",      False),
     ("databases",  "🗄", "Databases",      False),
     ("apps",       "🧰", "Apps",           False),
     ("projects",   "📁", "Projects",       False),
@@ -276,6 +277,7 @@ class MainWindow(QMainWindow):
             "memory":     MemoryPage,
             "settings":   SettingsPage,
             "references": ReferencesPage,
+            "discovery":  DiscoveryPage,
             "media":      MediaPage,
             "mind":       MindPage,
             "projects":   ProjectsPage,

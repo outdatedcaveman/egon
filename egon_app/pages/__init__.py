@@ -7,6 +7,7 @@ from egon_app.pages.sync import SyncPage
 from egon_app.pages.memory import MemoryPage
 from egon_app.pages.settings import SettingsPage
 from egon_app.pages.references import ReferencesPage
+from egon_app.pages.discovery import DiscoveryPage
 from egon_app.pages.media import MediaPage
 from egon_app.pages.search import SearchPage
 from egon_app.pages.mind import MindPage
@@ -17,7 +18,7 @@ from egon_app.pages.generic import make_page as make_generic_page
 
 __all__ = [
     "HomePage", "InboxPage", "NavigationPage", "LedgerPage", "SyncPage",
-    "MemoryPage", "SettingsPage", "ReferencesPage", "MediaPage",
+    "MemoryPage", "SettingsPage", "ReferencesPage", "DiscoveryPage", "MediaPage",
     "SearchPage", "MindPage", "ProjectsPage", "ConnectPage", "OrchestratorPage",
     "make_generic_page",
 ]

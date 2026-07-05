@@ -39,6 +39,9 @@ ABSTRACT_HEAD_CHARS = 900
 
 _SPACE_RE = re.compile(r"\s+")
 _DOI_RE = re.compile(r"(?i)\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b")
+_PRIVATE_TERM_RE = re.compile(
+    r"(?i)(@|(?:[A-Za-z]:\\|/Users/|/home/)|\b(?:api[_-]?key|token|secret|password)\b)"
+)
 _ARXIV_NS = {
     "atom": "http://www.w3.org/2005/Atom",
     "arxiv": "http://arxiv.org/schemas/atom",
@@ -112,6 +115,8 @@ def _load_interest_terms(limit: int = MAX_QUERIES) -> list[str]:
             value = value.get("name") or value.get("title") or value.get("value")
         term = _clean_text(value, 120)
         if not term or term.casefold() in removed:
+            return
+        if _PRIVATE_TERM_RE.search(term):
             return
         if term.casefold() in {t.casefold() for t in terms}:
             return
@@ -289,6 +294,34 @@ def _load_queue() -> dict[str, Any]:
     return data
 
 
+def _merge_candidate(existing: dict[str, Any] | None, candidate: dict[str, Any]) -> dict[str, Any]:
+    if not existing:
+        merged = dict(candidate)
+    else:
+        old_score = int(existing.get("relevance_score") or 0)
+        new_score = int(candidate.get("relevance_score") or 0)
+        selected = candidate if new_score > old_score else existing
+        merged = dict(selected)
+        other = existing if selected is candidate else candidate
+        for field in ("doi", "abstract_head", "source_url", "year"):
+            if not merged.get(field) and other.get(field):
+                merged[field] = other[field]
+        merged["relevance_score"] = max(old_score, new_score)
+        merged["found_at"] = max(int(existing.get("found_at") or 0), int(candidate.get("found_at") or 0))
+
+    sources = set()
+    for item in (existing, candidate):
+        if not isinstance(item, dict):
+            continue
+        if item.get("source"):
+            sources.add(str(item["source"]))
+        for src in item.get("matched_sources") or []:
+            sources.add(str(src))
+    if sources:
+        merged["matched_sources"] = sorted(sources)
+    return merged
+
+
 def run_watchers(
     *,
     force: bool = False,
@@ -337,7 +370,7 @@ def run_watchers(
                 candidate["key"] = key
                 if key not in existing:
                     added += 1
-                existing[key] = {**existing.get(key, {}), **candidate}
+                existing[key] = _merge_candidate(existing.get(key), candidate)
 
     candidates = list(existing.values())
     candidates.sort(key=lambda c: (int(c.get("relevance_score") or 0), int(c.get("found_at") or 0)), reverse=True)
