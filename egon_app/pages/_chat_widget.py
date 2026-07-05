@@ -129,6 +129,20 @@ class ChatWidget(QWidget):
         self._sync_timer.timeout.connect(self._maybe_reload_shared)
         self._sync_timer.start()
 
+    def _streaming(self) -> bool:
+        """True while a reply is in flight. MUST be exception-safe: the QThread
+        deleteLater()s itself when finished, and touching the deleted wrapper
+        raises RuntimeError — which, inside a Qt slot, was silently swallowed
+        and made Send do NOTHING after the first reply (Bruno 2026-07-05)."""
+        t = self._thread
+        if t is None:
+            return False
+        try:
+            return t.isRunning()
+        except RuntimeError:      # wrapped C++ object already deleted
+            self._thread = None
+            return False
+
     def _hist_stat(self):
         try:
             from lib import chat_store
@@ -137,7 +151,7 @@ class ChatWidget(QWidget):
             return 0
 
     def _maybe_reload_shared(self):
-        if self._thread is not None and self._thread.isRunning():
+        if self._streaming():
             return                      # streaming — don't yank the thread
         m = self._hist_stat()
         if m and m != self._hist_mtime:
@@ -501,7 +515,7 @@ class ChatWidget(QWidget):
         bar.setValue(bar.maximum())
 
     def _on_send(self):
-        if self._thread is not None and self._thread.isRunning():
+        if self._streaming():
             return
         text = self._input.toPlainText().strip()
         if not text and not self._attachments:
@@ -564,6 +578,8 @@ class ChatWidget(QWidget):
             if reply and not reply.strip().startswith("⚠"):
                 self._history.append({"role": "assistant", "content": reply})
         self._cur_bubble = None
+        self._thread = None      # deleteLater() will reap them; drop our refs
+        self._worker = None
         self._send.setEnabled(True)
         self._send.setText("Send")
         self._scroll_bottom()
