@@ -644,7 +644,13 @@ def build_app():
     def page(req: Request):
         if not _authed(req):
             return JSONResponse({"error": "forbidden"}, status_code=403)
-        return HTMLResponse(_PAGE)
+        # no-store: the page JS changes constantly; a cached copy made OLD,
+        # already-fixed bugs reappear on the phone (Bruno 2026-07-05: "the
+        # instantresolve issue starts happening AGAIN" off a stale browser
+        # cache). Always serve fresh code.
+        return HTMLResponse(_PAGE, headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache", "Expires": "0"})
 
     @app.post("/m/connect")
     async def m_connect(req: Request):
