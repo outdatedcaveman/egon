@@ -373,6 +373,39 @@ def check_tunnel(u: "Unit") -> None:
         u.detail = f"url publish err: {str(e)[:50]}"
 
 
+_goals_last = 0.0
+GOALS_EVERY_S = int(os.environ.get("EGON_GOALS_EVERY_S", str(30 * 60)))
+
+
+def check_goals(u: "Unit") -> None:
+    """Outcome pursuit (Bruno 2026-07-04): measure each goal's REAL metric,
+    dispatch the next agent wave when the target isn't met and nothing is in
+    flight, retire it when achieved. lib/goal_tracker; guarded thread; the
+    Zotero measurement takes seconds on 260k items so at most every 30min."""
+    global _goals_last
+    try:
+        st = json.loads((ROOT / "state" / "goals_status.json").read_text(
+            encoding="utf-8"))
+        bits = []
+        for g in st.get("goals", []):
+            m = g.get("measure") or {}
+            if m:
+                bits.append(f"{g['id']}: {m.get('pct_pdf')}%pdf/"
+                            f"{m.get('pct_complete')}%c ({g.get('note','')[:28]})")
+        u.detail = " · ".join(bits) if bits else "no goals measured yet"
+    except Exception:
+        u.detail = "no goals measured yet"
+    u.ok = True
+    if time.time() - _goals_last < GOALS_EVERY_S:
+        return
+    try:
+        from lib import goal_tracker
+        if goal_tracker.kick_async():
+            _goals_last = time.time()
+    except Exception as e:
+        u.detail = f"goals err: {str(e)[:50]}"
+
+
 def check_reporter(u: "Unit") -> None:
     """Verified task outcomes flow TO Bruno (chat + phone nudge) instead of
     waiting to be discovered. lib/task_reporter; guard-flagged thread so the
@@ -1418,7 +1451,8 @@ def main() -> int:
              "canonical": Unit("canonical"),
              "exhaustive": Unit("exhaustive"),
              "tunnel": Unit("tunnel"),
-             "reporter": Unit("reporter")}
+             "reporter": Unit("reporter"),
+             "goals": Unit("goals")}
     _reap_heavy("startup-orphans")   # clear any heavy jobs a prior instance left
     while True:
         try:
@@ -1443,6 +1477,7 @@ def main() -> int:
             check_exhaustive(units["exhaustive"])
             check_tunnel(units["tunnel"])
             check_reporter(units["reporter"])
+            check_goals(units["goals"])
             _keep_awake_while_heavy()
             write_health(units)
         except Exception as e:

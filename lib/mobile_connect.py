@@ -565,6 +565,15 @@ function renderOrch(d){
    '<div class="meta">'+esc(ct.slice(0,150))+
    (le?('<br>latest: '+esc(le.slice(0,120))):'')+'</div></div>';
  }
+ // 🎯 measured goals the orchestrator is pursuing
+ const goals=d.goals||[];
+ for(const g of goals){const m=g.measure||{};const t=g.target||{};
+  if(!m.pct_pdf&&!m.pct_complete)continue;
+  h+='<div class="ocard" style="border-color:rgba(230,182,92,.35)"><div class="ttl">🎯 '+esc(g.id)+'</div>'+
+   '<div class="meta">'+m.pct_pdf+'% PDFs · '+m.pct_complete+'% complete (target '+
+   (t.pct_pdf||'?')+'/'+(t.pct_complete||'?')+') · wave '+(g.waves||0)+
+   '<br>'+esc((g.note||'').slice(0,80))+'</div></div>';
+ }
  // Sessions across all AIs, newest first (canonical project attached).
  const sess=d.sessions||[];
  if(sess.length){h+='<div class="sec mind">Sessions</div>';
@@ -793,6 +802,12 @@ def build_app():
                     pass
         except Exception as e:
             out["error"] = str(e)[:140]
+        try:
+            gst = json.loads((ROOT / "state" / "goals_status.json"
+                              ).read_text(encoding="utf-8"))
+            out["goals"] = gst.get("goals") or []
+        except Exception:
+            out["goals"] = []
         return JSONResponse(out)
 
     @app.get("/m/apk")

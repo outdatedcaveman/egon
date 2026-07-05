@@ -986,6 +986,23 @@ class OrchestratorPage(QWidget):
             if queue_only:
                 wake_bits.append("queued/no-runner " + ", ".join(sorted(queue_only)))
             lines.append("Wake: " + " | ".join(wake_bits))
+        # 🎯 Goals: the measured outcome the orchestrator is pursuing
+        try:
+            import json as _json
+            from pathlib import Path as _P
+            gst = _json.loads((_P(__file__).resolve().parents[2] / "state" /
+                               "goals_status.json").read_text(encoding="utf-8"))
+            for g in gst.get("goals", []):
+                m = g.get("measure") or {}
+                t = g.get("target") or {}
+                if m:
+                    lines.append(
+                        f"🎯 {g['id']}: {m.get('pct_pdf')}% PDFs / "
+                        f"{m.get('pct_complete')}% complete (target "
+                        f"{t.get('pct_pdf', '?')}/{t.get('pct_complete', '?')}) — "
+                        f"{g.get('note', '')}")
+        except Exception:
+            pass
         # Visibility (Bruno 2026-07-04: "where's my visibility?"): what the
         # agents actually DID, right here above the fold — newest finished
         # tasks with their outcome, not just counters.
