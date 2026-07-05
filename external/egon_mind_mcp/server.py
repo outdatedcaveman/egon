@@ -455,6 +455,60 @@ def tool_mind_register_agent(args: dict) -> dict:
     return _ok_or_error(s, b)
 
 
+def tool_meta_project(args: dict) -> dict:
+    """Bruno's meta-project protocol (2026-07-05): turn a request into an Egon
+    orchestrator endeavor — decomposed across claude-code/codex/antigravity/
+    hermes, masterlaw-screened, fully recorded (GUI Orchestrator page + phone
+    Oversee). The CALLING agent becomes the supervisor for the round."""
+    prompt = (args.get("prompt") or "").strip()
+    if len(prompt) < 10:
+        return {"status": "error", "error": "prompt required (be self-contained: "
+                "other agents won't see this conversation)"}
+    title = (args.get("title") or "").strip()
+    tag = f"[meta-project{': ' + title if title else ''}]"
+    s, b = _http("POST", "/orchestrator/dispatch",
+                 body={"prompt": f"{tag} {prompt}"})
+    out = _ok_or_error(s, b)
+    if isinstance(out, dict) and out.get("status") != "error":
+        out["supervisor_contract"] = (
+            "You are the SUPERVISOR for this round: poll meta_project_status, "
+            "verify outcomes against the goal, steer with meta_project_control "
+            "(requeue/cancel/pause), re-dispatch refined follow-ups, then report "
+            "a concise summary to Bruno and write a durable memory "
+            "(mind_memory_upsert) with what was delegated + verified results.")
+    return out
+
+
+def tool_meta_project_status(args: dict) -> dict:
+    s, b = _http("GET", "/orchestrator/status")
+    if s >= 400 or not isinstance(b, dict):
+        return _ok_or_error(s, b)
+    needle = "[meta-project"
+    title = (args.get("title") or "").strip()
+    if title:
+        needle = f"[meta-project: {title}"
+    tasks = [t for t in (b.get("tasks") or [])
+             if needle.lower() in str(t.get("parent_prompt", "")).lower()]
+    slim = [{"id": t.get("id"), "agent": t.get("agent_name"),
+             "status": t.get("status"),
+             "task": str(t.get("sub_task_desc") or "")[:160],
+             "latest": str(((t.get("latest_event") or {}).get("content")) or "")[:200]}
+            for t in tasks[:25]]
+    return {"status": "ok", "tasks": slim, "count": len(tasks)}
+
+
+def tool_meta_project_control(args: dict) -> dict:
+    tid = args.get("task_id")
+    action = (args.get("action") or "").strip()
+    if not tid or action not in ("requeue", "cancel", "pause", "resume", "stop"):
+        return {"status": "error",
+                "error": "task_id + action (requeue|cancel|pause|resume|stop) required"}
+    s, b = _http("POST", f"/orchestrator/tasks/{int(tid)}/control",
+                 body={"action": action,
+                       "note": args.get("note") or "meta-project supervisor"})
+    return _ok_or_error(s, b)
+
+
 def tool_mind_file_lease(args: dict) -> dict:
     body = {"path": args.get("path"),
             "session_id": args.get("session_id"),
@@ -483,6 +537,36 @@ def tool_mind_file_leases(_args: dict) -> dict:
 # ── tool registry + JSON schemas ──────────────────────────────────────────
 
 TOOLS = [
+    {
+        "name": "meta_project",
+        "description": ("Bruno's meta-project protocol: dispatch a request through Egon's "
+                        "orchestrator — decomposed across all AI agents (claude-code, codex, "
+                        "antigravity, hermes), masterlaw-screened, recorded in the GUI. Use "
+                        "when Bruno asks for work as a 'meta-project'. YOU become the "
+                        "supervisor: follow up with meta_project_status/control. The prompt "
+                        "must be SELF-CONTAINED (other agents can't see this conversation)."),
+        "inputSchema": {"type": "object", "properties": {
+            "title": {"type": "string", "description": "short kebab/plain title"},
+            "prompt": {"type": "string", "description": "full self-contained instruction, incl. paths + context"}},
+            "required": ["prompt"]},
+        "fn": tool_meta_project,
+    },
+    {
+        "name": "meta_project_status",
+        "description": "Supervisor view: tasks + latest events of meta-projects (optionally filter by title).",
+        "inputSchema": {"type": "object", "properties": {
+            "title": {"type": "string"}}, "required": []},
+        "fn": tool_meta_project_status,
+    },
+    {
+        "name": "meta_project_control",
+        "description": "Supervisor steering: requeue|cancel|pause|resume|stop a meta-project task by id.",
+        "inputSchema": {"type": "object", "properties": {
+            "task_id": {"type": "integer"},
+            "action": {"type": "string", "enum": ["requeue", "cancel", "pause", "resume", "stop"]},
+            "note": {"type": "string"}}, "required": ["task_id", "action"]},
+        "fn": tool_meta_project_control,
+    },
     {
         "name": "mind_stats",
         "description": "Get unified-mind dashboard counts and 24h rollups (top agents, top projects).",
