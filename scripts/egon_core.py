@@ -1048,7 +1048,10 @@ def _backup_private_config(day: str) -> None:
                     "state/settings*.json", "state/*config*.json",
                     "state/memory_rules*.json", "state/notion_catchup_active.json",
                     "state/reembed_active.json", "state/hydrate_cloud.json",
-                    "external/panop_server/panop_env.json"]
+                    "external/panop_server/panop_env.json",
+                    # conversations are first-class data now (2026-07-04)
+                    "state/chat_sessions/*.json", "state/chat_current.txt",
+                    "state/project_repos.json"]
         files = sorted({Path(p) for pat in patterns
                         for p in _glob.glob(str(ROOT / pat)) if Path(p).is_file()})
         if not files:
