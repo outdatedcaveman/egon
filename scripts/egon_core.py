@@ -609,7 +609,7 @@ def _any_heavy_running() -> bool:
     g = globals()
     for name in ("_hydrate_proc", "_index_proc", "_reembed_proc", "_concept_proc",
                  "_mirror_proc", "_index_backup_proc", "_canonical_proc",
-                 "_exhaustive_proc"):
+                 "_exhaustive_proc", "_insight_cards_proc"):
         p = g.get(name)
         try:
             if p is not None and p.poll() is None:
@@ -632,7 +632,7 @@ def _reap_heavy(reason: str = "user-active") -> int:
     killed = 0
     for name in ("_hydrate_proc", "_index_proc", "_reembed_proc", "_concept_proc",
                  "_mirror_proc", "_index_backup_proc", "_canonical_proc",
-                 "_exhaustive_proc"):
+                 "_exhaustive_proc", "_insight_cards_proc"):
         p = g.get(name)
         try:
             if p is not None and p.poll() is None:
@@ -777,6 +777,10 @@ _exhaustive_proc = None
 _exhaustive_last = 0.0
 EXHAUSTIVE_COOLDOWN_S = int(os.environ.get("EGON_EXHAUSTIVE_COOLDOWN_S", str(6 * 3600)))
 
+_insight_cards_proc = None
+_insight_cards_last = 0.0
+INSIGHT_CARDS_COOLDOWN_S = int(os.environ.get("EGON_INSIGHT_CARDS_COOLDOWN_S", str(6 * 3600)))
+
 
 def check_exhaustive(u: "Unit") -> None:
     """The COMPREHENSIVE/EXHAUSTIVE mind guarantee (Bruno 2026-07-01: 'NOTHING
@@ -835,6 +839,86 @@ def check_exhaustive(u: "Unit") -> None:
         u.ok = True
         u.detail = "exhaustive capture launched"
         log("info", "exhaustive_capture_launched")
+    except Exception as e:
+        u.ok = True
+        u.detail = f"launch failed: {str(e)[:60]}"
+
+
+def check_insight_cards(u: "Unit") -> None:
+    """Distill extracted full-texts into one durable insight card per document.
+
+    lib/insight_cards walks state/file_extracts and state/mind_archive/_extracts,
+    calls Claude Haiku for a compact JSON card, then writes kind=insight_card
+    memories by direct marker-line DB upsert. Idle-gated and serialized because
+    it can spend network quota and read many extracts; isolated so memory is
+    released when the subprocess exits.
+    """
+    global _insight_cards_proc, _insight_cards_last
+    if _insight_cards_proc is not None and _insight_cards_proc.poll() is None:
+        u.ok = True
+        u.detail = "distilling insight cards..."
+        return
+    try:
+        st_path = ROOT / "state" / "insight_cards_state.json"
+        daily_cards = 0
+        if st_path.exists():
+            st = json.loads(st_path.read_text(encoding="utf-8"))
+            daily = st.get("daily") or {}
+            if daily.get("date") == datetime.now().strftime("%Y-%m-%d"):
+                daily_cards = int(daily.get("cards", 0) or 0)
+        cap = int(os.environ.get("EGON_CARDS_PER_DAY", "300"))
+        if daily_cards >= cap:
+            u.ok = True
+            u.detail = f"daily budget spent ({daily_cards}/{cap})"
+            return
+    except Exception:
+        daily_cards = 0
+        cap = 300
+    since = time.time() - _insight_cards_last
+    if _insight_cards_last and since < INSIGHT_CARDS_COOLDOWN_S:
+        u.ok = True
+        u.detail = f"cooldown ({int((INSIGHT_CARDS_COOLDOWN_S - since)/3600)}h)"
+        return
+    allowed, why = _heavy_allowed()
+    if not allowed:
+        u.ok = True
+        u.detail = f"idle-wait ({why})"
+        return
+    if _any_heavy_running():
+        u.ok = True
+        u.detail = "waiting (another heavy job)"
+        return
+    try:
+        from lib import insight_cards
+        pending = insight_cards.pending_count()
+    except Exception as e:
+        u.ok = True
+        u.detail = f"scan err {str(e)[:30]}"
+        return
+    if pending <= 0:
+        u.ok = True
+        u.detail = "cards up to date"
+        return
+    code = (
+        "import sys, ctypes; sys.path.insert(0, r'{root}')\n"
+        "def _idle_s():\n"
+        "    class L(ctypes.Structure):\n"
+        "        _fields_ = [('cbSize', ctypes.c_uint), ('dwTime', ctypes.c_uint)]\n"
+        "    li = L(); li.cbSize = ctypes.sizeof(L)\n"
+        "    ctypes.windll.user32.GetLastInputInfo(ctypes.byref(li))\n"
+        "    return (ctypes.windll.kernel32.GetTickCount() - li.dwTime) / 1000.0\n"
+        "from lib import insight_cards\n"
+        "print(insight_cards.run(stop_check=lambda: _idle_s() < 30))\n"
+    ).format(root=str(ROOT))
+    try:
+        _insight_cards_proc = subprocess.Popen(
+            [str(PYW), "-c", code], cwd=str(ROOT), env=SPAWN_ENV,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008))
+        _insight_cards_last = time.time()
+        u.ok = True
+        u.detail = f"distilling {pending} pending ({daily_cards}/{cap} today)"
+        log("info", "insight_cards_launched", pending=pending, daily=daily_cards, cap=cap)
     except Exception as e:
         u.ok = True
         u.detail = f"launch failed: {str(e)[:60]}"
@@ -1490,6 +1574,7 @@ def main() -> int:
              "mirror": Unit("mirror"),
              "canonical": Unit("canonical"),
              "exhaustive": Unit("exhaustive"),
+             "insight_cards": Unit("insight_cards"),
              "tunnel": Unit("tunnel"),
              "reporter": Unit("reporter"),
              "goals": Unit("goals"),
@@ -1516,6 +1601,7 @@ def main() -> int:
             check_mirror(units["mirror"])
             check_canonical(units["canonical"])
             check_exhaustive(units["exhaustive"])
+            check_insight_cards(units["insight_cards"])
             check_tunnel(units["tunnel"])
             check_reporter(units["reporter"])
             check_goals(units["goals"])
