@@ -316,8 +316,11 @@ class UberComparerWidget(QWidget):
 
     def reload(self) -> None:
         self._stats_lbl.setText("re-building consolidated index in background...")
-        if self._loader and self._loader.isRunning():
-            return
+        try:
+            if self._loader and self._loader.isRunning():
+                return
+        except RuntimeError:      # deleted wrapper — same class of bug as the
+            self._loader = None   # chat Send deadlock (2026-07-05 audit)
         
         self._progress_lbl.setText("Rebuilding index...")
         self._progress_bar.setRange(0, 4)

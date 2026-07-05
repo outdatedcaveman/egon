@@ -197,7 +197,10 @@ def _load_goals() -> list[dict]:
 
 def _save_goals(goals: list[dict]) -> None:
     try:
-        GOALS.write_text(json.dumps(goals, indent=1), encoding="utf-8")
+        import os
+        tmp = GOALS.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(goals, indent=1), encoding="utf-8")
+        os.replace(tmp, GOALS)   # atomic: chat process + core both write this
     except Exception:
         pass
 
@@ -356,8 +359,11 @@ def evaluate() -> dict:
                     "waves": g.get("waves"), "target": tgt})
     _save_goals(goals)
     try:
-        STATUS.write_text(json.dumps({"generated_at": int(time.time()),
-                                      "goals": out}, indent=1), encoding="utf-8")
+        import os
+        tmp = STATUS.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"generated_at": int(time.time()),
+                                   "goals": out}, indent=1), encoding="utf-8")
+        os.replace(tmp, STATUS)
     except Exception:
         pass
     return {"goals": out}

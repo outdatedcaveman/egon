@@ -27,6 +27,16 @@ CURRENT = egon_paths.STATE_DIR / "chat_current.txt"
 LEGACY = egon_paths.STATE_DIR / "chat_history.json"
 
 
+def _atomic_write(path: Path, text: str) -> None:
+    """tmp + os.replace: desktop, phone server and egon_core all write these
+    files from separate PROCESSES — a torn write would corrupt a conversation
+    (2026-07-05 audit). os.replace is atomic on NTFS."""
+    import os
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def _elide(messages: list) -> list:
     out = []
     for m in messages or []:
@@ -74,11 +84,10 @@ def _migrate() -> None:
             data = json.loads(f.read_text(encoding="utf-8"))
             if isinstance(data, list):        # flat list -> wrap as session
                 sid = f.stem.replace("chat_", "") or _new_id()
-                _path(sid).write_text(json.dumps({
+                _atomic_write(_path(sid), json.dumps({
                     "id": sid, "title": _title_for(data),
                     "updated_at": int(f.stat().st_mtime),
-                    "messages": _elide(data)}, ensure_ascii=False),
-                    encoding="utf-8")
+                    "messages": _elide(data)}, ensure_ascii=False))
                 f.rename(f.with_suffix(".json.migrated"))
         except Exception:
             continue
@@ -126,10 +135,10 @@ def load(sid: str) -> list:
 def save(sid: str, messages: list) -> None:
     SESS_DIR.mkdir(parents=True, exist_ok=True)
     msgs = _elide(messages)
-    _path(sid).write_text(json.dumps({
+    _atomic_write(_path(sid), json.dumps({
         "id": sid, "title": _title_for(msgs),
         "updated_at": int(time.time()), "messages": msgs},
-        ensure_ascii=False), encoding="utf-8")
+        ensure_ascii=False))
 
 
 def new_session() -> str:
@@ -157,7 +166,7 @@ def current_id() -> str:
 def set_current(sid: str) -> None:
     try:
         CURRENT.parent.mkdir(parents=True, exist_ok=True)
-        CURRENT.write_text(sid, encoding="utf-8")
+        _atomic_write(CURRENT, sid)
     except Exception:
         pass
 

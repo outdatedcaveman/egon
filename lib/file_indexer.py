@@ -84,7 +84,10 @@ def build(force: bool = False) -> dict:
     cfg = _config()
     roots = cfg.get("roots") or _DEFAULT_ROOTS
     exts = set(e.lower() for e in (cfg.get("exts") or _DEFAULT_EXTS))
-    cap = int(cfg.get("max_files") or 120_000)
+    # 500k default (was 120k): the Documents tree alone approaches the old cap,
+    # and a hit cap silently violates the exhaustive-mind rule. Cap hits are now
+    # REPORTED in the result (no silent caps). 2026-07-05 audit.
+    cap = int(cfg.get("max_files") or 500_000)
 
     t0 = time.time()
     items: list[dict] = []

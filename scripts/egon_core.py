@@ -1220,8 +1220,12 @@ def check_digest(u: Unit) -> None:
         prev = json.loads(DIGEST_JSON.read_text(encoding="utf-8")).get("date")
     except Exception:
         prev = None
-    u.ok = prev == today
-    u.detail = f"last={prev or 'never'}"
+    # "Hasn't run YET today" is a waiting state, not a failure — reporting it
+    # as DOWN put a permanent false ⚠ in health + the morning briefing
+    # (2026-07-05 audit). DOWN is reserved for actual generation failures.
+    u.ok = True
+    u.detail = (f"generated {today}" if prev == today
+                else f"waiting (last={prev or 'never'})")
     allowed, why = _heavy_allowed()
     if not allowed:
         u.detail += f" ({why})"
