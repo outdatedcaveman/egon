@@ -163,6 +163,36 @@ def _clip_file(path: str | None, limit: int = 4000) -> str:
         return ""
 
 
+def _claude_credentials() -> dict[str, str]:
+    """Env overrides so the orchestrator's HEADLESS `claude --print` authenticates.
+
+    Bruno 2026-07-06: the on-disk OAuth token expired 2026-06-24, so every
+    orchestrator-spawned claude-code 401'd (0 tokens) and ALL work dogpiled onto
+    codex. The desktop app has a fresh in-memory token but the background service
+    never sees it. Fix: inject a credential from egon-config.json.
+
+    Cost-safe by design — prefers a SUBSCRIPTION token (`claude setup-token`,
+    no per-token cost); only uses the paid API key if `llm.orchestrator_use_api_key`
+    is explicitly true, so we never silently switch Bruno to metered billing.
+    Returns {} when nothing is configured (claude-code simply stays unavailable,
+    same as before — no surprise spend)."""
+    try:
+        import json as _json
+        cfg = _json.loads((ROOT / "egon-config.json").read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    llm = cfg.get("llm") or {}
+    env_tok = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    tok = str(llm.get("claude_code_oauth_token") or env_tok or "").strip()
+    if tok:
+        return {"CLAUDE_CODE_OAUTH_TOKEN": tok}
+    if llm.get("orchestrator_use_api_key"):
+        key = str(llm.get("claude_api_key") or "").strip()
+        if key.startswith("sk-ant-"):
+            return {"ANTHROPIC_API_KEY": key}
+    return {}
+
+
 def _codex_executable() -> str | None:
     env_path = os.environ.get("CODEX_CLI_PATH")
     if env_path and Path(env_path).exists():
@@ -881,6 +911,23 @@ def _start_runner(agent: str, state: dict) -> dict:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     env.setdefault("EGON_MCP_AGENT", agent)
+    if agent == "claude-code":
+        # Headless claude-code needs an explicit credential — the background
+        # service can't see the desktop app's in-memory token, and the on-disk
+        # one expires. No credential configured → skip the spawn entirely so it
+        # doesn't 401 and burn a wake slot (Bruno 2026-07-06).
+        creds = _claude_credentials()
+        if not creds:
+            append_task_event(
+                task_id, agent, "wake_deferred",
+                "claude-code has no headless credential — set llm."
+                "claude_code_oauth_token (run `claude setup-token`) in "
+                "egon-config.json. Task stays queued; not failed.")
+            update_task_status(task_id, "pending")
+            record_agent_heartbeat(agent, task_id, "wake_deferred", "no headless credential")
+            return {"agent": agent, "task_id": task_id, "status": "deferred",
+                    "reason": "no_headless_credential"}
+        env.update(creds)
     creationflags = 0
     if sys.platform == "win32":
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
