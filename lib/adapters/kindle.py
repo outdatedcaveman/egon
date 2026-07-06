@@ -218,6 +218,18 @@ def live_status() -> dict:
         return {"status": "ok", "source": "data_export_zip",
                 "count": len(items), "region": secrets.get("kindle.region") or "com",
                 "note": "Parsed from Amazon data-export ZIP"}
+    # Priority 2.5: fresh harvested snapshot — report OK WITHOUT touching
+    # Playwright. A status probe must never spin up a browser: is_logged_in()
+    # launches Playwright, which hung the whole snapshot pass to the 45s cap
+    # even though the library was already harvested. Bruno 2026-07-06.
+    try:
+        from lib.source_health import has_recent_data
+        if has_recent_data("kindle"):
+            return {"status": "ok", "source": "snapshot_cache",
+                    "note": "cached library (Chrome-extension harvest); open your "
+                            "Kindle library in Chrome to refresh."}
+    except Exception:
+        pass
     # Priority 3: Playwright session for the configured region
     if not is_logged_in():
         return {"status": "unconfigured",

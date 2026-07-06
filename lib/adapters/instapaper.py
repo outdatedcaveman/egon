@@ -135,6 +135,15 @@ def live_status(timeout: float = 5.0) -> dict:
         return {"status": "unconfigured", "error": "set INSTAPAPER_USERNAME/PASSWORD or add `instapaper` block to egon-config.json"}
     auth = authenticate(timeout=timeout)
     if auth.get("status") != "ok":
+        # Auth slow/failed — the saved list comes from the extension harvest,
+        # not this login, so don't degrade a fresh source. Bruno 2026-07-06.
+        try:
+            from lib.source_health import has_recent_data
+            if has_recent_data("instapaper"):
+                return {"status": "ok", "source": "snapshot_cache",
+                        "note": "cached saved list (live auth slow)"}
+        except Exception:
+            pass
         return auth
     count, last_synced = _harvested_count()
     if count is None:

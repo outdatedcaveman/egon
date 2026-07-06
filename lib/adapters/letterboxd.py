@@ -488,9 +488,21 @@ def live_status() -> dict:
         if r.status_code == 200:
             return {"status": "ok", "username": u, "note":
                     "scraping limited to first page; configure letterboxd.export_path for full corpus"}
-        return {"status": "error", "error": f"HTTP {r.status_code}"}
+        return _cached_or(f"HTTP {r.status_code}")
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return _cached_or(str(e))
+
+
+def _cached_or(err: str) -> dict:
+    """The films come from the export/snapshot, not this liveness ping — so a
+    slow ping shouldn't degrade a source whose data is fresh. Bruno 2026-07-06."""
+    try:
+        from lib.source_health import has_recent_data
+        if has_recent_data("letterboxd"):
+            return {"status": "ok", "note": f"cached corpus (live ping slow: {err[:50]})"}
+    except Exception:
+        pass
+    return {"status": "error", "error": err[:120]}
 
 
 def snapshot() -> dict:

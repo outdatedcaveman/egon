@@ -156,6 +156,15 @@ def live_status() -> dict:
                 "error": "Set pocketcasts.email and pocketcasts.password in Settings."}
     tok = _login()
     if not tok:
+        # Login slow/failed — but the subscriptions+history come from the
+        # snapshot; don't degrade a source whose data is fresh. Bruno 2026-07-06.
+        try:
+            from lib.source_health import has_recent_data
+            if has_recent_data("pocketcasts"):
+                return {"status": "ok", "source": "snapshot_cache",
+                        "note": "cached podcasts (live login slow/failed)"}
+        except Exception:
+            pass
         return {"status": "error",
                 "error": "Login failed — check Pocket Casts email/password."}
     return {"status": "ok", "source": "pocketcasts_api",

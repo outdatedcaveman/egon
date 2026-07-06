@@ -154,6 +154,18 @@ def for_sources(pairs: list[tuple[str, str]],
     return out
 
 
+def has_recent_data(source: str, max_hours: float = 72.0) -> bool:
+    """True if `source` has a stored snapshot with real data no older than
+    max_hours. Cheap (header-only reads). Adapters use this to report OK from
+    a fresh harvest when a live re-check is slow/flaky, instead of degrading a
+    source whose data is actually fine (Bruno 2026-07-06)."""
+    ts, has_data = _data_synced_at(source)
+    if not has_data:
+        return False
+    age = _age_hours(ts)
+    return age is None or age <= max_hours
+
+
 def is_healthy(lp_source: dict) -> bool:
     """Honest replacement for `status in ('ok','alive')` used in pass summaries:
     a source with a non-empty error did NOT succeed this pass."""
