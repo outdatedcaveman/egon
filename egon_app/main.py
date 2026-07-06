@@ -521,6 +521,19 @@ def main() -> int:
     except Exception:
         pass
 
+    # ---- Mouseion enrichment (Egon-lifecycle managed subprocess) -------------
+    # Bruno 2026-07-06: enrichment must run ONLY while Egon is open (dies with
+    # it) — killing both the stall and the faceless-process problem. Runs
+    # Mouseion's own run_headless.py (:7274 server + enrichment daemons) +
+    # supervisor.py (DOI/PDF recovery). OPT-IN: mouseion.auto_start defaults
+    # FALSE, so nothing spawns until Bruno enables it. See lib/mouseion_proc.py.
+    try:
+        from lib import mouseion_proc
+        mouseion_proc.ensure_running_async(log_fn=lambda l, **k: None)
+        app.aboutToQuit.connect(mouseion_proc.stop)
+    except Exception:
+        pass
+
     # ---- Headroom supervisor (Egon-managed context compression proxy) --------
     # Spawns local headroom proxy server on :8787 for LLM context compression
     # across all local agent runs. Dies with Egon. Idempotent.
