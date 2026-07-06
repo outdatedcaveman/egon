@@ -44,6 +44,46 @@ MIN_RETRY_SECONDS = 180
 ANTIGRAVITY_PROMPT_ARG_LIMIT = 18000
 _ANTIGRAVITY_INFO_CACHE: dict[str, Any] = {"ts": 0, "items": []}
 
+# ── autonomy guardrails (Bruno 2026-07-06 — "open faucet I can't see") ─────────
+# A runaway task (#58 ran 20.7h) is killed, not left to burn compute; and no
+# single provider may absorb more than a daily task budget (claude-code's 401
+# once funneled EVERYTHING onto codex and drained its quota). Both are the gate
+# to safely re-enabling autonomy.
+MAX_TASK_WALLCLOCK_S = int(os.environ.get("EGON_MAX_TASK_SECONDS", str(45 * 60)))
+PROVIDER_DAILY_TASK_CAP = int(os.environ.get("EGON_PROVIDER_DAILY_TASK_CAP", "24"))
+
+
+def _today() -> str:
+    return time.strftime("%Y-%m-%d")
+
+
+def _kill_pid(pid: int | None) -> None:
+    if not pid:
+        return
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(int(pid))],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=8, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            os.kill(int(pid), 9)
+    except Exception:
+        pass
+
+
+def _provider_started_today(state: dict, agent: str) -> int:
+    return int(((state.get("daily") or {}).get(_today()) or {}).get(agent) or 0)
+
+
+def _bump_provider_today(state: dict, agent: str) -> None:
+    daily = state.setdefault("daily", {})
+    # keep only today's bucket so the file doesn't grow unbounded
+    for day in list(daily.keys()):
+        if day != _today():
+            daily.pop(day, None)
+    today = daily.setdefault(_today(), {})
+    today[agent] = int(today.get(agent) or 0) + 1
+
 
 def _now() -> int:
     return int(time.time())
@@ -993,6 +1033,24 @@ def poll_wake_processes(state: dict | None = None) -> dict:
         task_id = int(entry.get("task_id") or key)
         agent = entry.get("agent")
         if _pid_running(entry.get("pid")):
+            # Wall-clock guardrail: a task that outruns the cap is KILLED, not
+            # left to burn compute (Bruno's #58 ran 20.7h). Runaway ≠ requeue.
+            started = int(entry.get("started_at") or 0)
+            if not (started and _now() - started > MAX_TASK_WALLCLOCK_S):
+                continue
+            _kill_pid(entry.get("pid"))
+            append_task_event(
+                task_id, agent, "wake_killed_runaway",
+                f"Task exceeded the {MAX_TASK_WALLCLOCK_S // 60}min wall-clock cap "
+                "— killed to stop runaway compute (autonomy guardrail).",
+                {"pid": entry.get("pid"), "ran_seconds": _now() - started})
+            update_task_status(task_id, "failed")
+            entry["status"] = "killed_runaway"
+            entry["final_task_status"] = "failed"
+            entry["updated_at"] = _now()
+            state.setdefault("agents", {})[agent] = dict(entry)
+            changed = True
+            finished += 1
             continue
         task = _task_snapshot(task_id) or {}
         stdout_tail = _clip_file(entry.get("stdout_path"))
@@ -1069,9 +1127,16 @@ def wake_pending_agents(max_per_tick: int = 2) -> dict:
         agent_state = (state.get("agents") or {}).get(agent) or {}
         if agent_state.get("status") == "running" and _pid_running(agent_state.get("pid")):
             continue
+        # Per-provider daily cap: no single agent may absorb more than its share
+        # (claude-code's 401 once dumped EVERYTHING on codex). Over cap → skip.
+        if _provider_started_today(state, agent) >= PROVIDER_DAILY_TASK_CAP:
+            queued.append({"agent": agent, "status": "provider_cap_reached",
+                           "reason": f"{PROVIDER_DAILY_TASK_CAP} tasks today"})
+            continue
         result = _start_runner(agent, state)
         if result.get("status") == "running":
             slots -= 1
+            _bump_provider_today(state, agent)
         started.append(result)
 
     for agent in QUEUE_ONLY_AGENTS:
