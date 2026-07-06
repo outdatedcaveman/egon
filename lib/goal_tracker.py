@@ -76,9 +76,16 @@ def measure_mouseion_8080() -> dict:
         return _measure_zotero_desktop()
     try:
         total = c.execute("SELECT COUNT(*) FROM refs").fetchone()[0] or 0
+        # Honest "has a retrievable PDF" — a ref counts if it has a stored
+        # filename, a local file, OR a Drive backup id. Counting only pdf_path
+        # (a bare filename) under-reported 13.7% when the true coverage incl.
+        # Drive-backed copies is ~20% (Bruno 2026-07-06 — the '46k→34k drop'
+        # was this field-choice artifact, not a real loss).
         with_pdf = c.execute(
-            "SELECT COUNT(*) FROM refs WHERE pdf_path IS NOT NULL "
-            "AND pdf_path!=''").fetchone()[0]
+            "SELECT COUNT(*) FROM refs WHERE "
+            "(pdf_path IS NOT NULL AND pdf_path!='') OR "
+            "(pdf_local IS NOT NULL AND pdf_local!='') OR "
+            "(pdf_drive_id IS NOT NULL AND pdf_drive_id!='')").fetchone()[0]
         complete = c.execute(
             "SELECT COUNT(*) FROM refs WHERE title IS NOT NULL AND title!='' "
             "AND authors IS NOT NULL AND authors!='' "
