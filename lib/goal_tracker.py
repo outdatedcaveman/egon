@@ -4,8 +4,9 @@ Bruno 2026-07-04: his command was a goal ("Mouseion: ≥80% of entries with pdfs
 and ≥80% completion") but each dispatch ran one wave and stopped — nobody
 measured the number or kept going. This module closes that:
 
-  MEASURE  — real metrics from the actual data (Zotero library SQLite, opened
-             read-only/immutable so a running Zotero can't block or corrupt).
+  MEASURE  — real metrics from the actual data (the live Mouseion refs.db the
+             enrichment daemon writes, opened read-only/immutable; falls back to
+             the Zotero desktop library only if refs.db is absent).
   JUDGE    — target met → goal achieved, reported 🎯 and retired.
   DRIVE    — target not met and no wave in flight → dispatch the next wave via
              the same /orchestrator/dispatch Bruno's chat uses, with the CURRENT
@@ -38,6 +39,76 @@ MAX_WAVES = int(__import__("os").environ.get("EGON_GOAL_MAX_WAVES", "20"))
 
 # ── metrics ──────────────────────────────────────────────────────────────────
 
+def _mouseion_db() -> Path:
+    """The LIVE Mouseion/zoterpile reference DB the enrichment daemon writes.
+    Override with EGON_MOUSEION_DB. (The repo's refs.db is an empty stub; the
+    real store is under the per-user data dir.)"""
+    import os
+    env = os.environ.get("EGON_MOUSEION_DB")
+    if env and Path(env).exists():
+        return Path(env)
+    for p in (Path.home() / ".local" / "share" / "mouseion" / "refs.db",
+              Path.home() / ".local" / "share" / "zoterpile" / "refs.db"):
+        if p.exists() and p.stat().st_size > 1_000_000:
+            return p
+    return Path.home() / ".local" / "share" / "mouseion" / "refs.db"
+
+
+def measure_mouseion_8080() -> dict:
+    """Enrichment state of the REAL Mouseion library (refs.db the daemon writes),
+    NOT the Zotero desktop app. Bruno 2026-07-06: the metric had been reading
+    ~/Zotero/zotero.sqlite — a different, more pessimistic corpus — so the goal
+    loop and morning brief steered on the wrong gauge (33.9% vs the true 67.9%).
+
+    Contract preserved: pct_pdf, pct_complete, total, with_pdf, complete.
+    'complete' mirrors the Zotero predicate: title + authors + year +
+    (url|doi) + (publisher|journal|container_title). Extras: avg_completeness
+    (the daemon's own 0-1 score) and pending_queue (enrich_queue backlog), which
+    make the wave prompts and brief actionable. Falls back to the Zotero
+    measurement if refs.db is missing, so the loop never crashes."""
+    db = _mouseion_db()
+    if not db.exists():
+        return _measure_zotero_desktop()
+    try:
+        c = sqlite3.connect(f"file:{db.as_posix()}?mode=ro&immutable=1",
+                            uri=True, timeout=20)
+    except Exception:
+        return _measure_zotero_desktop()
+    try:
+        total = c.execute("SELECT COUNT(*) FROM refs").fetchone()[0] or 0
+        with_pdf = c.execute(
+            "SELECT COUNT(*) FROM refs WHERE pdf_path IS NOT NULL "
+            "AND pdf_path!=''").fetchone()[0]
+        complete = c.execute(
+            "SELECT COUNT(*) FROM refs WHERE title IS NOT NULL AND title!='' "
+            "AND authors IS NOT NULL AND authors!='' "
+            "AND year IS NOT NULL AND year!='' "
+            "AND ((url IS NOT NULL AND url!='') OR (doi IS NOT NULL AND doi!='')) "
+            "AND ((publisher IS NOT NULL AND publisher!='') "
+            "  OR (journal IS NOT NULL AND journal!='') "
+            "  OR (container_title IS NOT NULL AND container_title!=''))"
+        ).fetchone()[0]
+        try:
+            avg_c = c.execute("SELECT AVG(completeness) FROM refs").fetchone()[0]
+        except Exception:
+            avg_c = None
+        try:
+            pending = c.execute("SELECT COUNT(*) FROM enrich_queue "
+                                "WHERE status='pending'").fetchone()[0]
+        except Exception:
+            pending = None
+        return {"total": total,
+                "pct_pdf": round(100 * with_pdf / max(total, 1), 2),
+                "pct_complete": round(100 * complete / max(total, 1), 2),
+                "with_pdf": with_pdf, "complete": complete,
+                "avg_completeness": round(avg_c, 3) if avg_c is not None else None,
+                "pending_queue": pending,
+                "source": "mouseion_refs_db",
+                "measured_at": int(time.time())}
+    finally:
+        c.close()
+
+
 def _zotero_ro() -> sqlite3.Connection:
     db = Path.home() / "Zotero" / "zotero.sqlite"
     c = sqlite3.connect(f"file:{db.as_posix()}?mode=ro&immutable=1", uri=True,
@@ -46,11 +117,10 @@ def _zotero_ro() -> sqlite3.Connection:
     return c
 
 
-def measure_mouseion_8080() -> dict:
-    """% of top-level library items with a PDF, and % 'complete' (title +
-    creators + year + [url or DOI] + [publisher or publicationTitle]).
-    Field ids from fieldsCombined: title=1, date=6, url=13, publisher=23,
-    publicationTitle=38, DOI=59 — resolved dynamically anyway."""
+def _measure_zotero_desktop() -> dict:
+    """Fallback: the Zotero desktop library (used only if refs.db is absent).
+    % of top-level items with a PDF, and % 'complete' (title + creators + year
+    + [url or DOI] + [publisher or publicationTitle])."""
     c = _zotero_ro()
     try:
         f = {r["fieldName"]: r["fieldID"] for r in c.execute(
@@ -80,6 +150,7 @@ def measure_mouseion_8080() -> dict:
                 "pct_pdf": round(100 * with_pdf / max(total, 1), 2),
                 "pct_complete": round(100 * complete / max(total, 1), 2),
                 "with_pdf": with_pdf, "complete": complete,
+                "source": "zotero_desktop_fallback",
                 "measured_at": int(time.time())}
     finally:
         c.close()
@@ -234,10 +305,15 @@ def _dispatch_wave(goal: dict, m: dict) -> bool:
         prev = (goal.get("history") or [{}])[-1] if goal.get("history") else {}
         delta_pdf = round(m["pct_pdf"] - prev.get("pct_pdf", m["pct_pdf"]), 2)
         delta_c = round(m["pct_complete"] - prev.get("pct_complete", m["pct_complete"]), 2)
-        state = (f"CURRENT MEASURED STATE (live from the Zotero library, "
-                 f"{m['total']:,} items): {m['pct_pdf']}% have PDFs "
+        queued = m.get("pending_queue")
+        queue_txt = (f" enrich_queue backlog: {queued:,} refs still pending."
+                     if queued else "")
+        state = (f"CURRENT MEASURED STATE (live from the Mouseion refs.db, "
+                 f"{m['total']:,} refs): {m['pct_pdf']}% have PDFs "
                  f"({m['with_pdf']:,}), {m['pct_complete']}% are metadata-complete "
-                 f"({m['complete']:,}). Change since last wave: PDFs {delta_pdf:+}pp, "
+                 f"({m['complete']:,}); avg completeness "
+                 f"{m.get('avg_completeness', '?')}.{queue_txt} "
+                 f"Change since last wave: PDFs {delta_pdf:+}pp, "
                  f"completion {delta_c:+}pp.\n"
                  "Continue closing the gap AT SCALE: prioritize batch pipelines "
                  "over one-off fixes (bulk metadata enrichment via crossref/"
