@@ -220,8 +220,8 @@ def main() -> int:
         pass
     print(f"[snapshot] probing adapters -> {LOCAL_LAST_PASS} + {LAST_PASS}")
     r = snapshot(write=True)
-    n_ok = sum(1 for v in r["sources"].values()
-               if str(v.get("status", "")).lower() in ("ok", "alive"))
+    from lib.source_health import is_healthy
+    n_ok = sum(1 for v in r["sources"].values() if is_healthy(v))
     n_total = len(r["sources"])
     print(f"[snapshot] done in {r['duration_seconds']}s — "
           f"{n_ok}/{n_total} adapters OK")

@@ -6,12 +6,89 @@ Each tab is a PosterGridWidget; click a card to open it on the source site.
 """
 from __future__ import annotations
 
+import threading
 import webbrowser
 
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QTabWidget
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+                               QTabWidget)
 
 from egon_app.widgets import PosterGridWidget, SegmentedGridWidget, ItemListWidget
+
+# Media tabs → the snapshot source that backs each, for the honest health strip.
+_MEDIA_SOURCES = [
+    ("Letterboxd", "letterboxd"), ("YouTube", "youtube_history"),
+    ("YT Music", "youtube_music"), ("Pocket Casts", "pocketcasts"),
+    ("TV Time", "tvtime"), ("Kindle", "kindle"), ("Instapaper", "instapaper"),
+]
+_HEALTH_COLOR = {"fresh": "#30d158", "degraded": "#ff9f0a", "stale": "#ffd60a",
+                 "failed": "#ff453a", "off": "#5c5c66", "unconfigured": "#5c5c66"}
+
+
+class _SourceHealthStrip(QWidget):
+    """Honest per-source freshness/health row. Computes off the UI thread (it
+    reads snapshot files) and renders colored chips: fresh 🟢 · degraded 🟠 ·
+    stale 🟡 · failed 🔴. Bruno 2026-07-06 — replaces the wall of fake green."""
+    _ready = Signal(list)
+
+    def __init__(self, pairs, parent=None):
+        super().__init__(parent)
+        self._pairs = pairs
+        self._lay = QHBoxLayout(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(6)
+        self._msg = QLabel("checking source health…")
+        self._msg.setStyleSheet("color: #76767f; font-size: 11px;")
+        self._lay.addWidget(self._msg)
+        self._lay.addStretch(1)
+        self._ready.connect(self._render)
+        threading.Thread(target=self._work, daemon=True,
+                         name="media-health").start()
+
+    def refresh(self) -> None:
+        threading.Thread(target=self._work, daemon=True,
+                         name="media-health").start()
+
+    def _work(self) -> None:
+        try:
+            from lib import source_health as sh
+            hs = sh.for_sources(self._pairs)
+        except Exception:
+            hs = []
+        try:
+            self._ready.emit(hs)
+        except RuntimeError:
+            pass   # widget went away
+
+    def _render(self, hs) -> None:
+        while self._lay.count():
+            it = self._lay.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        if not hs:
+            lbl = QLabel("source health unavailable")
+            lbl.setStyleSheet("color: #76767f; font-size: 11px;")
+            self._lay.addWidget(lbl)
+            self._lay.addStretch(1)
+            return
+        counts: dict[str, int] = {}
+        for h in hs:
+            counts[h["health"]] = counts.get(h["health"], 0) + 1
+        summary = "  ".join(f"{n} {k}" for k, n in counts.items())
+        head = QLabel(f"Sources · {summary}")
+        head.setStyleSheet("color: #a0a0a8; font-size: 11px; font-weight: 600;")
+        self._lay.addWidget(head)
+        for h in hs:
+            chip = QLabel(f"{h['emoji']} {h['label']} · {h['age_label']}")
+            chip.setToolTip(h["reason"])
+            color = _HEALTH_COLOR.get(h["health"], "#76767f")
+            chip.setStyleSheet(
+                f"color: {color}; font-size: 11px; border: 1px solid #22252a; "
+                f"border-radius: 10px; padding: 2px 8px;")
+            self._lay.addWidget(chip)
+        self._lay.addStretch(1)
 
 
 # ── Instapaper (saved articles — list view, no cover art) ───────────────────
@@ -487,6 +564,11 @@ class MediaPage(QWidget):
                      "from the toolbar.")
         sub.setStyleSheet("color: #76767f;")
         outer.addWidget(sub)
+
+        # Honest source health — fresh/degraded/stale/failed per source, so a
+        # silently-failing refresh never hides behind a green "ok".
+        self._health = _SourceHealthStrip(_MEDIA_SOURCES)
+        outer.addWidget(self._health)
 
         tabs = QTabWidget()
         tabs.setStyleSheet(

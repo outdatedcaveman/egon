@@ -45,9 +45,11 @@ def trigger_pass(pass_kind: str = "daily") -> tuple[bool, str]:
     if pass_kind == "daily":
         try:
             from lib.snapshot import snapshot
+            from lib.source_health import is_healthy
             r = snapshot(write=True)
-            n_ok = sum(1 for v in r["sources"].values()
-                       if str(v.get("status", "")).lower() in ("ok", "alive"))
+            # Honest count: a source carrying an error did NOT succeed, even if
+            # it reported status="ok" (Bruno 2026-07-06).
+            n_ok = sum(1 for v in r["sources"].values() if is_healthy(v))
             if r.get("_write_error"):
                 return False, f"snapshot probed {n_ok}/{len(r['sources'])} sources but could not write state"
             msg = f"snapshot ok: {n_ok}/{len(r['sources'])} sources in {r['duration_seconds']}s"
