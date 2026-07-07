@@ -229,7 +229,16 @@ def _claude_credentials() -> dict[str, str]:
     if llm.get("orchestrator_use_api_key"):
         key = str(llm.get("claude_api_key") or "").strip()
         if key.startswith("sk-ant-"):
-            return {"ANTHROPIC_API_KEY": key}
+            # The `claude` CLI prefers Bruno's on-disk OAuth (expired → 401) over
+            # ANTHROPIC_API_KEY. Isolating CLAUDE_CONFIG_DIR makes it fall back to
+            # the key — verified 2026-07-06 ("ISO_OK"). A dedicated dir (not a
+            # temp) lets the CLI cache between runs and never sees the live login.
+            cfgdir = ROOT / "state" / "claude_orchestrator_home"
+            try:
+                cfgdir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            return {"ANTHROPIC_API_KEY": key, "CLAUDE_CONFIG_DIR": str(cfgdir)}
     return {}
 
 
