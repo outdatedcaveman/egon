@@ -77,6 +77,68 @@ def _spawn_http(parent: QWidget, method: str, url: str,
     thread.start()
     return thread
 
+class _SpendPanel(QFrame):
+    """Makes autonomous work VISIBLE (Bruno 2026-07-06: 'a faucet I can't see').
+    24h token spend by model + per-agent task count/wall-time/outcomes. Loads off
+    the UI thread from lib/spend_report (cheap read-only DB aggregation)."""
+    _ready = Signal(dict)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(f"QFrame {{ background:{_BG_CARD}; border:none; border-radius:8px; }}")
+        v = QVBoxLayout(self); v.setContentsMargins(12, 10, 12, 10); v.setSpacing(6)
+        title = QLabel("\U0001F4B8 SPEND & AGENTS · 24h")
+        title.setStyleSheet(f"color:{_TEXT}; font-weight:800; font-size:11px;")
+        v.addWidget(title)
+        self._body = QLabel("loading…")
+        self._body.setStyleSheet(f"color:{_MUTED}; font-size:11px;")
+        self._body.setWordWrap(True); self._body.setTextFormat(Qt.RichText)
+        v.addWidget(self._body)
+        self._ready.connect(self._render)
+        self.reload()
+
+    def reload(self) -> None:
+        import threading
+        threading.Thread(target=self._work, daemon=True, name="spend-panel").start()
+
+    def _work(self) -> None:
+        try:
+            from lib import spend_report
+            data = spend_report.summary(24)
+        except Exception as e:
+            data = {"error": str(e)[:120]}
+        try:
+            self._ready.emit(data)
+        except RuntimeError:
+            pass
+
+    @staticmethod
+    def _k(n: int) -> str:
+        return f"{n/1_000_000:.1f}M" if n >= 1_000_000 else f"{round(n/1000)}k"
+
+    def _render(self, data: dict) -> None:
+        if not data or data.get("error"):
+            self._body.setText(f"<span style='color:{_MUTED}'>spend data unavailable</span>")
+            return
+        tk = data.get("tokens", {}) or {}
+        ag = (data.get("agents", {}) or {}).get("agents", []) or []
+        lines = [f"<b>Tokens:</b> {self._k(tk.get('total_in',0))} in · "
+                 f"{self._k(tk.get('total_out',0))} out"]
+        for m in tk.get("models", [])[:3]:
+            lines.append(f"&nbsp;&nbsp;<span style='color:{_MUTED}'>{m['model']}: "
+                         f"{self._k(m['in'])}/{self._k(m['out'])} · {m['turns']} turns</span>")
+        if ag:
+            lines.append("<b>Agents:</b>")
+            for a in ag[:5]:
+                st = " · ".join(f"{v} {kk}" for kk, v in a["status"].items())
+                col = _OK if a["status"].get("completed") else _MUTED
+                lines.append(f"&nbsp;&nbsp;<span style='color:{col}'>{a['agent']}: "
+                             f"{a['tasks']} tasks · {a['wall_min']}min · {st}</span>")
+        else:
+            lines.append(f"<span style='color:{_MUTED}'>no agent tasks in 24h</span>")
+        self._body.setText("<br>".join(lines))
+
+
 class OrchestratorPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -396,6 +458,11 @@ class OrchestratorPage(QWidget):
         root.addWidget(self._chat)
 
         root.addWidget(self._build_hermes_panel())
+
+        # Spend & agents — the faucet, made visible (Bruno 2026-07-06).
+        self._spend_panel = _SpendPanel()
+        root.addWidget(self._spend_panel)
+
         # COMMAND panel consolidated into the chat above (one input, not two —
         # Bruno 2026-07-02). Panel kept but hidden: its _dispatch plumbing still
         # backs task edit/clarify flows.
@@ -759,6 +826,11 @@ class OrchestratorPage(QWidget):
             self._threads = [t for t in self._threads if t is not None and t.isRunning()]
         except Exception:
             self._threads = []
+        try:
+            if getattr(self, "_spend_panel", None) is not None:
+                self._spend_panel.reload()   # cheap DB read, off the UI thread
+        except Exception:
+            pass
         if len(self._threads) >= 5:
             return
         self._threads.append(_spawn_http(
