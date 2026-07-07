@@ -550,7 +550,12 @@ def _load_turbo(n_meta: int):
 
 
 def _load_index():
-    """Fallback engine: the raw float32 matrix (RAM-heavy)."""
+    """Fallback engine: the raw float32 matrix. MEMORY-MAPPED, not resident —
+    Bruno 2026-07-06: a plain np.load() here pinned the full 1.1GB in the _vecs
+    module global for the life of mind_service the instant turbovec ever hiccuped,
+    which is what drove the 1.4GB RAM and the freezes. mmap_mode='r' keeps the
+    matrix on disk (OS pages in only the rows a brute-force pass touches, and
+    reclaims them under pressure); the dot-product math is identical."""
     global _vecs
     meta = _load_meta()
     if meta is None or not VEC_PATH.exists():
@@ -558,7 +563,7 @@ def _load_index():
     if _vecs is not None:
         return _vecs, meta
     try:
-        _vecs = np.load(VEC_PATH)
+        _vecs = np.load(VEC_PATH, mmap_mode="r")
         if _vecs.shape[0] != len(meta):
             _vecs = None
             return None, None
