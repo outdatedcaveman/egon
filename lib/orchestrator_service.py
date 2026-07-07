@@ -140,6 +140,14 @@ class OrchestratorService:
 
                 trigger_hermes_runner()
                 hermes = "triggered"
+                # Gemini is an in-process agent too (API-backed; Antigravity's
+                # standalone LS is Google-deprecated). Drain its pending tasks
+                # on the same tick. Bruno 2026-07-06.
+                try:
+                    from lib.gemini_runner import trigger_gemini_runner
+                    trigger_gemini_runner()
+                except Exception:
+                    pass
             else:
                 hermes = "skipped"
         except Exception as e:

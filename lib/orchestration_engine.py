@@ -14,13 +14,18 @@ from lib.synthesis import _config, _free_ram_gb
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "state" / "mind.db"
-AGENTS = ("claude-code", "codex", "antigravity", "hermes")
+# gemini = in-process API agent (reasoning/analysis/planning/review; no file
+# edits). Antigravity kept for record but its standalone LS is Google-deprecated
+# ("no longer supported"), so it cannot run headless — gemini is the working
+# route to Gemini in the orchestrator (Bruno 2026-07-06).
+AGENTS = ("claude-code", "codex", "antigravity", "hermes", "gemini")
 DEFAULT_COOLDOWN_SECONDS = 1800
 _FALLBACK_AGENTS = {
-    "claude-code": ("codex", "antigravity", "hermes"),
-    "codex": ("claude-code", "antigravity", "hermes"),
-    "antigravity": ("codex", "claude-code", "hermes"),
-    "hermes": ("codex", "antigravity", "claude-code"),
+    "claude-code": ("codex", "gemini", "hermes"),
+    "codex": ("claude-code", "gemini", "hermes"),
+    "antigravity": ("codex", "claude-code", "gemini"),
+    "hermes": ("codex", "claude-code", "gemini"),
+    "gemini": ("codex", "claude-code", "hermes"),
 }
 _AGENT_LOG_GLOBS = {
     "claude-code": [str(Path.home() / ".claude" / "projects" / "*" / "*.jsonl")],
@@ -29,8 +34,9 @@ _AGENT_LOG_GLOBS = {
     # mind_agent_failure instead of passive transcript scraping.
     "codex": [],
     "antigravity": [],
-    # Hermes reports quota-shaped command failures directly from the runner.
+    # Hermes/Gemini report failures directly from their in-process runners.
     "hermes": [],
+    "gemini": [],
 }
 _QUOTA_MARKERS = (
     "429",
@@ -632,7 +638,9 @@ def _chat_decomposition(prompt: str, cfg: dict, timeout: float = 25.0) -> str | 
         "for these specialized agents: 'claude-code' (writes/edits code, runs tests), "
         "'codex' (writes/edits code, refactors, benchmarks — second engineer, use for "
         "parallelizable code work or when claude-code is busy/cooling down), "
-        "'antigravity' (high-level architecture, research, planning, mockups), "
+        "'gemini' (high-level architecture, research, planning, analysis, review, "
+        "synthesis — reasoning agent, CANNOT edit files, so give it thinking/writing "
+        "work and let a coder apply any resulting changes), "
         "'hermes' (background tasks, database checks, scripts).\n"
         "Output ONLY a raw JSON array of objects. Each object must have 'agent' (name string) and "
         "'task' (instruction string). No markdown, no triple backticks, no conversational preamble."
@@ -703,7 +711,7 @@ def decompose_prompt(prompt: str) -> list[dict]:
                 for t in tasks:
                     if isinstance(t, dict) and "agent" in t and "task" in t:
                         agent = str(t["agent"]).strip().lower()
-                        if agent in ("claude-code", "antigravity", "hermes", "codex"):
+                        if agent in ("claude-code", "antigravity", "hermes", "codex", "gemini"):
                             valid_tasks.append({
                                 "agent": agent,
                                 "task": str(t["task"]).strip()
