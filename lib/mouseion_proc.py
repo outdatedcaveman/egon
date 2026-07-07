@@ -81,6 +81,33 @@ def _venv_python(install: Path) -> Path | None:
     return None
 
 
+# 8GB box: the enrichment server + daemons use ~1GB. If we spawn them when RAM
+# is already tight, Windows swaps and the whole Egon GUI FREEZES (Bruno hit this
+# 2026-07-06). So gate on real headroom — the daemon simply waits for a calmer
+# moment instead of tipping the box over. See feedback-egon-ram-discipline.
+_RAM_FLOOR_GB = float(os.environ.get("EGON_MOUSEION_RAM_FLOOR_GB", "2.0"))
+
+
+def _avail_ram_gb() -> float:
+    """Available (not total) physical RAM in GB via MEMORYSTATUSEX."""
+    try:
+        import ctypes
+
+        class _MS(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32),
+                        ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+                        ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
+                        ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+                        ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+
+        ms = _MS()
+        ms.dwLength = ctypes.sizeof(_MS)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms))
+        return ms.ullAvailPhys / 1e9
+    except Exception:
+        return 99.0
+
+
 # ── liveness ────────────────────────────────────────────────────────────────
 
 def _port_listening(timeout: float = 0.5) -> bool:
@@ -134,6 +161,13 @@ def ensure_running(log_fn=None) -> bool:
     if not m.get("auto_start", False):
         _log("info", event="mouseion_autostart_disabled",
              hint="set egon-config.json mouseion.auto_start=true to enable")
+        return False
+
+    avail = _avail_ram_gb()
+    if avail < _RAM_FLOOR_GB:
+        _log("info", event="mouseion_ram_gated",
+             avail_gb=round(avail, 1), floor_gb=_RAM_FLOOR_GB,
+             hint="not enough free RAM — deferring so the GUI can't freeze")
         return False
 
     install = _install_path()
