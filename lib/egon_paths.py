@@ -70,9 +70,22 @@ STATE_DIR = _env_path("EGON_STATE_DIR", EGON_ROOT / "state")
 CONNECT_INDEX_DIR = _env_path("EGON_CONNECT_INDEX_DIR", STATE_DIR / "connect_index")
 FILE_EXTRACTS_DIR = _env_path("EGON_FILE_EXTRACTS_DIR", STATE_DIR / "file_extracts")
 
-# Optional cloud/Drive mirror. When the directory is absent, Egon's snapshot
-# logic simply uses the newest available local file, so nothing breaks.
-VAULT_ROOT = _env_path("EGON_VAULT_ROOT", HOME / "EgonVault")
+# Cloud/Drive mirror. Bruno 2026-07-07 ("everything ultimately on Drive"):
+# default the vault to Google Drive (streaming → offsite backup + frees the
+# small local C:) when a Drive mount is present; fall back to a local dir so a
+# Drive outage never breaks path resolution. Snapshot logic is best-effort on
+# the vault write, so a temporarily-absent Drive degrades gracefully.
+def _default_vault_root() -> Path:
+    for cand in (Path("G:/My Drive/EgonVault"), HOME / "Google Drive" / "EgonVault"):
+        try:
+            if cand.parent.exists():
+                return cand
+        except Exception:
+            pass
+    return HOME / "EgonVault"
+
+
+VAULT_ROOT = _env_path("EGON_VAULT_ROOT", _default_vault_root())
 VAULT_RESOURCES = VAULT_ROOT / "050 - Resources"
 VAULT_EGON = VAULT_RESOURCES / "egon"
 VAULT_STATE = VAULT_EGON / "state"
