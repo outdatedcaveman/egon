@@ -23,6 +23,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # egon root → import lib.*
 from lib import drive
 from lib.egon_paths import STATE_DIR
 

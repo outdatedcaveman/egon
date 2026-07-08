@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import sys
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # egon root → import lib.*
 from lib import drive
 from lib.egon_paths import STATE_DIR, CONNECT_INDEX_DIR
 
