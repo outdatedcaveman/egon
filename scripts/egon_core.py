@@ -416,6 +416,34 @@ BRIEF_HOUR = int(os.environ.get("EGON_BRIEF_HOUR", "8"))
 _brief_running = False
 
 
+_drive_backup_date = ""
+
+
+def check_drive_backup(u: "Unit") -> None:
+    """Daily offsite backup of the HOT local files (mind.db + connect_index) to
+    Google Drive — Bruno 2026-07-07 ('everything on Drive, but operate if Drive
+    is down'). Hot data stays LOCAL (a live SQLite/mmap'd matrix would corrupt
+    on a streaming Drive mount); this pushes a consistent copy to Drive once a
+    day when Drive is up + the box is idle. Subprocessed (I/O work, never
+    in-process)."""
+    global _drive_backup_date
+    try:
+        from lib import drive as _drive
+        today = datetime.now().strftime("%Y-%m-%d")
+        if not _drive.is_available():
+            u.ok = True; u.detail = "drive down — skip"; return
+        if _drive_backup_date == today:
+            u.ok = True; u.detail = "backed up today"; return
+        if _idle_seconds() < HEAVY_REAP_IDLE_S:
+            u.ok = True; u.detail = "waiting for idle"; return
+        _drive_backup_date = today
+        subprocess.Popen([str(PYW), str(ROOT / "scripts" / "backup_hot_to_drive.py")],
+                         creationflags=0x08000000, close_fds=True)
+        u.ok = True; u.detail = "hot backup → Drive dispatched"
+    except Exception as e:
+        u.ok = True; u.detail = f"drive_backup err: {str(e)[:50]}"
+
+
 def check_brief(u: "Unit") -> None:
     """Morning briefing (Bruno 2026-07-04, improvement #1): once a day after
     BRIEF_HOUR, one proactive digest to the chat + a push — overnight deltas,
@@ -1578,7 +1606,8 @@ def main() -> int:
              "tunnel": Unit("tunnel"),
              "reporter": Unit("reporter"),
              "goals": Unit("goals"),
-             "brief": Unit("brief")}
+             "brief": Unit("brief"),
+             "drive_backup": Unit("drive_backup")}
     _reap_heavy("startup-orphans")   # clear any heavy jobs a prior instance left
     while True:
         try:
@@ -1606,6 +1635,7 @@ def main() -> int:
             check_reporter(units["reporter"])
             check_goals(units["goals"])
             check_brief(units["brief"])
+            check_drive_backup(units["drive_backup"])
             _keep_awake_while_heavy()
             write_health(units)
         except Exception as e:
