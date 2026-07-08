@@ -26,6 +26,7 @@ API:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import hashlib
@@ -36,6 +37,19 @@ from typing import Iterable
 EGON = Path(__file__).resolve().parents[1]
 ROOT = EGON / "state" / "restore_points"
 JOURNAL = ROOT / "journal.jsonl"
+
+# Bruno 2026-07-07 (disk filled AGAIN — restore_points hit 26.7GB / 588 folders):
+# these points are created on EVERY Claude transcript-compact + self-heal (many
+# per minute in a long session). Two runaway causes, both fixed here so ALL
+# callers are bounded:
+#  1. huge blobs (the ~0.5GB mind.db / archived transcripts) were copied whole
+#     into every point — skip anything over MAX_SNAPSHOT_FILE_BYTES (it's
+#     recorded by reference; the .archived transcript is already a backup, and
+#     mind.db has its own daily backup).
+#  2. prune() was only wired to a manual CLI, never the auto path — so create()
+#     now self-prunes to KEEP_POINTS after every snapshot.
+MAX_SNAPSHOT_FILE_BYTES = int(os.environ.get("EGON_RP_MAX_FILE_MB", "40")) * 1024 * 1024
+KEEP_POINTS = int(os.environ.get("EGON_RP_KEEP", "40"))
 
 # Files that every snapshot captures (when they exist). Add to this list when
 # new state files become user-data-relevant.
@@ -101,10 +115,17 @@ def create(label: str, reason: str = "", extra_files: Iterable[Path] = ()) -> di
             src = Path(src)
             if not src.exists() or not src.is_file():
                 continue
+            size = src.stat().st_size
+            if size > MAX_SNAPSHOT_FILE_BYTES:
+                # Too big to copy on every event — record by reference so the
+                # meta still documents it, but don't fill the disk. (mind.db /
+                # archived transcripts already have their own backups.)
+                captured.append({"src": str(src), "skipped_large": size,
+                                 "note": "not copied (over size cap)"})
+                continue
             dest = _snapshot_dest(point_dir, src, used_names)
             shutil.copy2(src, dest)
-            captured.append({"src": str(src), "dest": str(dest),
-                             "size": src.stat().st_size})
+            captured.append({"src": str(src), "dest": str(dest), "size": size})
         except Exception as e:
             captured.append({"src": str(src), "error": str(e)[:200]})
 
@@ -121,6 +142,12 @@ def create(label: str, reason: str = "", extra_files: Iterable[Path] = ()) -> di
         json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     _journal_append({"event": "created", **{k: meta[k] for k in ("point_id","ts","label","reason")}})
+    # Self-prune so the auto-creation path (Claude compact / self-heal, many per
+    # minute) can never run away again. Best-effort; never let it break create().
+    try:
+        prune(KEEP_POINTS)
+    except Exception:
+        pass
     return meta
 
 

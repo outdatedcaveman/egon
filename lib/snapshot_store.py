@@ -47,7 +47,29 @@ def write_snapshot(source: str, payload: dict, when: datetime | None = None) -> 
     except OSError as e:
         log.warning("vault write failed for %s/%s: %s", source, name, e)
 
+    # Keep only the most recent N dated snapshots per source. These were kept
+    # forever (Bruno 2026-07-07: snapshots hit ~5GB, zotero alone 2.4GB across
+    # 25 dailies) — a daily-refreshed source needs a short history, not months.
+    _prune_source(LOCAL_ROOT / source)
+    _prune_source(VAULT_ROOT / source)
     return local, vault_ok
+
+
+import os as _os
+_KEEP_SNAPSHOTS = int(_os.environ.get("EGON_SNAPSHOT_KEEP", "7"))
+
+
+def _prune_source(source_dir: Path, keep: int = _KEEP_SNAPSHOTS) -> None:
+    """Delete all but the newest `keep` dated *.json snapshots in a source dir."""
+    try:
+        files = sorted(source_dir.glob("*.json"), reverse=True)   # newest first by name (YYYY-MM-DD)
+        for old in files[keep:]:
+            try:
+                old.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def latest_snapshot(source: str) -> dict | None:
