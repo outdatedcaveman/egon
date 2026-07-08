@@ -538,6 +538,17 @@ def check_mind(u: Unit) -> None:
         log("info", "mind_probe_slow", ms=ms, ok=ok, busy=busy, fails=u.fails)
     if not confirmed_down or not u.can_restart():
         return
+    # DEFINITIVE up-check before spawning: if a live process still owns :8000,
+    # mind IS up — it just answered slowly or with a transient non-"ok" status
+    # under load. Spawning a replacement then is a doomed duplicate the mutex
+    # instantly kills → the flapping churn Bruno saw (5 instances, "attempt=26").
+    # Only restart when :8000 has NO listener (the process is actually gone).
+    # Bruno 2026-07-08.
+    if _tcp_ok("127.0.0.1", 8000, timeout=1.0):
+        u.fails = 0
+        u.ok = True
+        u.detail = f"up but slow ({ms}ms) — NOT restarting (:8000 owned)"
+        return
     u.mark_restart()
     log("warn", "mind_down_restarting", attempt=u.restarts)
     try:
