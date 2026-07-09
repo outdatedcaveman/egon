@@ -52,6 +52,10 @@ _QUOTA_MARKERS = (
     "overloaded",
     "credits exhausted",
     "billing hard limit",
+    # Anthropic API with an empty balance: "Credit balance is too low" (HTTP
+    # 400). Same remedy as quota — cool the agent down + reroute the task —
+    # instead of hard-failing it (seen on claude-code waves 3+4, 2026-07-09).
+    "credit balance is too low",
 )
 _ERROR_MARKERS = (
     "api_error",
@@ -711,7 +715,14 @@ def decompose_prompt(prompt: str) -> list[dict]:
                 for t in tasks:
                     if isinstance(t, dict) and "agent" in t and "task" in t:
                         agent = str(t["agent"]).strip().lower()
-                        if agent in ("claude-code", "antigravity", "hermes", "codex", "gemini"):
+                        if agent == "antigravity":
+                            # Antigravity can't run headless (Google-deprecated
+                            # standalone LS) — a decomposed task assigned to it
+                            # just defers 15min then reroutes. Route the LLM's
+                            # antigravity picks straight to gemini (same brain,
+                            # working runner). 2026-07-09, task #80.
+                            agent = "gemini"
+                        if agent in ("claude-code", "hermes", "codex", "gemini"):
                             valid_tasks.append({
                                 "agent": agent,
                                 "task": str(t["task"]).strip()
