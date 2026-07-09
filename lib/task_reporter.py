@@ -20,10 +20,12 @@ seconds; the core loop must not block). State in state/task_report_state.json.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import subprocess
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from lib.orchestration_engine import DB_PATH, ROOT, append_task_event, update_task_status
@@ -32,6 +34,44 @@ STATE = ROOT / "state" / "task_report_state.json"
 _running = threading.Event()
 
 _SKIP_MARKERS = ("canary", "smoke", "__orchestrator")
+
+# Filenames worth matching against git history (source/docs, not noise).
+_FILE_TOKEN = re.compile(r"[\w][\w/\\.-]*\.(?:py|js|ts|cs|java|json|md|html|css|ps1|vbs)\b")
+
+
+def _git_evidence(desc: str, evidence: str, created_at: int) -> str | None:
+    """GIT-AWARE verification: if a file named in the task appears in a commit
+    made AFTER the task was created, the work demonstrably landed — do not
+    requeue. (The LLM verifier false-negatived task #70 'no insight_cards.py
+    artifact evidence' while insight_cards.py sat committed in a1cac9e; the
+    retry burned quota for nothing. Bruno 2026-07-06.) Returns 'file@commit'
+    proof, or None."""
+    names = set()
+    for m in _FILE_TOKEN.finditer(f"{desc} {evidence}"):
+        base = m.group(0).replace("\\", "/").rstrip(".").split("/")[-1].lower()
+        if len(base) > 5:                     # skip 1.py-style noise
+            names.add(base)
+    if not names:
+        return None
+    since = datetime.fromtimestamp(max(0, int(created_at or 0))).strftime("%Y-%m-%d %H:%M")
+    try:
+        out = subprocess.run(
+            ["git", "log", f"--since={since}", "--name-only", "--format=%h"],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=15,
+            creationflags=0x08000000).stdout or ""
+    except Exception:
+        return None
+    commit = "?"
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if re.fullmatch(r"[0-9a-f]{7,12}", line):
+            commit = line
+            continue
+        if line.replace("\\", "/").split("/")[-1].lower() in names:
+            return f"{line}@{commit}"
+    return None
 
 
 def _load_state() -> dict:
@@ -126,7 +166,8 @@ def report_new_outcomes() -> dict:
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=8)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT id, agent_name, status, sub_task_desc FROM orchestrator_tasks "
+        "SELECT id, agent_name, status, sub_task_desc, created_at "
+        "FROM orchestrator_tasks "
         "WHERE id > ? AND status IN ('completed','failed') ORDER BY id",
         (last,)).fetchall()
     lines: list[str] = []
@@ -140,6 +181,10 @@ def report_new_outcomes() -> dict:
         evidence = _events_tail(conn, t["id"])
         if t["status"] == "completed":
             ok, why = _verify(desc, evidence)
+            if not ok:
+                proof = _git_evidence(desc, evidence, t["created_at"])
+                if proof:
+                    ok, why = True, f"git evidence {proof}"
             if not ok and not _already_requeued(conn, t["id"]):
                 update_task_status(t["id"], "pending")
                 append_task_event(t["id"], t["agent_name"], "verify_requeued",
