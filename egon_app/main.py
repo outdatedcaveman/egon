@@ -199,6 +199,45 @@ def main() -> int:
     app.installEventFilter(_tamer)
     app._egon_scroll_tamer = _tamer  # type: ignore[attr-defined]
     _trace("QApplication created")
+
+    # GUI hang black-box (Bruno 2026-07-12: woke to "(Not Responding)" AGAIN,
+    # UI thread dead-blocked while every service answered in ms — and nothing
+    # recorded WHAT it was blocked on). Same doctrine as the phone's CrashLog:
+    # a freeze must leave evidence. A UI-thread QTimer beats a heartbeat every
+    # 2s; a daemon watchdog checks it every 5s. If the heartbeat is >20s stale,
+    # it dumps EVERY thread's stack to state/gui_hang_dump.txt — the UI thread's
+    # top frame IS the blocking call — then keeps watching (one dump per stall).
+    import threading as _wd_threading
+    import faulthandler as _faulthandler
+    import time as _wd_time
+    from PySide6.QtCore import QTimer as _WdTimer
+    _wd_beat = {"t": _wd_time.time()}
+    _wd_timer = _WdTimer()
+    _wd_timer.setInterval(2000)
+    _wd_timer.timeout.connect(lambda: _wd_beat.__setitem__("t", _wd_time.time()))
+    _wd_timer.start()
+    app._egon_hang_watchdog_timer = _wd_timer  # type: ignore[attr-defined]
+
+    def _wd_watch() -> None:
+        dumped = False
+        dump_path = _ROOT / "state" / "gui_hang_dump.txt"
+        while True:
+            _wd_time.sleep(5)
+            stall = _wd_time.time() - _wd_beat["t"]
+            if stall > 20 and not dumped:
+                try:
+                    with open(dump_path, "a", encoding="utf-8") as fh:
+                        fh.write(f"\n=== UI thread stalled {stall:.0f}s @ "
+                                 f"{_wd_time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+                        _faulthandler.dump_traceback(file=fh, all_threads=True)
+                    dumped = True
+                except Exception:
+                    pass
+            elif stall < 5:
+                dumped = False   # recovered; arm for the next stall
+
+    _wd_threading.Thread(target=_wd_watch, name="gui-hang-watchdog",
+                         daemon=True).start()
     app.setApplicationName("Egon")
     app.setOrganizationName("outdatedcaveman")
     app.setApplicationDisplayName("Egon")
