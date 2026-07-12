@@ -186,10 +186,11 @@ def _item_full_text(it: dict, source: str) -> str:
 
 
 # ── corpus ───────────────────────────────────────────────────────────────────
-def _archive_items() -> list[dict]:
-    """Every snapshot item across all sources, split into chunks if long."""
+def _archive_items():
+    """Every snapshot item across all sources, split into chunks if long.
+    GENERATOR (2026-07-12): materializing ~1M full-text items OOM-killed both
+    build() and reembed on the 8GB box — stream, never accumulate."""
     from lib import cross_search
-    out = []
     for source in cross_search._all_sources():
         snap = cross_search._latest_snapshot_for(source)
         if not snap:
@@ -210,30 +211,29 @@ def _archive_items() -> list[dict]:
             if len(chunks) <= 1:
                 # Keep it simple if it's small (or empty)
                 snippet_text = sub if sub else (full_text[:200] if full_text else "")
-                out.append({
+                yield {
                     "uid": parent_uid,
                     "source": source,
                     "title": title[:200],
                     "url": url,
                     "snippet": snippet_text[:200],
                     "text": (title + " " + (snippet_text or ""))[:_MAX_TEXT]
-                })
+                }
             else:
                 for idx, chunk in enumerate(chunks):
-                    out.append({
+                    yield {
                         "uid": f"{parent_uid}:c{idx}",
                         "source": source,
                         "title": f"{title[:170]} (Part {idx + 1})",
                         "url": url,
                         "snippet": chunk,
                         "text": chunk
-                    })
-    return out
+                    }
 
 
-def _memory_items() -> list[dict]:
+def _memory_items():
     if not DB_PATH.exists():
-        return []
+        return
     try:
         con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=4)
         con.row_factory = sqlite3.Row
@@ -241,8 +241,7 @@ def _memory_items() -> list[dict]:
             "SELECT id, kind, content, tags FROM memory").fetchall()
         con.close()
     except Exception:
-        return []
-    out = []
+        return
     for r in rows:
         content = (r["content"] or "").strip()
         if not content:
@@ -254,34 +253,32 @@ def _memory_items() -> list[dict]:
         chunks = chunk_text(full_text, max_chars=900, overlap_chars=150)
         
         if len(chunks) <= 1:
-            out.append({
+            yield {
                 "uid": parent_uid,
                 "source": "mind-memory",
                 "title": title,
                 "url": None,
                 "snippet": content[:200],
                 "text": (content + " " + tags)[:_MAX_TEXT]
-            })
+            }
         else:
             for idx, chunk in enumerate(chunks):
-                out.append({
+                yield {
                     "uid": f"{parent_uid}:c{idx}",
                     "source": "mind-memory",
                     "title": f"{title} (Part {idx + 1})",
                     "url": None,
                     "snippet": chunk,
                     "text": chunk
-                })
-    return out
+                }
 
 
-def _file_items() -> list[dict]:
+def _file_items():
     """Local + Drive files from state/files_index.jsonl (lib/file_indexer).
     Metadata-only tier by default, upgraded to full-text chunking if hydrated extract is on disk."""
     path = ROOT / "state" / "files_index.jsonl"
     if not path.exists():
-        return []
-    out = []
+        return
     try:
         with path.open(encoding="utf-8") as f:
             for line in f:
@@ -318,26 +315,26 @@ def _file_items() -> list[dict]:
                 if file_text:
                     chunks = chunk_text(file_text, max_chars=900, overlap_chars=150)
                     for idx, chunk in enumerate(chunks):
-                        out.append({
+                        yield {
                             "uid": f"{parent_uid}:c{idx}",
                             "source": "files",
                             "title": f"{name[:170]} (Part {idx + 1})",
                             "url": url,
                             "snippet": chunk[:900],
                             "text": (meta_text + "\n" + chunk).strip()
-                        })
+                        }
                 else:
-                    out.append({
+                    yield {
                         "uid": parent_uid,
                         "source": "files",
                         "title": name[:200],
                         "url": url,
                         "snippet": (it.get("path") or "")[-200:],
                         "text": meta_text[:_MAX_TEXT]
-                    })
+                    }
     except Exception:
-        return []
-    return out
+        return
+    return
 
 
 def _hash(text: str) -> str:
@@ -354,7 +351,9 @@ def build(force: bool = False) -> dict:
         _building = True
     try:
         INDEX_DIR.mkdir(parents=True, exist_ok=True)
-        corpus = _archive_items() + _memory_items() + _file_items()
+        # chain: the three sources stream; one flat list, no concat copies
+        import itertools
+        corpus = list(itertools.chain(_archive_items(), _memory_items(), _file_items()))
         if not corpus:
             return {"status": "empty"}
         # Load existing index for incremental reuse.
@@ -633,4 +632,3 @@ def search(query: str, top_k: int = 40, min_score: float = 0.18) -> list[dict]:
             break
         m = meta[i]
         out.append({**m, "score": round(s, 3)})
-    return out

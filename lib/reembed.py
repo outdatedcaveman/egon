@@ -160,7 +160,9 @@ def _snapshot_corpus(limit: int | None = None) -> int:
     STAGING_DIR.mkdir(parents=True, exist_ok=True)
     n = 0
     with CORPUS_FILE.open("w", encoding="utf-8") as f:
-        for it in (si._archive_items() + si._memory_items() + si._file_items()):
+        import itertools
+        # stream: peak RAM = ONE item (the triple-concat OOM-killed at ~1M items)
+        for it in itertools.chain(si._archive_items(), si._memory_items(), si._file_items()):
             rec = {"m": {**si._slim(it), "h": si._hash(it["text"])}, "t": it["text"]}
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             n += 1
@@ -170,13 +172,17 @@ def _snapshot_corpus(limit: int | None = None) -> int:
 
 
 def _load_meta_and_count() -> int:
-    """Write meta.json from the corpus snapshot (once) and return N."""
-    meta, n = [], 0
-    with CORPUS_FILE.open(encoding="utf-8") as f:
+    """Write meta.json from the corpus snapshot (once) and return N.
+    Stream-written: accumulating ~1M meta dicts was a second OOM bomb."""
+    n = 0
+    with CORPUS_FILE.open(encoding="utf-8") as f,          META_FILE.open("w", encoding="utf-8") as mf:
+        mf.write("[")
         for line in f:
-            meta.append(json.loads(line)["m"])
+            if n:
+                mf.write(",")
+            mf.write(json.dumps(json.loads(line)["m"], ensure_ascii=False))
             n += 1
-    META_FILE.write_text(json.dumps(meta), encoding="utf-8")
+        mf.write("]")
     return n
 
 
