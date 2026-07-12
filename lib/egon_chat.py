@@ -283,9 +283,21 @@ def _detect_order(text: str) -> bool:
             "user's machine/projects (build/fix/run/change something), rather "
             "than a question, discussion, or status request? Reply strict JSON: "
             '{"order": true|false}\n\nMESSAGE:\n' + text[:1200])
-        out = chat([{"role": "user", "content": prompt}], provider="claude",
-                   model="claude-haiku-4-5-20251001", inject_context=False,
-                   temperature=0.0, max_tokens=24)
+        # Provider chain: haiku died silently when the Anthropic credit ran
+        # out (2026-07-11) and EVERY order fell through to plain chat. Try
+        # claude, then gemini (free tier) — detection must not depend on one
+        # provider's billing state.
+        out = ""
+        for prov, mdl in (("claude", "claude-haiku-4-5-20251001"),
+                          ("gemini", None)):
+            try:
+                out = chat([{"role": "user", "content": prompt}], provider=prov,
+                           model=mdl, inject_context=False,
+                           temperature=0.0, max_tokens=24)
+                if out:
+                    break
+            except Exception:
+                continue
         i, j = out.find("{"), out.rfind("}")
         return bool(json.loads(out[i:j + 1]).get("order")) if i >= 0 else False
     except Exception:
@@ -331,6 +343,14 @@ def _log_chat_turn(user_text: str, reply_text: str, dispatched: bool) -> None:
 
 _GOAL_CMD = re.compile(r"^\s*(continue|resume|pause|cancel)\s+goal\s+([\w.-]+)\s*$",
                        re.IGNORECASE)
+
+# Bare approval of the assistant's previous proposal — deterministic, so a
+# "Yes, do it" can never again silently fall through the LLM order detector
+# (the 2026-07-11 overnight no-dispatch). EN + PT forms Bruno actually uses.
+_AFFIRM = re.compile(
+    r"^\s*(?:(?:yes|yep|yeah|ok(?:ay)?|sure|go(?:\s+ahead)?|do\s+it|proceed|"
+    r"please\s+do|make\s+it\s+so|sim|pode(?:\s+ir)?|faz|bora|manda)"
+    r"[\s!.,]*){1,3}$", re.IGNORECASE)
 
 
 def _maybe_register_goal(order_text: str) -> str | None:
@@ -382,8 +402,28 @@ def stream_chat_with_dispatch(messages: list[dict], provider: str = DEFAULT_PROV
         yield f"✅ {result}"
         return
     dispatched: dict | None = None
-    if msgs and msgs[-1].get("role") == "user" and _detect_order(last):
-        dispatched = _dispatch_order(last)
+    order_text: str | None = None
+    if msgs and msgs[-1].get("role") == "user":
+        low = (last or "").strip()
+        if low.lower().startswith(("dispatch:", "order:")):
+            # Guaranteed manual trigger — zero LLM in the loop.
+            order_text = low.split(":", 1)[1].strip() or None
+        elif _AFFIRM.match(low):
+            # Approval of the assistant's own proposal ("Yes, do it") — the
+            # 2026-07-11 overnight failure: this fell through the order
+            # detector, nothing dispatched, and the model NARRATED a dispatch
+            # that never happened. Deterministic now: a bare affirmation
+            # queues the plan the assistant just proposed.
+            prev = next((m for m in reversed(msgs[:-1])
+                         if m.get("role") == "assistant"), None)
+            plan = _text_of(prev.get("content", ""))[:2400] if prev else ""
+            if plan.strip():
+                order_text = ("Bruno approved this plan from the Mission "
+                              "Control chat — execute it:\n" + plan)
+        elif _detect_order(low):
+            order_text = low
+    if order_text:
+        dispatched = _dispatch_order(order_text)
     if dispatched:
         tasks = (dispatched.get("tasks") or dispatched.get("sub_tasks") or [])
         lines = []
@@ -401,6 +441,17 @@ def stream_chat_with_dispatch(messages: list[dict], provider: str = DEFAULT_PROV
                 "describe this to him):\n" + ("\n".join(lines) if lines
                 else json.dumps(dispatched)[:600]) + goal_note)
         msgs.insert(len(msgs) - 1, {"role": "user", "content": note})
+    elif msgs and msgs[-1].get("role") == "user":
+        # HONESTY GUARD (2026-07-12): with no dispatch signal the model used to
+        # invent one ("the orchestrator has already queued…" — it hadn't).
+        # Ground every non-dispatch turn in the truth.
+        msgs.insert(len(msgs) - 1, {"role": "user", "content": (
+            "SYSTEM NOTE (not from Bruno): nothing was dispatched to the "
+            "orchestrator this turn, and you CANNOT execute, queue, or run "
+            "anything yourself — NEVER claim work was queued, started, or is "
+            "running. If Bruno wants execution, he can approve a concrete plan "
+            "(reply 'yes'/'do it') or write 'dispatch: <order>' — both queue "
+            "for real through the orchestrator.")})
     chunks: list[str] = []
     for piece in stream_chat(msgs, provider=provider, model=model,
                              inject_context=True, temperature=temperature,
