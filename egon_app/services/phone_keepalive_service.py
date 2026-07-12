@@ -335,6 +335,44 @@ def _device_wifi_ip(adb_path: Path, serial: str) -> str | None:
     return m.group(1) if m else None
 
 
+_last_share_heal_sig = ""
+
+
+def _heal_share_sheet(adb_path: Path, target: str) -> None:
+    """Motorola firmware bug, diagnosed from the live crash buffer 2026-07-12:
+    the SYSTEM share sheet (com.android.intentresolver / ChooserActivity)
+    crash-loops with TransactionTooLargeException (~1MB parcel) inside
+    MotoSecurityManager.processShareIntentQueryList — so sharing from ANY app
+    (Facebook, Chrome, …) dies. 11 crashes logged 07-05→07-11; Bruno had it
+    'fixed' twice before and it kept returning because the chooser's cached
+    target state regrows past the 1MB binder limit (the always-running Vault
+    Profile doubles the per-profile target list). `pm clear` on the resolver
+    reliably restores sharing (verified live: crash-free chooser right after),
+    so: whenever a NEW resolver crash appears in the buffer, heal it
+    automatically and tell Bruno. Cache-only clear — no user data involved."""
+    global _last_share_heal_sig
+    rc, out = _adb(adb_path, "-s", target, "logcat", "-b", "crash", "-d",
+                   "-t", "400", timeout=12)
+    if rc != 0 or not out:
+        return
+    sig = ""
+    for line in out.splitlines():
+        if "Process: com.android.intentresolver" in line:
+            sig = line.strip()[:40]        # timestamp+pid → unique per crash
+    if not sig or sig == _last_share_heal_sig:
+        return
+    rc, _ = _adb(adb_path, "-s", target, "shell", "pm", "clear",
+                 "com.android.intentresolver", timeout=10)
+    _last_share_heal_sig = sig
+    _log("info", "share_sheet_healed", crash=sig, ok=(rc == 0))
+    try:
+        from lib import push_notify
+        push_notify.push("Egon phone",
+                         "Share sheet had crashed — self-healed, sharing works again.")
+    except Exception:
+        pass
+
+
 def _relock_via_wireless(adb_path: Path) -> str | None:
     """NO CABLE NEEDED (Bruno 2026-07-11: 'make sure I don't have to toggle it
     another time'): after a reboot the BootReceiver / app-open re-enables
@@ -619,6 +657,8 @@ def _run_loop(stop: threading.Event) -> None:
                 _ensure_a11y(adb_path, target, True)
                 # Keep the bubble overlay grant alive too (reinstall-safe).
                 _ensure_overlay(adb_path, target)
+                # Self-heal the Motorola share-sheet crash loop (see helper).
+                _heal_share_sheet(adb_path, target)
                 last_wifi_assert = now
 
             if now - last_reassert > REASSERT_INTERVAL_S:
