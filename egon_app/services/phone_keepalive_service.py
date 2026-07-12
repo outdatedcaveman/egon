@@ -363,12 +363,24 @@ def _heal_share_sheet(adb_path: Path, target: str) -> None:
         return
     rc, _ = _adb(adb_path, "-s", target, "shell", "pm", "clear",
                  "com.android.intentresolver", timeout=10)
+    # 2026-07-12, round 2: pm clear alone stopped holding — the ~1.04MB parcel
+    # is REBUILT from the live target list every launch (129 SEND activities
+    # x2 profiles x Moto serialization ≈ 4% over the 1MB binder cap). Stopping
+    # the always-running secondary 'Vault Profile' (user 11) halves it —
+    # verified: chooser crash-free immediately after `am stop-user -f 11`.
+    # Coupled to crash detection on purpose: the profile is only stopped when
+    # sharing actually broke (it restarts on reboot / when Bruno opens it, and
+    # if he's actively using Moto Secure with no crash, we never touch it).
+    rc2, _ = _adb(adb_path, "-s", target, "shell", "am", "stop-user", "-f", "11",
+                  timeout=12)
     _last_share_heal_sig = sig
-    _log("info", "share_sheet_healed", crash=sig, ok=(rc == 0))
+    _log("info", "share_sheet_healed", crash=sig, cleared=(rc == 0),
+         vault_profile_stopped=(rc2 == 0))
     try:
         from lib import push_notify
         push_notify.push("Egon phone",
-                         "Share sheet had crashed — self-healed, sharing works again.")
+                         "Share sheet had crashed — self-healed (cache cleared + "
+                         "Vault Profile stopped). Sharing works again.")
     except Exception:
         pass
 
