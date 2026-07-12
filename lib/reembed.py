@@ -111,16 +111,31 @@ def _validate_index_dir(directory: Path) -> tuple[bool, str]:
     if missing:
         return False, "missing " + ",".join(missing)
     try:
-        meta = json.loads((directory / "meta.json").read_text(encoding="utf-8"))
         vec = np.lib.format.open_memmap(directory / "vectors.npy", mode="r")
     except Exception as e:
-        return False, f"unreadable index: {str(e)[:80]}"
+        return False, f"unreadable index: {type(e).__name__} {str(e)[:70]}"
     items = int(complete.get("items") or 0)
     dim = int(complete.get("dim") or 0)
-    if len(meta) != items:
-        return False, f"meta/items mismatch {len(meta)} != {items}"
     if len(vec.shape) != 2 or vec.shape[0] != items or vec.shape[1] != dim:
         return False, f"vectors shape mismatch {tuple(vec.shape)} != ({items}, {dim})"
+    # meta.json: STRUCTURAL check only. Full json.loads of the ~600MB file
+    # MemoryError'd on the 8GB box — and str(MemoryError) is '' → the maddening
+    # 'unreadable index: ' with no reason (2026-07-12). The memmap shape above
+    # is the authoritative count; here we only guard against truncation: the
+    # stream-written array must open with '[' and close with ']'.
+    mp = directory / "meta.json"
+    try:
+        size = mp.stat().st_size
+        if size < 1024:
+            return False, f"meta.json suspiciously small ({size}B)"
+        with mp.open("rb") as fh:
+            head = fh.read(64).lstrip()
+            fh.seek(-64, 2)
+            tail = fh.read().rstrip()
+        if not head.startswith(b"[") or not tail.endswith(b"]"):
+            return False, "meta.json truncated (missing [ ... ])"
+    except Exception as e:
+        return False, f"unreadable meta.json: {type(e).__name__} {str(e)[:60]}"
     return True, "ok"
 
 

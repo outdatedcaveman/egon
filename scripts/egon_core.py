@@ -100,6 +100,30 @@ def _tcp_ok(host: str, port: int, timeout: float = 0.4) -> bool:
         return False
 
 
+def _kill_port_owner(port: int, why: str = "") -> bool:
+    """Terminate the process listening on a local port (used to release the
+    live-index file handles EgonSearch holds before an index-swap rename —
+    its unit respawns it fresh within a cycle). Windows netstat parse."""
+    try:
+        out = subprocess.run(["netstat", "-ano", "-p", "tcp"],
+                             capture_output=True, text=True, timeout=10,
+                             creationflags=0x08000000).stdout or ""
+        for line in out.splitlines():
+            parts = line.split()
+            if (len(parts) >= 5 and parts[3] == "LISTENING"
+                    and parts[1].endswith(f":{port}")):
+                pid = parts[4]
+                subprocess.run(["taskkill", "/F", "/PID", pid],
+                               capture_output=True, timeout=10,
+                               creationflags=0x08000000)
+                log("info", "port_owner_killed", port=port, pid=pid, why=why)
+                time.sleep(1.5)   # let the OS release the file handles
+                return True
+    except Exception as e:
+        log("warn", "port_owner_kill_failed", port=port, error=str(e)[:80])
+    return False
+
+
 def _idle_seconds() -> float:
     """Seconds since last keyboard/mouse input. Windows-only; conservative."""
     if os.name != "nt":
@@ -790,12 +814,24 @@ def check_reembed(u: "Unit") -> None:
         # text. 100% local (no quota), so the vault keeps deepening hands-off.
         try:
             ts = time.strftime("%Y%m%d-%H%M%S")
+            # EgonSearch (:8801) holds the live index files OPEN — Windows
+            # refuses the directory rename while it runs (found 2026-07-12:
+            # the swap silently failed and this unit still said 'swapped').
+            # Stop the worker for the swap; check_search_worker respawns it
+            # within a cycle and it loads the FRESH index.
+            _kill_port_owner(8801, why="index swap")
             res = reembed.swap_in(ts)
-            _prune_old_index_backups(keep=2)
-            _reembed_last_swap = time.time()
-            log("info", "reembed_swapped", **res)
-            u.ok = True
-            u.detail = f"swapped live ({st.get('items')} items) @ {ts}"
+            if res.get("status") == "swapped":
+                _prune_old_index_backups(keep=2)
+                _reembed_last_swap = time.time()
+                log("info", "reembed_swapped", **res)
+                u.ok = True
+                u.detail = f"swapped live ({st.get('items')} items) @ {ts}"
+            else:
+                # HONEST: a refused/rolled-back swap is not a success.
+                log("warn", "reembed_swap_refused", **res)
+                u.ok = True
+                u.detail = f"swap refused: {res.get('status')} {str(res.get('error') or '')[:50]}"
         except Exception as e:
             u.ok = True
             u.detail = f"swap failed: {str(e)[:60]}"
