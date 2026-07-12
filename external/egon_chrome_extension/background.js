@@ -252,6 +252,27 @@ function _harvesterUrls() {
   return urls;
 }
 
+function syncWhenUserAway(reason) {
+  // The 06:00 full sync opens FOREGROUND harvest tabs (SPAs don't render in
+  // background tabs — see the note in runFullSync). When Chrome was closed at
+  // 6AM, Chrome fires the missed alarm AT STARTUP — which meant tabs spawning
+  // in Bruno's face the moment he opened the browser ("every time I open
+  // chrome it spawns several windows", 2026-07-12). The design assumed the
+  // user is asleep; this ENFORCES it: only sync when idle/locked >=5min,
+  // otherwise retry every 30min until an away-window appears.
+  try {
+    chrome.idle.queryState(300, (state) => {
+      if (state === "active") {
+        chrome.alarms.create(DAILY_SYNC_ALARM + "-retry", { delayInMinutes: 30 });
+      } else {
+        runFullSync({ reason });
+      }
+    });
+  } catch (e) {
+    runFullSync({ reason });   // idle API unavailable → old behavior
+  }
+}
+
 async function runFullSync(opts = {}) {
   const reason = opts.reason || "scheduled";
   
@@ -392,7 +413,8 @@ chrome.runtime.onInstalled.addListener(_createSyncAlarms);
 chrome.runtime.onStartup.addListener(_createSyncAlarms);
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === FULL_SYNC_ALARM)         runFullSync({ reason: "scheduled_6h" });
-  if (a.name === DAILY_SYNC_ALARM)        runFullSync({ reason: "daily_6am" });
+  if (a.name === DAILY_SYNC_ALARM)        syncWhenUserAway("daily_6am");
+  if (a.name === DAILY_SYNC_ALARM + "-retry") syncWhenUserAway("daily_6am_deferred");
   if (a.name === SYNC_REQUEST_POLL_ALARM) pollSyncRequest();
 });
 

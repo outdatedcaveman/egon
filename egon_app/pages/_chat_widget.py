@@ -350,6 +350,9 @@ class ChatWidget(QWidget):
         self._scroll.setWidget(self._thread_host)
         self._scroll.setMinimumHeight(300)
         self._scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # Live auto-roll: whenever streamed chunks grow the thread, follow the
+        # bottom (unless the user scrolled up) — see _follow_bottom.
+        self._scroll.verticalScrollBar().rangeChanged.connect(self._follow_bottom)
         lay.addWidget(self._scroll, 1)
 
         # attachment chips row (hidden until something is attached)
@@ -511,8 +514,23 @@ class ChatWidget(QWidget):
         return b
 
     def _scroll_bottom(self):
+        # Twice: now AND after Qt's deferred relayout — setValue(maximum())
+        # before the appended text resizes the label scrolls to the OLD max,
+        # which is why streaming replies never followed (Bruno 2026-07-12).
+        from PySide6.QtCore import QTimer
+        def _go():
+            bar = self._scroll.verticalScrollBar()
+            bar.setValue(bar.maximum())
+        _go()
+        QTimer.singleShot(0, _go)
+
+    def _follow_bottom(self, _min: int, _max: int) -> None:
+        """rangeChanged hook: auto-roll as streamed chunks grow the thread —
+        but only when already near the bottom, so scrolling up to read
+        history is never hijacked."""
         bar = self._scroll.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        if _max - bar.value() <= bar.pageStep() * 2:
+            bar.setValue(_max)
 
     def _on_send(self):
         if self._streaming():

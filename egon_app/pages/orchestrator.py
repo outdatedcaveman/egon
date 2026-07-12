@@ -817,6 +817,11 @@ class OrchestratorPage(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
+        # Don't poll 5 endpoints for a page nobody is looking at (Bruno
+        # 2026-07-12 "slow and crowded"): hidden pages skip their cycle
+        # entirely; the first tick after switching back repopulates.
+        if not self.isVisible():
+            return
         # Prune finished threads (the list was never cleaned → grew unbounded).
         # And if the previous batch is still in flight — mind_service is slow /
         # RAM-thrashing — SKIP this cycle instead of piling on 4 more HTTP
