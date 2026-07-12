@@ -290,9 +290,14 @@ def _goal_tasks_active(goal_id: str) -> int:
     try:
         from lib.orchestration_engine import DB_PATH
         c = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=8)
+        # Only count tasks fresh enough to still BE the wave. Task #81 sat
+        # 'pending' for 33h on a credential-less agent and starved the goal all
+        # night (2026-07-12): the dispatcher saw "wave in flight" forever. A
+        # wave task untouched for >6h is a dead wave — dispatch the next one.
         n = c.execute(
             "SELECT COUNT(*) FROM orchestrator_tasks WHERE parent_prompt LIKE ? "
-            "AND status IN ('pending','assigned','paused','needs_clarification')",
+            "AND status IN ('pending','assigned','paused','needs_clarification') "
+            "AND created_at > strftime('%s','now') - 6*3600",
             (f"%[goal:{goal_id}%",)).fetchone()[0]
         c.close()
         return n
