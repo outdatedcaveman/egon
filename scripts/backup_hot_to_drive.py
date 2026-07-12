@@ -30,6 +30,10 @@ from lib.egon_paths import STATE_DIR, CONNECT_INDEX_DIR
 KEEP = 3
 _LOCK = threading.Lock()
 _MIND_DB = STATE_DIR / "mind.db"
+# Phone-app source (local-only git repo — token baked in, must never go to a
+# public remote; Drive is Bruno's private account so a copy there is fine).
+_EGON_ANDROID = Path.home() / "egon_android"
+_ANDROID_SKIP = {"sdk", "jdk", "out", "obj"}
 
 
 def _sqlite_backup(src: Path, dst: Path) -> bool:
@@ -91,6 +95,18 @@ def run() -> dict:
                         done.append(f"connect_index/{f.name}")
                     except Exception:
                         pass
+        # egon_android source + its local git history (~KBs; toolchain skipped).
+        if _EGON_ANDROID.exists():
+            try:
+                shutil.copytree(
+                    _EGON_ANDROID, dest / "egon_android",
+                    ignore=shutil.ignore_patterns(*_ANDROID_SKIP, "*.apk",
+                                                  "*.idsig", "*.log",
+                                                  "debug.keystore"),
+                    dirs_exist_ok=True)
+                done.append("egon_android/")
+            except Exception:
+                pass
         _prune(base)
         return {"status": "ok", "dest": str(dest), "backed_up": done,
                 "ts": int(time.time())}
