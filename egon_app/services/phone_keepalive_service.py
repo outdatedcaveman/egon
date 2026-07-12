@@ -335,6 +335,51 @@ def _device_wifi_ip(adb_path: Path, serial: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _relock_via_wireless(adb_path: Path) -> str | None:
+    """NO CABLE NEEDED (Bruno 2026-07-11: 'make sure I don't have to toggle it
+    another time'): after a reboot the BootReceiver / app-open re-enables
+    Wireless Debugging, but on a ROTATING port — and the old flow only re-pinned
+    :5555 via USB, so reconnection kept landing on Bruno. This closes the loop:
+    find the phone's wireless-debug listener via mDNS, connect on whatever port
+    it rotated to, then re-pin adbd to fixed :5555 over that link and persist."""
+    try:
+        from lib.adapters.phone_discovery import find_phone_any_service
+        addr = find_phone_any_service(timeout_s=6.0)
+    except Exception:
+        addr = None
+    if not addr:
+        return None
+    _adb(adb_path, "connect", addr, timeout=10)
+    if not _is_reachable(adb_path, addr):
+        return None
+    ip = addr.split(":")[0]
+    rc, text = _adb(adb_path, "-s", addr, "tcpip", "5555", timeout=15)
+    if rc != 0 and "restarting in TCP mode" not in (text or ""):
+        _log("warn", "wireless_relock_tcpip_failed", detail=(text or "")[:160])
+        # rotating-port link still works this session even if the pin failed
+        return addr if _is_reachable(adb_path, addr) else None
+    time.sleep(2)   # adbd restarts into TCP mode
+    target = f"{ip}:5555"
+    _adb(adb_path, "connect", target, timeout=10)
+    if not _is_reachable(adb_path, target):
+        return None
+    try:
+        LOCKED_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LOCKED_FILE.write_text(json.dumps({
+            "target": target,
+            "method": "adb_tcpip_5555_via_wireless",
+            "set_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "ip": ip,
+            "note": "Auto-relocked over Wireless Debugging (mDNS) — no USB, no "
+                    "manual toggle. Keepalive re-pins :5555 from any transient "
+                    "wireless contact.",
+        }, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    _log("info", "auto_relocked_wireless", target=target, via=addr)
+    return target
+
+
 def _relock_via_usb(adb_path: Path) -> str | None:
     """If a phone is plugged in over USB, re-establish the tcpip-5555 wireless
     lock and persist it. Returns the new target, or None if no USB device /
@@ -516,7 +561,7 @@ def _run_loop(stop: threading.Event) -> None:
                 # No locked target yet — try to establish one automatically if
                 # the phone is plugged in over USB; otherwise wait. (First-time
                 # setup no longer strictly needs the manual lock script.)
-                target = _relock_via_usb(adb_path)
+                target = _relock_via_usb(adb_path) or _relock_via_wireless(adb_path)
                 if not target:
                     _write_phone_status(False, None, usb_seen=False)
                     stop.wait(POLL_INTERVAL_S)
@@ -526,7 +571,7 @@ def _run_loop(stop: threading.Event) -> None:
                 # Wireless link dead (reboot / dev-options toggle / IP change).
                 # Before backing off, try to auto-relock via USB — if the phone
                 # is plugged in, this heals it within one cycle. Bruno 2026-06-01.
-                new_target = _relock_via_usb(adb_path)
+                new_target = _relock_via_usb(adb_path) or _relock_via_wireless(adb_path)
                 if new_target:
                     target = new_target
                     backoff = BACKOFF_INITIAL_S
