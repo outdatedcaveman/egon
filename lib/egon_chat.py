@@ -214,7 +214,7 @@ def _mind_context(query: str, limit: int = 6) -> str:
 
     # 2) archive/vault hits via the Connection Engine
     try:
-        from lib.connection_engine import connect
+        from lib.connection_client import connect  # worker-first (RAM isolation)
         res = connect(query, limit=limit, semantic_search=True, lexical_search=False)
         hits = res.get("connections") if isinstance(res, dict) else (res or [])
         lines = []

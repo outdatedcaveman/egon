@@ -31,7 +31,7 @@ def _vault_matches(query: str | None, limit: int = 6) -> list[dict[str, Any]]:
     if not (query or "").strip():
         return []
     try:
-        from lib.connection_engine import connect
+        from lib.connection_client import connect  # worker-first (RAM isolation)
         res = connect(str(query), limit=limit, semantic_search=True,
                       lexical_search=False)
         out = []

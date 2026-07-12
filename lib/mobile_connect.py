@@ -629,7 +629,7 @@ def build_app():
     _os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     def _warm():
         try:
-            from lib.connection_engine import connect
+            from lib.connection_client import connect  # worker-first (RAM isolation)
             connect("warmup", limit=1)
         except Exception:
             pass
@@ -658,7 +658,7 @@ def build_app():
             return JSONResponse({"error": "forbidden"}, status_code=403)
         body = await req.json()
         import asyncio
-        from lib.connection_engine import connect
+        from lib.connection_client import connect  # worker-first (RAM isolation)
         # Full semantic search over the WHOLE index (Drive, Letterboxd, YouTube,
         # Zotero, …) via turbovec (~1s warm). Run it in a WORKER THREAD: the
         # search is blocking, and running it inline froze the event loop so
@@ -680,7 +680,7 @@ def build_app():
         text = str(body.get("text") or "")
         import asyncio
         def _work():
-            from lib.connection_engine import connect
+            from lib.connection_client import connect  # worker-first (RAM isolation)
             res = connect(text, limit=12)
             if res.get("status") == "ok":
                 from lib.synthesis import synthesize

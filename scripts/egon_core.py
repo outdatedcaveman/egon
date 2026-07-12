@@ -599,6 +599,30 @@ def check_mobile_connect(u: Unit) -> None:
         log("error", "mobile_connect_spawn_failed", error=str(e)[:160])
 
 
+def check_search_worker(u: Unit) -> None:
+    """EgonSearch (:8801) — the isolated semantic-search stack. mind_service
+    proxies /connect here (lib/connection_client) so its always-on process
+    stops spiking to 1.4GB during search bursts; if this worker dies, callers
+    fall back in-process (search never breaks) and this unit restarts it."""
+    ok = _tcp_ok("127.0.0.1", 8801, timeout=0.5)
+    confirmed_down = u.probe(ok)
+    u.ok = ok or not confirmed_down
+    u.detail = "serving" if ok else f"probe {u.fails}/{u.FAILS_REQUIRED}"
+    if not confirmed_down or not u.can_restart():
+        return
+    u.mark_restart()
+    log("warn", "search_worker_down_restarting", attempt=u.restarts)
+    try:
+        subprocess.Popen(
+            [str(PYW), str(ROOT / "scripts" / "search_worker.py")],
+            cwd=str(ROOT), env=SPAWN_ENV,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008),
+        )
+    except Exception as e:
+        log("error", "search_worker_spawn_failed", error=str(e)[:160])
+
+
 def check_headroom(u: Unit) -> None:
     ok, body = _http_ok(HEADROOM_HEALTH, timeout=6.0)
     confirmed_down = u.probe(ok)
@@ -1613,6 +1637,7 @@ def main() -> int:
         log("warn", "phone_keepalive_start_failed", error=str(e)[:160])
 
     units = {"mind": Unit("mind"), "mobile_connect": Unit("mobile_connect"),
+             "search_worker": Unit("search_worker"),
              "headroom": Unit("headroom"),
              "ollama": Unit("ollama"),
              "connect_index": Unit("connect_index"),
@@ -1641,6 +1666,7 @@ def main() -> int:
                 _reap_heavy("user-active")
             check_mind(units["mind"])
             check_mobile_connect(units["mobile_connect"])
+            check_search_worker(units["search_worker"])
             check_headroom(units["headroom"])
             check_ollama(units["ollama"])
             check_index(units["connect_index"])
