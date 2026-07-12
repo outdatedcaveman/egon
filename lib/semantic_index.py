@@ -488,24 +488,65 @@ def _ensure_meta_db() -> int:
             return n
         except Exception:
             pass
-    records = json.loads(META_PATH.read_text(encoding="utf-8"))
+    # STREAMED (2026-07-12): the previous json.loads of the whole ~600MB
+    # meta.json OOM'd the 8GB box — and this runs on the SERVICE STARTUP path
+    # whenever meta.db is missing/stale (a fresh index swap), so mind_service
+    # and EgonSearch crash-looped after the first streamed-index swap. Iterate
+    # the array with bounded memory and insert in batches instead.
     tmp = META_DB.with_name("meta.db.tmp")
     if tmp.exists():
         tmp.unlink()
     con = sqlite3.connect(str(tmp))
     con.execute("CREATE TABLE meta (uid TEXT, source TEXT, title TEXT, "
                 "url TEXT, snippet TEXT, h TEXT)")
-    con.executemany(
-        "INSERT INTO meta (rowid, uid, source, title, url, snippet, h) "
-        "VALUES (?,?,?,?,?,?,?)",
-        [(i + 1, r.get("uid"), r.get("source"), r.get("title"), r.get("url"),
-          r.get("snippet"), r.get("h")) for i, r in enumerate(records)])
+    n = 0
+    batch = []
+    for r in _iter_json_array(META_PATH):
+        n += 1
+        batch.append((n, r.get("uid"), r.get("source"), r.get("title"),
+                      r.get("url"), r.get("snippet"), r.get("h")))
+        if len(batch) >= 5000:
+            con.executemany(
+                "INSERT INTO meta (rowid, uid, source, title, url, snippet, h) "
+                "VALUES (?,?,?,?,?,?,?)", batch)
+            batch.clear()
+    if batch:
+        con.executemany(
+            "INSERT INTO meta (rowid, uid, source, title, url, snippet, h) "
+            "VALUES (?,?,?,?,?,?,?)", batch)
     con.commit()
     con.close()
-    n = len(records)
-    del records
     tmp.replace(META_DB)
     return n
+
+
+def _iter_json_array(path: pathlib.Path, chunk: int = 1 << 20):
+    """Yield top-level objects of a JSON array file with bounded memory —
+    never holds more than ~2 chunks of text, however large the file."""
+    dec = json.JSONDecoder()
+    with path.open(encoding="utf-8") as f:
+        buf = f.read(chunk)
+        pos = buf.index("[") + 1
+        while True:
+            if len(buf) - pos < chunk // 2:          # keep lookahead topped up
+                more = f.read(chunk)
+                buf = buf[pos:] + more
+                pos = 0
+                if not buf.strip():
+                    return
+            while pos < len(buf) and buf[pos] in " \t\r\n,":
+                pos += 1
+            if pos < len(buf) and buf[pos] == "]":
+                return
+            try:
+                obj, pos = dec.raw_decode(buf, pos)
+                yield obj
+            except json.JSONDecodeError:
+                more = f.read(chunk)                  # object spans the buffer
+                if not more:
+                    raise
+                buf = buf[pos:] + more
+                pos = 0
 
 
 def _load_meta():
