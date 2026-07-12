@@ -315,6 +315,22 @@ def _dispatch_wave(goal: dict, m: dict) -> bool:
         queued = m.get("pending_queue")
         queue_txt = (f" enrich_queue backlog: {queued:,} refs still pending."
                      if queued else "")
+        # NET-DRAIN accounting (Bruno 2026-07-12): the backlog doubled 84k→183k
+        # in a day because strategies enqueue faster than the worker drains —
+        # raw % hides that churn. Measure the queue DELTA between waves and,
+        # when it grows without completion moving, force the wave to fix the
+        # drain path instead of piling more on.
+        prev_q = prev.get("pending_queue")
+        if queued is not None and prev_q is not None:
+            dq = queued - prev_q
+            queue_txt += (f" Net queue drain since last wave: {-dq:+,} "
+                          f"({prev_q:,} → {queued:,}).")
+            if dq > 0 and delta_c < 0.5:
+                queue_txt += (" WARNING: backlog GREW while completion barely "
+                              "moved — enqueueing is outpacing the drain. Do "
+                              "NOT add more items this wave: accelerate the "
+                              "DRAIN (worker throughput, batch size, dead-item "
+                              "pruning) or prune stale queue entries.")
         state = (f"CURRENT MEASURED STATE (live from the Mouseion refs.db, "
                  f"{m['total']:,} refs): {m['pct_pdf']}% have PDFs "
                  f"({m['with_pdf']:,}), {m['pct_complete']}% are metadata-complete "

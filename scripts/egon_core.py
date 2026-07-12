@@ -160,13 +160,26 @@ def _free_ram_gb() -> float:
     return 999.0
 
 
-def _heavy_allowed() -> tuple[bool, str]:
+def _heavy_allowed(unit: str = "") -> tuple[bool, str]:
     """Gate CPU/network-heavy background work.
 
     The always-on core must be a supervisor first. Heavy corpus work is useful,
     but it cannot run just because Egon is alive: it was freezing the PC while
     Bruno was actively using Inbox. Defaults to manual opt-in.
     """
+    # NIGHT ROTATION (Bruno 2026-07-12, "the UNDERSTANDING pillar is starving"):
+    # first-come serialization let hydration's effectively-infinite backlog hog
+    # every idle window for weeks — the semantic index went 12 days stale and
+    # the mouseion PDF finder's RAM gate never opened. Two reserved slots:
+    #   02:00-04:00  re-embed only (self-terminates when current → frees early)
+    #   06:00-07:00  ALL heavies pause → RAM frees so the app-tied mouseion
+    #                daemon (2GB floor) can actually start the PDF finder
+    # Disk/RAM floors below still apply to the slot owner.
+    hour = time.localtime().tm_hour
+    if unit and unit != "reembed" and 2 <= hour < 4:
+        return False, "night 02-04: slot reserved for reembed"
+    if unit and 6 <= hour < 7:
+        return False, "night 06-07: heavies pause for the mouseion PDF finder"
     # HARD disk guard: whole-vault hydration/embedding grows the index by many GB.
     # Never run it when free space is low, or it would fill the disk and wedge the
     # machine. Check the SYSTEM drive (C:) — even when the index lives on Google
@@ -777,7 +790,7 @@ def check_reembed(u: "Unit") -> None:
         u.ok = True
         u.detail = f"fresh (next pass in {int((REEMBED_COOLDOWN_S - since)/3600)}h)"
         return
-    allowed, why = _heavy_allowed()
+    allowed, why = _heavy_allowed("reembed")
     if not allowed:
         u.ok = True
         u.detail = f"idle-wait ({why}) {prog}"
@@ -848,7 +861,7 @@ def check_exhaustive(u: "Unit") -> None:
             u.detail = f"cooldown ({int((EXHAUSTIVE_COOLDOWN_S - since)/3600)}h)"
         u.ok = True
         return
-    allowed, why = _heavy_allowed()
+    allowed, why = _heavy_allowed("exhaustive")
     if not allowed:
         u.ok = True
         u.detail = f"idle-wait ({why})"
@@ -918,7 +931,7 @@ def check_insight_cards(u: "Unit") -> None:
         u.ok = True
         u.detail = f"cooldown ({int((INSIGHT_CARDS_COOLDOWN_S - since)/3600)}h)"
         return
-    allowed, why = _heavy_allowed()
+    allowed, why = _heavy_allowed("insight_cards")
     if not allowed:
         u.ok = True
         u.detail = f"idle-wait ({why})"
@@ -1007,7 +1020,7 @@ def check_canonical(u: "Unit") -> None:
         u.ok = True
         u.detail = f"{pending} pending (cooldown)"
         return
-    allowed, why = _heavy_allowed()
+    allowed, why = _heavy_allowed("canonical")
     if not allowed:
         u.ok = True
         u.detail = f"{pending} pending (idle-wait: {why})"
@@ -1067,7 +1080,7 @@ def check_concept_graph(u: "Unit") -> None:
         u.ok = True
         u.detail = f"cooldown ({int((CONCEPT_COOLDOWN_S - since)/3600)}h)"
         return
-    allowed, why = _heavy_allowed()
+    allowed, why = _heavy_allowed("concept_graph")
     if not allowed:
         u.ok = True
         u.detail = f"idle-wait ({why})"
@@ -1116,7 +1129,7 @@ def check_hydration(u: "Unit") -> None:
     the user returns; the 6-hourly index rebuild embeds the accumulated
     extracts. This is the engine of the whole-vault embedding goal. 2026-06-24."""
     global _hydrate_proc
-    allowed, why = _heavy_allowed()
+    allowed, why = _heavy_allowed("hydration")
     if not allowed:
         u.ok = True
         u.detail = f"idle-wait ({why})"
@@ -1173,7 +1186,7 @@ def check_index(u: Unit) -> None:
     age = (time.time() - meta.stat().st_mtime) if meta.exists() else None
     u.ok = age is not None
     u.detail = (f"age={int(age // 60)}m" if age is not None else "not built")
-    allowed, why = _heavy_allowed()
+    allowed, why = _heavy_allowed("index")
     if not allowed:
         u.detail += f" ({why})"
         return
@@ -1355,7 +1368,7 @@ def check_digest(u: Unit) -> None:
     u.ok = True
     u.detail = (f"generated {today}" if prev == today
                 else f"waiting (last={prev or 'never'})")
-    allowed, why = _heavy_allowed()
+    allowed, why = _heavy_allowed("digest")
     if not allowed:
         u.detail += f" ({why})"
         return
@@ -1520,7 +1533,7 @@ def check_mirror(u: Unit) -> None:
     except Exception:
         u.ok = True
         u.detail = "idle"
-    allowed, why = _heavy_allowed()
+    allowed, why = _heavy_allowed("mirror")
     if not allowed and not catchup_active:
         u.detail += f" ({why})"
         return
