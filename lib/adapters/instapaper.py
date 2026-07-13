@@ -396,8 +396,11 @@ def snapshot() -> dict:
             "source": it.get("source"),
         })
 
-    items_out.sort(key=lambda x: (x.get("time") or "", x.get("added_ord") or 0),
-                   reverse=True)
+    # added_ord (the monotonic bookmark id) is the ONLY truthful save-order
+    # key: `time` is a harvest-relative label ("Today" as of capture day) that
+    # scrambles cross-harvest ordering — leading with it put items in harvest
+    # order, not save order (Bruno 2026-07-12: "not in the order I saved").
+    items_out.sort(key=lambda x: x.get("added_ord") or 0, reverse=True)
     return {
         "status": "ok",
         "synced_at": datetime.now().isoformat(),

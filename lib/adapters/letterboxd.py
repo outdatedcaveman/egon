@@ -49,6 +49,48 @@ def _username() -> str | None:
     return secrets.get("letterboxd.username")
 
 
+def _rss_diary(limit: int = 50) -> list[dict]:
+    """Last ~50 diary entries from the PUBLIC RSS feed — the live freshness
+    source. The export ZIP is a one-time download that goes stale the day
+    after (Bruno 2026-07-12: 'no update on my letterboxd viewed'); the RSS
+    needs no auth and carries watched dates + ratings."""
+    user = _username()
+    if not user:
+        return []
+    try:
+        import re as _re
+        r = httpx.get(f"https://letterboxd.com/{user}/rss/", timeout=15,
+                      follow_redirects=True, headers={"User-Agent": UA})
+        if r.status_code != 200:
+            return []
+        out = []
+        for m in _re.finditer(r"<item>(.*?)</item>", r.text, _re.S):
+            b = m.group(1)
+
+            def tag(t, _b=b):
+                mm = _re.search(rf"<{t}>([^<]*)</{t}>", _b)
+                return mm.group(1).strip() if mm else ""
+
+            title = tag("letterboxd:filmTitle")
+            if not title:
+                continue
+            link = tag("link")
+            mm = _re.search(r'src="([^"]+)"', b)
+            out.append({
+                "title": title,
+                "year": tag("letterboxd:filmYear"),
+                "watched": tag("letterboxd:watchedDate"),
+                "rating": tag("letterboxd:memberRating"),
+                "url": link,
+                "poster": mm.group(1) if mm else "",
+                "slug": link.rstrip("/").split("/")[-1] if link else "",
+                "kind": "diary",
+            })
+        return out[:limit]
+    except Exception:
+        return []
+
+
 def _get(client: httpx.Client, url: str) -> BeautifulSoup | None:
     try:
         r = client.get(url, timeout=20.0, follow_redirects=True)
@@ -648,7 +690,26 @@ def items(limit: int = 5000) -> list[dict]:
                     films.insert(0, f)
         elif not films:
             films = snap.get("items", [])
-            
+
+    # LIVE freshness: merge the RSS diary — attach watched dates/ratings to
+    # library films and surface anything logged AFTER the export ZIP was
+    # downloaded (new watches appear at the top, with dates for recency sort).
+    diary = _rss_diary()
+    if diary:
+        by_key = {f"{(f.get('title') or '').strip().lower()}|{f.get('year', '')}": f
+                  for f in films}
+        for d in reversed(diary):
+            k = f"{(d.get('title') or '').strip().lower()}|{d.get('year', '')}"
+            f = by_key.get(k)
+            if f is not None:
+                if d.get("watched") and not f.get("watched"):
+                    f["watched"] = d["watched"]
+                if d.get("rating") and not f.get("rating"):
+                    f["rating"] = d["rating"]
+            else:
+                films.insert(0, dict(d))
+                by_key[k] = films[0]
+
     return films[:limit]
 
 

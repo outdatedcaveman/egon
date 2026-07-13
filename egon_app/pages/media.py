@@ -158,7 +158,8 @@ def _letterboxd_films() -> list[dict]:
             "url":    f.get("url", ""),
             "meta":   meta,
             # rich fields — surfaced in cards + used for sort/filter
-            "watched_date": f.get("watched_date", "") or f.get("date", ""),
+            # ("watched" = the RSS-diary date merged in lib.adapters.letterboxd)
+            "watched_date": f.get("watched_date", "") or f.get("date", "") or f.get("watched", ""),
             "tmdb_rating":  tmdb_rating,
             "director":     extra.get("director", ""),
             "cast":         extra.get("cast", ""),
@@ -269,6 +270,19 @@ def _tvtime_shows() -> list[dict]:
         from lib.adapters import tvtime
         local_items = tvtime.items(500)
         if local_items:
+            # DEDUP (Bruno 2026-07-12 "TV Time showing double"): the snapshot
+            # carries the same show from two harvest passes (different ids,
+            # same tvdb/title) — measured 541 duplicate titles in 1069 rows.
+            # Keep the richer record (more watched episodes) per show key.
+            best: dict = {}
+            for s in local_items:
+                k = str(s.get("tvdb_id") or "").strip() or (s.get("title") or "").strip().lower()
+                if not k:
+                    continue
+                prev = best.get(k)
+                if prev is None or (s.get("watched_episodes") or 0) > (prev.get("watched_episodes") or 0):
+                    best[k] = s
+            local_items = list(best.values())
             out = []
             for s in local_items:
                 poster = s.get("poster") or s.get("image") or ""
@@ -302,6 +316,7 @@ def _tvtime_shows() -> list[dict]:
                     "url":    s.get("url", ""),
                     "subtitle": s.get("status", ""),
                     "meta":   meta,
+                    "last_watched": s.get("last_watched", ""),
                 })
             return out
     except Exception:
@@ -646,7 +661,8 @@ class MediaPage(QWidget):
             on_click=_open,
             shape="portrait",
             cache_key="tvtime",
-            sort_fields=[("title", "Title"), ("year", "Year")],
+            sort_fields=[("last_watched", "Recently watched"), ("title", "Title"),
+                         ("year", "Year")],
             empty_message="No TV Time data yet. Log in via Settings → TV Time.",
         ), "TV Time")
 
