@@ -311,6 +311,92 @@ def _fmt_measure(m: dict) -> str:
     return f"progress {m.get('pct_progress', 0):.0f}%"
 
 
+def _user_idle_s() -> float:
+    """Seconds since last keyboard/mouse input (Windows). 0.0 if unknown, so a
+    non-Windows / failure path is treated as 'user active' — never grinds."""
+    try:
+        import ctypes
+        class _LI(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+        li = _LI(); li.cbSize = ctypes.sizeof(_LI)
+        if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(li)):
+            tick = ctypes.windll.kernel32.GetTickCount()
+            return max(0.0, (tick - li.dwTime) / 1000.0)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _free_ram_gb() -> float:
+    try:
+        import ctypes
+        class _MS(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_uint), ("dwMemoryLoad", ctypes.c_uint),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        ms = _MS(); ms.dwLength = ctypes.sizeof(_MS)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms)):
+            return ms.ullAvailPhys / (1024 ** 3)
+    except Exception:
+        pass
+    return 99.0
+
+
+# How the mouseion goal is DRIVEN. Bruno 2026-07-13: the old agent-wave driver
+# was theater — it asked claude-code/antigravity to "write enrichment code"
+# every 6h, but the metric is moved by the running Mouseion DAEMON, not by
+# agent code. Waves failed verification (metric flat) or stuck on dead
+# antigravity, spending quota for nothing. The daemon (Mouseion.exe, now with
+# book providers + Gemini) IS the engine; this driver's job is to keep it FED:
+# when its queue drains and the library is still short of target, requeue a
+# BOUNDED batch of incomplete refs — but only while the user is AWAY and RAM is
+# healthy, so it never grinds the 8GB box while Bruno works.
+_REQUEUE_BATCH = 4000
+_REQUEUE_IDLE_S = 900          # 15 min idle = user away
+_REQUEUE_RAM_FLOOR_GB = 1.5
+
+
+def _drive_mouseion_daemon(goal: dict, m: dict) -> str:
+    """Operational driver: feed the enrichment daemon instead of dispatching
+    agent code-waves. Returns a human note. Never raises (goal loop must not
+    crash) and never writes while the user is active."""
+    pending = m.get("pending_queue")
+    if pending is None:
+        return "monitoring (queue size unknown)"
+    if pending > 0:
+        return f"daemon working ({pending:,} queued)"
+    # Queue drained. Nothing to disrupt — but only refeed when Bruno is away
+    # and the box has RAM headroom, so the daemon's grind never fights him.
+    idle = _user_idle_s()
+    if idle < _REQUEUE_IDLE_S:
+        return "queue idle — will refeed incomplete refs when you step away"
+    ram = _free_ram_gb()
+    if ram < _REQUEUE_RAM_FLOOR_GB:
+        return f"queue idle — deferring refeed (low RAM {ram:.1f}GB)"
+    try:
+        db = _mouseion_db()
+        conn = sqlite3.connect(f"file:{db.as_posix()}", uri=True, timeout=8)
+        try:
+            conn.execute("PRAGMA busy_timeout=8000")
+            cur = conn.execute(
+                "UPDATE enrich_queue SET status='pending', last_attempt=NULL "
+                "WHERE ref_id IN (SELECT eq.ref_id FROM enrich_queue eq "
+                "JOIN refs r ON r.id = eq.ref_id "
+                "WHERE eq.status='done' AND (r.completeness IS NULL OR r.completeness < 0.8) "
+                "LIMIT ?)", (_REQUEUE_BATCH,))
+            conn.commit()
+            n = cur.rowcount
+        finally:
+            conn.close()
+        if n > 0:
+            return f"refed {n:,} incomplete refs to the daemon (idle {int(idle//60)}min)"
+        return "nothing left to refeed — remaining refs are complete or unresolvable"
+    except Exception as e:
+        return f"refeed skipped ({str(e)[:40]})"
+
+
 def _dispatch_wave(goal: dict, m: dict) -> bool:
     wave = int(goal.get("waves") or 0) + 1
     if "pct_pdf" in m:      # programmatic metric (mouseion-style)
@@ -414,6 +500,9 @@ def evaluate() -> dict:
                                  priority=4, tags="tada")
             except Exception:
                 pass
+        elif g.get("driver") == "mouseion_daemon":
+            # Operational driver: feed the running daemon, no agent code-waves.
+            note = _drive_mouseion_daemon(g, m)
         else:
             active = _goal_tasks_active(g["id"])
             since_wave = time.time() - float(g.get("last_wave_at") or 0)
