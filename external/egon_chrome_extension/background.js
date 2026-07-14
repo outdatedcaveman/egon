@@ -275,7 +275,28 @@ function syncWhenUserAway(reason) {
 
 async function runFullSync(opts = {}) {
   const reason = opts.reason || "scheduled";
-  
+
+  // UNIVERSAL idle gate (Bruno 2026-07-13: "it keeps spawning chrome pages
+  // every 5 minutes while I'm trying to do stuff"). runFullSync is the ONLY
+  // path that opens foreground tabs, and it's reachable from THREE triggers —
+  // the 6h alarm, the 6am daily, and the 30s egon-signal poll (Egon's Media
+  // page requesting a sync). Gating each caller missed the poll path. Gate the
+  // choke point itself: if the user is active, do NOT open tabs — reschedule a
+  // single retry for when they step away, and bail. Applies to every trigger.
+  // `opts.force` (the popup "Sync now" button) bypasses, since that's a
+  // deliberate user request.
+  if (!opts.force) {
+    try {
+      const state = await new Promise((res) =>
+        chrome.idle.queryState(300, res));      // 300s idle threshold = away
+      if (state === "active") {
+        chrome.alarms.create("egon-sync-deferred", { delayInMinutes: 3 });
+        console.log("[egon] sync deferred — user active, will retry when idle");
+        return { deferred: true, reason };
+      }
+    } catch (e) { /* idle API unavailable → fall through (old behavior) */ }
+  }
+
   let dynamicKindleUrl = null;
   try {
     const configResp = await fetch("http://127.0.0.1:8000/api/v1/kindle/config");
@@ -416,6 +437,7 @@ chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === DAILY_SYNC_ALARM)        syncWhenUserAway("daily_6am");
   if (a.name === DAILY_SYNC_ALARM + "-retry") syncWhenUserAway("daily_6am_deferred");
   if (a.name === SYNC_REQUEST_POLL_ALARM) pollSyncRequest();
+  if (a.name === "egon-sync-deferred")    runFullSync({ reason: "deferred_retry" });
 });
 
 
