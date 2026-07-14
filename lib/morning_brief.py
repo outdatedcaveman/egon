@@ -127,6 +127,18 @@ def build_brief() -> tuple[str, str]:
     down = now.get("units_down") or []
     lines.append("• Substrate: all services healthy" if not down
                  else f"• ⚠ Substrate: {', '.join(down)} DOWN")
+    # Delivery truth (Bruno 2026-07-13): surface fixes that are on disk but NOT
+    # live, so 'fixed but not deployed' can never stay invisible again.
+    try:
+        import sys as _sys, subprocess as _sp
+        from lib.egon_paths import ROOT as _R
+        r = _sp.run([_sys.executable, str(_R / "scripts" / "deploy_state.py")],
+                    capture_output=True, text=True, timeout=40)
+        summary = (r.stdout or "").strip().splitlines()[-1:] if r.stdout else []
+        if summary and "not-live" in summary[0] and not summary[0].startswith("0 "):
+            lines.append(f"• ⚠ Deploy: {summary[0]}")
+    except Exception:
+        pass
     full = "\n".join(lines)
     push = (f"{now.get('tasks_done', 0)} tasks done · extraction "
             f"{_fmt_delta(now.get('extracted'), prev.get('extracted'))} · "
