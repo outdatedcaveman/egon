@@ -14,6 +14,7 @@ v1 surfaces, all loaded async (never on the UI thread):
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -53,9 +54,26 @@ def _card(title: str, value: str, hint: str, accent: str = _GOLD) -> QFrame:
 
 
 # ── data gathering (worker thread) ───────────────────────────────────────────
+_OBS_CACHE = ROOT / "state" / "obsidian_stats_cache.json"
+_OBS_CACHE_TTL_S = 12 * 3600
+
+
 def _obsidian_stats() -> dict:
+    """Vault stats. The vault holds ~880k mirror files, so a full os.walk takes
+    MINUTES — and it was re-run on every Databases open, leaving the card blank
+    for 3 min each time (Bruno 2026-07-13: 'works only nominally'). Now cached
+    with a 12h TTL: the walk runs at most twice a day (still off the UI thread
+    via _kick's worker), every other open reads the cache instantly."""
     if not OBSIDIAN_VAULT.is_dir():
         return {"ok": False, "error": "vault not found"}
+    # Fresh cache → instant.
+    try:
+        if _OBS_CACHE.exists() and (time.time() - _OBS_CACHE.stat().st_mtime) < _OBS_CACHE_TTL_S:
+            d = json.loads(_OBS_CACHE.read_text(encoding="utf-8"))
+            d["cached"] = True
+            return d
+    except Exception:
+        pass
     notes = attachments = 0
     size = 0
     newest = 0.0
@@ -73,8 +91,16 @@ def _obsidian_stats() -> dict:
                 notes += 1
             else:
                 attachments += 1
-    return {"ok": True, "notes": notes, "attachments": attachments,
-            "mb": round(size / 1e6), "newest": newest}
+    out = {"ok": True, "notes": notes, "attachments": attachments,
+           "mb": round(size / 1e6), "newest": newest}
+    try:
+        _OBS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _OBS_CACHE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(out), encoding="utf-8")
+        os.replace(tmp, _OBS_CACHE)
+    except Exception:
+        pass
+    return out
 
 
 def _mirror_drift() -> list[dict]:
