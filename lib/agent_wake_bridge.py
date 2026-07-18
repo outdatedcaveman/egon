@@ -2,9 +2,9 @@
 
 Hermes is an in-process runner. Claude Code and Codex expose local
 non-interactive CLIs, so the orchestrator can wake them by starting bounded
-subprocesses with the delegated task contract. Antigravity exposes an agentapi
-shim through its local language server; the bridge discovers that listener and
-creates a native conversation handoff.
+subprocesses with the delegated task contract. Antigravity is an interactive
+surface only; its history is ingested into the mind, while autonomous Gemini
+work is handled by the supported in-process Gemini runner.
 """
 from __future__ import annotations
 
@@ -37,9 +37,10 @@ WAKE_DIR = ROOT / "state" / "agent_wake"
 STATE_PATH = WAKE_DIR / "wake_state.json"
 LOG_DIR = WAKE_DIR / "logs"
 PROMPT_DIR = WAKE_DIR / "prompts"
-RUNNER_AGENTS = ("claude-code", "codex", "antigravity")
+RUNNER_AGENTS = ("claude-code", "codex")
 QUEUE_ONLY_AGENTS: tuple[str, ...] = ()
 WAKE_AGENTS = RUNNER_AGENTS + QUEUE_ONLY_AGENTS
+INTERACTIVE_SURFACES = ("antigravity",)
 MIN_RETRY_SECONDS = 180
 ANTIGRAVITY_PROMPT_ARG_LIMIT = 18000
 _ANTIGRAVITY_INFO_CACHE: dict[str, Any] = {"ts": 0, "items": []}
@@ -104,6 +105,28 @@ def _load_state() -> dict:
 
 def _save_state(state: dict) -> None:
     WAKE_DIR.mkdir(parents=True, exist_ok=True)
+    # The desktop service and an explicit supervisor tick can save at the same
+    # time.  Re-read and merge immediately before replace so a stale writer
+    # cannot erase a runner another process just started.
+    try:
+        current = json.loads(STATE_PATH.read_text(encoding="utf-8")) if STATE_PATH.exists() else {}
+    except Exception:
+        current = {}
+    if isinstance(current, dict):
+        for section in ("tasks", "agents"):
+            merged = dict(state.get(section) or {})
+            for key, disk_entry in (current.get(section) or {}).items():
+                incoming = merged.get(key)
+                if not isinstance(incoming, dict) or int((disk_entry or {}).get("updated_at") or 0) >= int(incoming.get("updated_at") or 0):
+                    merged[key] = disk_entry
+            state[section] = merged
+        daily = dict(current.get("daily") or {})
+        for day, counts in (state.get("daily") or {}).items():
+            bucket = daily.setdefault(day, {})
+            for agent, count in (counts or {}).items():
+                bucket[agent] = max(int(bucket.get(agent) or 0), int(count or 0))
+        if daily:
+            state["daily"] = daily
     state["updated_at"] = _now()
     tmp = STATE_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
@@ -505,7 +528,11 @@ def _agent_command(agent: str, prompt_path: Path, out_path: Path, err_path: Path
             "stream-json",
             "--verbose",
             "--permission-mode",
-            "acceptEdits",
+            # Orchestrator wakes are unattended.  acceptEdits still pauses on
+            # Bash, HTTP, and writes, so the run can never receive an approval
+            # and silently stalls.  The wake prompt and task control endpoint
+            # are the authorization boundary for this local runner.
+            "bypassPermissions",
             "--name",
             "egon-orchestrator",
         ]
@@ -763,7 +790,13 @@ def _defer_antigravity(task_id: int, reason: str, detail: dict | None = None) ->
             "reason": reason}
 
 
-def _start_antigravity_runner(task: dict, state: dict) -> dict:
+def _legacy_start_antigravity_handoff(task: dict, state: dict) -> dict:
+    """Diagnostic-only historical handoff implementation.
+
+    Do not call this for autonomous work.  A returned conversation id is not
+    proof that the model accepted or executed the task; the standalone client
+    can return an unsupported-version response inside the transcript.
+    """
     agent = "antigravity"
     task_id = int(task["id"])
     prompt = _runner_prompt(agent, task)
@@ -930,6 +963,24 @@ def _start_antigravity_runner(task: dict, state: dict) -> dict:
             {"pid": proc.pid, "returncode": proc.returncode, "final_status": "failed"},
         )
     return dict(entry)
+
+
+def _start_antigravity_runner(task: dict, state: dict) -> dict:
+    """Fail closed: Antigravity cannot truthfully execute unattended work."""
+    task_id = int(task["id"])
+    from lib.orchestration_engine import reassign_task_agent
+
+    new_agent = reassign_task_agent(
+        task_id,
+        "Antigravity is an interactive-only surface; autonomous execution cannot be verified",
+        target_agent="gemini",
+    )
+    return {
+        "agent": "antigravity",
+        "task_id": task_id,
+        "status": "rerouted" if new_agent else "failed_closed",
+        "reason": f"interactive-only -> {new_agent}" if new_agent else "no supported fallback",
+    }
 
 
 def _start_runner(agent: str, state: dict) -> dict:
@@ -1188,5 +1239,6 @@ def wake_status(state: dict | None = None) -> dict:
         "active_runners": active,
         "runner_agents": list(RUNNER_AGENTS),
         "queue_only_agents": list(QUEUE_ONLY_AGENTS),
+        "interactive_surfaces": list(INTERACTIVE_SURFACES),
         "updated_at": state.get("updated_at"),
     }

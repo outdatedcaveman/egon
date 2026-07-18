@@ -18,17 +18,20 @@ WORKER_URL = "http://127.0.0.1:8801/connect"
 
 
 def connect(text: str, limit: int = 18, semantic_search: bool = True,
-            lexical_search: bool = False) -> dict:
+            lexical_search: bool = False, *, timeout_s: float = 90.0,
+            allow_fallback: bool = True) -> dict:
     try:
         import httpx
         r = httpx.post(WORKER_URL,
                        json={"text": text, "limit": limit,
                              "semantic_search": semantic_search,
                              "lexical_search": lexical_search},
-                       timeout=90.0)
+                       timeout=max(0.2, float(timeout_s)))
         if r.status_code == 200:
             return r.json()
     except Exception:
         pass
+    if not allow_fallback:
+        return {"connections": [], "status": "worker_unavailable"}
     from lib.connection_engine import connect as _connect
     return _connect(text, limit, semantic_search, lexical_search)

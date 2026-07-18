@@ -167,7 +167,7 @@ def run_activation_test(project: str | None = "egon",
         "project": project_slug,
         "since_hours": 168 * 7,
         "capsule_budget_chars": 3500,
-    })
+    }, timeout=30.0)
     step("scorecard_refresh", scorecard.get("status") == "ok",
          f"score={scorecard.get('score')} grade={scorecard.get('grade')}"
          if scorecard.get("status") == "ok" else str(scorecard)[:300],
@@ -177,7 +177,7 @@ def run_activation_test(project: str | None = "egon",
     enforcement = _http("GET", "/enforcement/status", params={
         "project": project_slug,
         "since_hours": 168,
-    })
+    }, timeout=30.0)
     step("enforcement_refresh", enforcement.get("status") == "ok",
          f"score={enforcement.get('score')}"
          if enforcement.get("status") == "ok" else str(enforcement)[:300],
@@ -321,18 +321,19 @@ def _mcp_context_probe(project: str, query: str) -> dict[str, Any]:
     ])
     kwargs: dict[str, Any] = {
         "cwd": str(ROOT),
-        "input": payload,
+        "stdin": subprocess.PIPE,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
         "text": True,
-        "capture_output": True,
-        "timeout": 20,
     }
     if sys.platform == "win32":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        proc = subprocess.run([str(py), str(server)], **kwargs)
+        proc = subprocess.Popen([str(py), str(server)], **kwargs)
+        stdout, stderr = proc.communicate(input=payload, timeout=45)
     except Exception as e:
         return {"status": "error", "detail": f"{type(e).__name__}: {str(e)[:160]}"}
-    for line in (proc.stdout or "").splitlines():
+    for line in (stdout or "").splitlines():
         try:
             msg = json.loads(line)
         except Exception:
@@ -354,7 +355,7 @@ def _mcp_context_probe(project: str, query: str) -> dict[str, Any]:
             "detail": "Direct MCP mind_context_v2 returned Context Broker v2."
             if ok else str(body)[:240],
         }
-    return {"status": "error", "detail": (proc.stderr or proc.stdout or "no MCP response")[:240]}
+    return {"status": "error", "detail": (stderr or stdout or "no MCP response")[:240]}
 
 
 def _connect() -> sqlite3.Connection:

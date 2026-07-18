@@ -19,6 +19,14 @@ DB_PATH = ROOT / "state" / "mind.db"
 # ("no longer supported"), so it cannot run headless — gemini is the working
 # route to Gemini in the orchestrator (Bruno 2026-07-06).
 AGENTS = ("claude-code", "codex", "antigravity", "hermes", "gemini")
+# Antigravity remains a first-class *interactive surface* whose transcripts and
+# memories are ingested into Egon.  It is not an autonomous runner: its IDE LS
+# rejects out-of-band agentapi work, while the standalone LS can manufacture a
+# conversation id that later contains only an unsupported-client response.
+# Every autonomous orchestrator assignment therefore routes to the supported
+# Gemini reasoning runner immediately.  Keeping the alias in one place prevents
+# decomposers, direct task creation, and future callers from drifting apart.
+AUTONOMOUS_AGENT_ALIASES = {"antigravity": "gemini"}
 DEFAULT_COOLDOWN_SECONDS = 1800
 _FALLBACK_AGENTS = {
     "claude-code": ("codex", "gemini", "hermes"),
@@ -203,7 +211,8 @@ def _choose_fallback_agent(original_agent: str, conn: sqlite3.Connection) -> str
     return None
 
 
-def reassign_task_agent(task_id: int, reason: str) -> str | None:
+def reassign_task_agent(task_id: int, reason: str,
+                        target_agent: str | None = None) -> str | None:
     """Reroute a stuck task to the best available fallback agent (respecting
     cooldowns) and requeue it. Returns the new agent, or None if no fallback.
     Built 2026-07-03 so antigravity tasks flow to codex/claude-code instead of
@@ -216,7 +225,9 @@ def reassign_task_agent(task_id: int, reason: str) -> str | None:
         if not row:
             return None
         original = _normalize_agent_name(row[0])
-        fallback = _choose_fallback_agent(original, conn)
+        fallback = _normalize_agent_name(target_agent or "") or _choose_fallback_agent(original, conn)
+        if fallback not in AGENTS or is_agent_on_cooldown(fallback, conn):
+            fallback = _choose_fallback_agent(original, conn)
         if not fallback:
             return None
         conn.execute(
@@ -300,7 +311,20 @@ def append_task_event(
     try:
         event_id = _append_task_event(conn, task_id, agent_name, event_type, content, payload)
         if agent_name:
-            _record_agent_heartbeat(conn, agent_name, task_id, event_type, content)
+            # A supervisor may append evidence to another agent's task.  That
+            # must not steal the supervisor's current-task pointer; provider
+            # output would then be attributed to the foreign task.  Only the
+            # task owner advances its heartbeat from a task-scoped event.
+            owns_task = True
+            if task_id is not None:
+                owner = conn.execute(
+                    "SELECT agent_name FROM orchestrator_tasks WHERE id = ?",
+                    (int(task_id),),
+                ).fetchone()
+                if owner and _normalize_agent_name(owner["agent_name"] or "") != _normalize_agent_name(agent_name):
+                    owns_task = False
+            if owns_task:
+                _record_agent_heartbeat(conn, agent_name, task_id, event_type, content)
         conn.commit()
         return {"status": "ok", "event_id": event_id}
     finally:
@@ -626,6 +650,14 @@ def report_agent_failure(
 
 def _route_agent_for_dispatch(agent_name: str, desc: str, conn: sqlite3.Connection) -> tuple[str, str]:
     agent_name = _normalize_agent_name(agent_name)
+    requested_agent = agent_name
+    agent_name = AUTONOMOUS_AGENT_ALIASES.get(agent_name, agent_name)
+    if agent_name != requested_agent:
+        desc = _reroute_desc(
+            desc,
+            requested_agent,
+            "interactive-only surface; autonomous work uses supported Gemini runner",
+        )
     cooldowns = _active_cooldowns(conn)
     if agent_name not in cooldowns:
         return agent_name, desc
@@ -740,13 +772,13 @@ def decompose_prompt(prompt: str) -> list[dict]:
     # Simple rule-based classification
     if any(k in prompt_lower for k in ("code", "write", "edit", "test", "fix", "implement", "refactor")):
         fallback.append({"agent": "claude-code", "task": f"Implement the requested changes/features: {prompt}"})
-        fallback.append({"agent": "antigravity", "task": f"Define the implementation plan and verify output: {prompt}"})
+        fallback.append({"agent": "gemini", "task": f"Define the implementation plan and verify output: {prompt}"})
     elif any(k in prompt_lower for k in ("run", "check", "audit", "clean", "db", "ingest", "snapshot")):
         fallback.append({"agent": "hermes", "task": f"Run background audit / cleanup script: {prompt}"})
-        fallback.append({"agent": "antigravity", "task": f"Verify system status and inspect logs: {prompt}"})
+        fallback.append({"agent": "gemini", "task": f"Verify system status and inspect logs: {prompt}"})
     else:
         # Default dual planning & execution assignment
-        fallback.append({"agent": "antigravity", "task": f"Research design and create implementation plan: {prompt}"})
+        fallback.append({"agent": "gemini", "task": f"Research design and create implementation plan: {prompt}"})
         fallback.append({"agent": "claude-code", "task": f"Write codebase changes and execute tests: {prompt}"})
         
     return fallback

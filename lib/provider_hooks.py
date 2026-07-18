@@ -150,7 +150,8 @@ def _active_task_for_agent(agent_name: str) -> int | None:
 
 
 def _provider_session_id(provider: str, path: Path) -> int | None:
-    if provider != "codex":
+    agent_name = {"codex": "codex", "claude-code": "claude-code"}.get(provider)
+    if not agent_name:
         return None
     match = UUID_RE.search(path.name)
     if not match:
@@ -166,9 +167,9 @@ def _provider_session_id(provider: str, path: Path) -> int | None:
                 """SELECT s.id
                    FROM sessions s
                    JOIN agents ag ON ag.id = s.agent_id
-                   WHERE ag.name = 'codex' AND s.external_id = ?
+                   WHERE ag.name = ? AND s.external_id = ?
                    ORDER BY s.started_at DESC LIMIT 1""",
-                (external_id,),
+                (agent_name, external_id),
             ).fetchone()
             return int(row["id"]) if row else None
         finally:
@@ -307,21 +308,9 @@ def _ingest_token_ledger(provider: str, path: Path, meta: dict) -> None:
         pass
 
 
-def _ingest_context_marker(provider: str, path: Path, text: str, meta: dict) -> None:
-    if provider != "codex" or "/context/v2" not in str(text):
-        return
-    sid = _provider_session_id(provider, path)
-    if sid is None:
-        return
-    ts = _event_ts(meta.get("timestamp"))
+def _record_context_once(sid: int, ts: int, payload: dict) -> None:
     from lib.orchestration_engine import DB_PATH
 
-    payload = {
-        "project": "egon",
-        "broker_version": "context-broker-v2",
-        "source": "provider_hooks_context_marker",
-        "path": str(path),
-    }
     try:
         conn = sqlite3.connect(DB_PATH, timeout=4)
         try:
@@ -340,6 +329,107 @@ def _ingest_context_marker(provider: str, path: Path, text: str, meta: dict) -> 
             conn.close()
     except Exception:
         pass
+
+
+def _ingest_context_marker(provider: str, path: Path, text: str, meta: dict) -> None:
+    if "/context/v2" not in str(text):
+        return
+    sid = _provider_session_id(provider, path)
+    if sid is None:
+        return
+    ts = _event_ts(meta.get("timestamp"))
+    payload = {
+        "project": "egon",
+        "broker_version": "context-broker-v2",
+        "source": "provider_hooks_context_marker",
+        "path": str(path),
+    }
+    _record_context_once(sid, ts, payload)
+
+
+def _ensure_wake_context_marker(provider: str, path: Path, state: dict) -> None:
+    """Attribute the capsule embedded by the wake bridge to its real session.
+
+    A new transcript is intentionally tailed from EOF, so relying on seeing the
+    initial prompt text loses the context marker.  The wake-state thread/task
+    match is stronger evidence and is safe to record once, idempotently.
+    """
+    sid = _provider_session_id(provider, path)
+    if sid is None:
+        return
+    task_id, attribution = _task_for_provider_event(provider, path, state)
+    if task_id is None or attribution not in {"wake_thread", "active_agent"}:
+        return
+    _record_context_once(
+        sid,
+        _now(),
+        {
+            "project": "egon",
+            "broker_version": "context-broker-v2",
+            "source": "provider_hooks_wake_capsule",
+            "path": str(path),
+            "task_id": int(task_id),
+            "attribution": attribution,
+        },
+    )
+
+
+def wake_context_status() -> dict:
+    """Report whether every live CLI wake session has recorded capsule use."""
+    try:
+        wake = json.loads(WAKE_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        wake = {}
+    checked: list[dict] = []
+    missing: list[dict] = []
+    from lib.orchestration_engine import DB_PATH
+
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=4)
+        conn.row_factory = sqlite3.Row
+        for raw in (wake.get("tasks") or {}).values():
+            entry = raw if isinstance(raw, dict) else {}
+            if entry.get("status") != "running":
+                continue
+            agent = str(entry.get("agent") or "")
+            external_id = None
+            if agent == "codex":
+                external_id = _codex_wake_thread_for_task(entry)
+            elif agent == "claude-code":
+                try:
+                    with Path(entry.get("stdout_path") or "").open(
+                        "r", encoding="utf-8", errors="replace"
+                    ) as stream:
+                        for line in stream:
+                            item = json.loads(line)
+                            if item.get("session_id"):
+                                external_id = str(item["session_id"])
+                                break
+                except Exception:
+                    external_id = None
+            if not external_id:
+                missing.append({"task_id": entry.get("task_id"), "agent": agent,
+                                "reason": "provider session id not discovered"})
+                continue
+            row = conn.execute(
+                """SELECT s.id,
+                          EXISTS(SELECT 1 FROM activity a
+                                 WHERE a.session_id=s.id AND a.kind='mind_context') has_context
+                   FROM sessions s JOIN agents ag ON ag.id=s.agent_id
+                   WHERE ag.name=? AND s.external_id=?
+                   ORDER BY s.started_at DESC LIMIT 1""",
+                (agent, external_id),
+            ).fetchone()
+            item = {"task_id": entry.get("task_id"), "agent": agent,
+                    "external_id": external_id, "session_id": row["id"] if row else None,
+                    "has_context": bool(row and row["has_context"])}
+            checked.append(item)
+            if not item["has_context"]:
+                missing.append({**item, "reason": "mind_context activity missing"})
+        conn.close()
+    except Exception as exc:
+        missing.append({"reason": f"status probe failed: {type(exc).__name__}: {exc}"})
+    return {"status": "ok" if not missing else "fail", "checked": checked, "missing": missing}
 
 
 def _json_text_parts(value: Any, depth: int = 0) -> list[str]:
@@ -501,6 +591,8 @@ def _scan_text_file(provider: str, path: Path, state: dict) -> dict:
         mtime = int(path.stat().st_mtime)
     except Exception:
         return {"emitted": 0, "quota": 0}
+
+    _ensure_wake_context_marker(provider, path, state)
 
     rec = files.setdefault(key, {"provider": provider, "offset": None, "size": 0, "mtime": 0})
     offset = rec.get("offset")

@@ -126,7 +126,13 @@ def _project_clause(alias: str = "p") -> str:
 
 
 def _production_session_clause(alias: str = "s") -> str:
-    return f" AND COALESCE({alias}.external_id, '') NOT LIKE 'mock-%'"
+    # Activation canaries have their own 11-step pass/fail history.  Counting
+    # them again as production sessions makes an intentionally failed pre-fix
+    # probe depress real agent context coverage for the whole window.
+    return (
+        f" AND COALESCE({alias}.external_id, '') NOT LIKE 'mock-%'"
+        f" AND COALESCE({alias}.external_id, '') NOT LIKE 'activation-%'"
+    )
 
 
 def _session_stats(project: str | None, since_ts: int) -> dict[str, Any]:

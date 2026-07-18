@@ -22,6 +22,28 @@ DB_PATH = ROOT / "state" / "mind.db"
 TOKEN_RE = re.compile(r"[A-Za-z0-9_./:-]{3,}")
 DEFAULT_BUDGET_CHARS = 6000
 
+# Query tokens feed the durable-memory candidate search.  Keeping common glue
+# words here used to let recent but unrelated project memories crowd an older,
+# exact cross-project incident out of the 120-row candidate window.  That is a
+# continuity failure: resolved infrastructure facts must be inherited even
+# when the caller is working in another project.
+_QUERY_STOPWORDS = {
+    "about", "after", "already", "also", "been", "before", "being", "between",
+    "continue", "could", "current", "does", "doing", "else", "everything",
+    "from", "have", "into", "just", "more", "must", "need", "only", "other",
+    "request", "same", "should", "that", "their", "them", "then", "there",
+    "these", "thing", "this", "through", "user", "want", "what", "when",
+    "where", "which", "with", "work", "would", "your",
+}
+_INFRA_QUERY_TERMS = {
+    "antigravity", "claude", "codex", "context", "continuity", "egon",
+    "gemini", "headless", "mind", "orchestrator", "runner", "unified",
+}
+_CORRECTION_MARKERS = (
+    "corrected finding", "root cause", "authoritative", "was wrong",
+    "resolved", "working route", "verified truth",
+)
+
 
 def _vault_matches(query: str | None, limit: int = 6) -> list[dict[str, Any]]:
     """Top reranked hits from Bruno's WHOLE vault (Zotero, bookmarks, Letterboxd,
@@ -32,8 +54,12 @@ def _vault_matches(query: str | None, limit: int = 6) -> list[dict[str, Any]]:
         return []
     try:
         from lib.connection_client import connect  # worker-first (RAM isolation)
+        # Context startup is a control-plane path: never inherit the search
+        # client's 90-second fallback.  The vault is additive; the durable mind
+        # capsule must still return promptly when the search worker is busy.
         res = connect(str(query), limit=limit, semantic_search=True,
-                      lexical_search=False)
+                      lexical_search=False, timeout_s=2.0,
+                      allow_fallback=False)
         out = []
         for c in (res.get("connections") or [])[:limit]:
             out.append({
@@ -173,7 +199,10 @@ def _bounded_int(value: Any, low: int, high: int) -> int:
 def _tokens(text: str | None) -> set[str]:
     if not text:
         return set()
-    return {t.lower() for t in TOKEN_RE.findall(text) if len(t) >= 3}
+    return {
+        t.lower() for t in TOKEN_RE.findall(text)
+        if len(t) >= 3 and t.lower() not in _QUERY_STOPWORDS
+    }
 
 
 def _safe_json(raw: str | None) -> dict[str, Any]:
@@ -221,29 +250,80 @@ def _ranked_memory(
             print(f"[mind_context_broker] semantic search fail: {e}", flush=True)
 
     with _connect() as conn:
-        clauses = ["superseded_by_memory_id IS NULL"]
-        params: list[Any] = []
-        match_clauses = []
+        # Build independent candidate lanes, then score them together.  A
+        # single broad OR query ordered by recency allowed common tokens (and
+        # the current project tag) to consume the whole candidate window before
+        # relevance scoring ever saw an exact older incident.
+        row_map: dict[int, sqlite3.Row] = {}
+
+        def add_rows(found: list[sqlite3.Row]) -> None:
+            for found_row in found:
+                row_map[int(found_row["id"])] = found_row
+
         if project:
-            match_clauses.append("LOWER(COALESCE(tags, '')) LIKE ?")
-            params.append(f"%{project}%")
-        if tokens:
-            token_clauses = []
-            for token in list(tokens)[:8]:
-                token_clauses.append("(LOWER(content) LIKE ? OR LOWER(COALESCE(tags, '')) LIKE ?)")
-                params.extend([f"%{token}%", f"%{token}%"])
-            match_clauses.append("(" + " OR ".join(token_clauses) + ")")
+            add_rows(conn.execute(
+                """SELECT * FROM memory
+                   WHERE superseded_by_memory_id IS NULL
+                     AND LOWER(COALESCE(tags, '')) LIKE ?
+                   ORDER BY updated_at DESC LIMIT 120""",
+                (f"%{project}%",),
+            ).fetchall())
+
+        ranked_tokens = sorted(
+            tokens,
+            key=lambda token: (token in _INFRA_QUERY_TERMS, len(token), token),
+            reverse=True,
+        )[:12]
+        if ranked_tokens:
+            # memory_fts is maintained by DB triggers.  One ranked FTS query is
+            # both faster and more deterministic than scanning every full
+            # memory body once per token.  Quoted terms keep punctuation safe.
+            fts_query = " OR ".join(
+                '"' + token.replace('"', '""') + '"'
+                for token in ranked_tokens
+            )
+            try:
+                add_rows(conn.execute(
+                    """SELECT m.* FROM memory_fts
+                       JOIN memory m ON m.id = memory_fts.rowid
+                       WHERE memory_fts MATCH ?
+                         AND m.superseded_by_memory_id IS NULL
+                       ORDER BY bm25(memory_fts), m.updated_at DESC LIMIT 240""",
+                    (fts_query,),
+                ).fetchall())
+            except sqlite3.Error:
+                # Compatibility fallback for an old/migrating database whose
+                # FTS table is temporarily unavailable.  Keep it bounded.
+                token_clauses = []
+                params: list[str] = []
+                for token in ranked_tokens[:6]:
+                    token_clauses.append(
+                        "(LOWER(kind) LIKE ? OR LOWER(content) LIKE ? "
+                        "OR LOWER(COALESCE(tags, '')) LIKE ?)"
+                    )
+                    like = f"%{token}%"
+                    params.extend((like, like, like))
+                add_rows(conn.execute(
+                    "SELECT * FROM memory WHERE superseded_by_memory_id IS NULL "
+                    "AND (" + " OR ".join(token_clauses) + ") "
+                    "ORDER BY updated_at DESC LIMIT 240",
+                    params,
+                ).fetchall())
+
         if semantic_ids:
             placeholders = ",".join("?" for _ in semantic_ids)
-            match_clauses.append(f"id IN ({placeholders})")
-            params.extend(semantic_ids)
-        
-        sql = "SELECT * FROM memory"
-        if match_clauses:
-            clauses.append("(" + " OR ".join(match_clauses) + ")")
-        sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY updated_at DESC LIMIT 120"
-        rows = conn.execute(sql, params).fetchall()
+            add_rows(conn.execute(
+                f"SELECT * FROM memory WHERE superseded_by_memory_id IS NULL "
+                f"AND id IN ({placeholders})",
+                semantic_ids,
+            ).fetchall())
+
+        if not row_map:
+            add_rows(conn.execute(
+                "SELECT * FROM memory WHERE superseded_by_memory_id IS NULL "
+                "ORDER BY updated_at DESC LIMIT 120"
+            ).fetchall())
+        rows = list(row_map.values())
 
         # Score primary records
         now = int(time.time())
@@ -257,7 +337,15 @@ def _ranked_memory(
             score = 0
             if project and project in (r["tags"] or "").lower():
                 score += 8
-            score += sum(2 for t in tokens if t in haystack)
+            matched_tokens = {t for t in tokens if t in haystack}
+            score += 2 * len(matched_tokens)
+            if tokens & _INFRA_QUERY_TERMS:
+                if str(r["kind"] or "").lower().startswith("project_egon"):
+                    score += 8
+                elif "egon" in (r["tags"] or "").lower():
+                    score += 5
+                if any(marker in haystack for marker in _CORRECTION_MARKERS):
+                    score += 6
             if rid in semantic_scores:
                 score += int(semantic_scores[rid] * 12)
             score += {"decision": 5, "preference": 4, "pattern": 4, "skill": 3, "fact": 2}.get(r["kind"], 1)
@@ -331,7 +419,15 @@ def _ranked_memory(
             own_score = 0
             if project and project in (r["tags"] or "").lower():
                 own_score += 8
-            own_score += sum(2 for t in tokens if t in haystack)
+            matched_tokens = {t for t in tokens if t in haystack}
+            own_score += 2 * len(matched_tokens)
+            if tokens & _INFRA_QUERY_TERMS:
+                if str(r["kind"] or "").lower().startswith("project_egon"):
+                    own_score += 8
+                elif "egon" in (r["tags"] or "").lower():
+                    own_score += 5
+                if any(marker in haystack for marker in _CORRECTION_MARKERS):
+                    own_score += 6
             if rid in semantic_scores:
                 own_score += int(semantic_scores[rid] * 12)
             own_score += {"decision": 5, "preference": 4, "pattern": 4, "skill": 3, "fact": 2}.get(r["kind"], 1)

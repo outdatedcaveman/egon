@@ -35,6 +35,21 @@ _RUNNER_LOCK = threading.Lock()
 _MODEL = "gemini-2.5-flash"          # fast + cheap; the goal is diverse reasoning
 
 
+def _assess_output(output: str) -> tuple[str, str]:
+    """Reject acknowledgements and plans masquerading as completed work."""
+    text = (output or "").strip()
+    upper = text.upper()
+    if "RESULT_STATUS: BLOCKED" in upper:
+        return "blocked", "runner explicitly reported a blocker"
+    if "RESULT_STATUS: COMPLETE" not in upper:
+        return "invalid", "missing explicit RESULT_STATUS"
+    if not any(marker in upper for marker in ("EVIDENCE:", "VERIFICATION:", "DELIVERABLE:")):
+        return "invalid", "missing evidence, verification, or deliverable section"
+    if len(text) < 180:
+        return "invalid", "response too short to substantiate completion"
+    return "complete", "explicit completion contract satisfied"
+
+
 def _capsule(task: dict) -> str:
     """Shared-mind context for the task (best-effort, same as the CLI runners)."""
     try:
@@ -88,7 +103,12 @@ def execute_gemini_task(task: dict) -> None:
         "task below and return your COMPLETE written result (analysis, plan, "
         "answer, review, or synthesis). You cannot edit files or run commands — "
         "if the task needs that, say so explicitly and produce the best written "
-        "deliverable you can (e.g. the exact patch/plan to hand to a coding agent)."
+        "deliverable you can (e.g. the exact patch/plan to hand to a coding agent). "
+        "End with exactly one auditable status contract. For finished work use "
+        "'RESULT_STATUS: COMPLETE' followed by an 'EVIDENCE:', 'VERIFICATION:', "
+        "or 'DELIVERABLE:' section. If required evidence/tools are unavailable, "
+        "use 'RESULT_STATUS: BLOCKED' plus 'BLOCKER:' and 'HANDOFF:' sections. "
+        "Do not say you are ready or merely restate the task."
         + (f"\n\nEGON SHARED-MIND CONTEXT:\n{cap}" if cap else "")
         + f"\n\nPARENT GOAL:\n{task.get('parent_prompt') or ''}"
         + f"\n\nDELEGATED TASK:\n{desc}"
@@ -101,9 +121,28 @@ def execute_gemini_task(task: dict) -> None:
         out = (out or "").strip()
         if not out:
             append_task_event(task_id, "gemini", "output", "(empty response)")
-            update_task_status(task_id, "failed")
+            from lib.orchestration_engine import reassign_task_agent
+            reassign_task_agent(task_id, "Gemini returned an empty response", target_agent="codex")
             return
         append_task_event(task_id, "gemini", "output", out[:12000])
+        verdict, reason = _assess_output(out)
+        if verdict != "complete":
+            from lib.orchestration_engine import reassign_task_agent
+            new_agent = reassign_task_agent(
+                task_id,
+                f"Gemini completion gate rejected output: {reason}",
+                target_agent="codex",
+            )
+            append_task_event(
+                task_id,
+                "gemini",
+                "quality_gate_rejected",
+                f"{reason}; rerouted to {new_agent or 'no available agent'}",
+                {"verdict": verdict, "to_agent": new_agent},
+            )
+            if not new_agent:
+                update_task_status(task_id, "pending")
+            return
         update_task_status(task_id, "completed")
         _save_memory(desc, out)
         record_agent_heartbeat("gemini", task_id, "completed", desc[:200])

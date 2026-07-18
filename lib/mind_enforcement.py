@@ -37,6 +37,7 @@ def enforcement_status(project: str | None = "egon",
         _agent_state_guard_check(),
         _mcp_server_v2_check(),
         _mcp_live_smoke_check(project=project),
+        _continuity_contract_check(),
         _token_waste_sentinel_check(project=project, since_hours=since_hours, card=scorecard),
         _runtime_scorecard_check(project=project, since_hours=since_hours, card=scorecard),
     ]
@@ -140,21 +141,49 @@ def _shared_workspace_check() -> dict[str, Any]:
 def _claude_hooks_check() -> dict[str, Any]:
     path = HOME / ".claude" / "settings.local.json"
     text = _read(path)
-    lower = text.lower()
     required = {
         "UserPromptSubmit": " prompt",
         "PreToolUse": " pretool",
         "PostToolUse": " tool",
         "Stop": " stop",
     }
-    missing = [k for k, needle in required.items()
-               if k not in text or "mind_hook.py" not in lower or needle not in lower]
+    try:
+        hooks = (json.loads(text).get("hooks") or {}) if text else {}
+    except (TypeError, ValueError):
+        hooks = {}
+
+    def _commands(value: Any) -> list[str]:
+        if isinstance(value, dict):
+            out = []
+            command = value.get("command")
+            if isinstance(command, str):
+                out.append(command)
+            for child in value.values():
+                out.extend(_commands(child))
+            return out
+        if isinstance(value, list):
+            out = []
+            for child in value:
+                out.extend(_commands(child))
+            return out
+        return []
+
+    missing = []
+    for event, needle in required.items():
+        commands = [command.lower() for command in _commands(hooks.get(event, []))]
+        installed = any(
+            ("mind_hook.py" in command or "mind_hook_launcher.cmd" in command)
+            and needle in command
+            for command in commands
+        )
+        if not installed:
+            missing.append(event)
     return _check(
         "claude_hooks",
         path.exists() and not missing,
         "Claude hooks cover prompt context, pre-tool leases, post-tool activity, and stop summaries.",
         f"Claude hook gaps: {', '.join(missing)}",
-        f"Patch {path} so all hook events call scripts/mind_hook.py.",
+        f"Patch {path} so all hook events call scripts/mind_hook.py directly or through mind_hook_launcher.cmd.",
         path,
         missing,
     )
@@ -499,6 +528,79 @@ def _runtime_scorecard_check(project: str | None, since_hours: int,
     }
 
 
+def _continuity_contract_check() -> dict[str, Any]:
+    """Regression gate for cross-surface context and autonomous routing."""
+    missing: list[str] = []
+    try:
+        from lib.agent_wake_bridge import INTERACTIVE_SURFACES, RUNNER_AGENTS
+        from lib.gemini_runner import _assess_output
+        from lib.mind_context_broker import build_context_capsule
+        from lib.orchestration_engine import AUTONOMOUS_AGENT_ALIASES
+        from lib.provider_hooks import wake_context_status
+
+        if "antigravity" in RUNNER_AGENTS:
+            missing.append("Antigravity is still advertised as an autonomous runner")
+        if "antigravity" not in INTERACTIVE_SURFACES:
+            missing.append("Antigravity is not declared as an interactive shared-mind surface")
+        if AUTONOMOUS_AGENT_ALIASES.get("antigravity") != "gemini":
+            missing.append("Autonomous Antigravity assignments do not canonicalize to Gemini")
+
+        verdict, _ = _assess_output(
+            "Okay, Bruno. I am ready to begin. My goal is to investigate the task."
+        )
+        if verdict == "complete":
+            missing.append("Gemini acknowledgement-only output passes the completion gate")
+
+        capsule = build_context_capsule(
+            project="flood",
+            query=(
+                "Claude corrected the Antigravity deprecated-copy diagnosis; "
+                "resume unified-mind genealogy work with headless runner continuity"
+            ),
+            budget_chars=5000,
+            limit_memory=8,
+            limit_activity=2,
+            include_graph=False,
+            include_audit=False,
+        )
+        memories = (capsule.get("sections") or {}).get("durable_memory") or []
+        has_authoritative_runner_memory = any(
+            m.get("id") == 2698
+            or (
+                m.get("kind") == "project_egon_runners"
+                and {"authoritative", "corrected"}.issubset(set(m.get("tags") or []))
+            )
+            for m in memories
+        )
+        if not has_authoritative_runner_memory:
+            missing.append("Cross-project capsule omitted the authoritative corrected runner memory")
+        if 2648 in (capsule.get("refs") or {}).get("memory_ids", []):
+            missing.append("Superseded stale Antigravity diagnosis is still retrievable")
+        wake_context = wake_context_status()
+        if wake_context.get("status") != "ok":
+            missing.append(
+                "Live CLI wake sessions lack recorded capsule evidence: "
+                + json.dumps(wake_context.get("missing") or [], ensure_ascii=False)[:500]
+            )
+    except Exception as exc:
+        missing.append(f"continuity contract probe failed: {type(exc).__name__}: {str(exc)[:120]}")
+
+    return _check(
+        "cross_surface_continuity",
+        not missing,
+        (
+            "Corrected infrastructure memory crosses project boundaries; "
+            "Antigravity is interactive-only; autonomous work and weak outputs fail closed."
+        ),
+        "Cross-surface continuity contract failed: " + "; ".join(missing),
+        (
+            "Repair Context Broker candidate lanes, Antigravity-to-Gemini routing, "
+            "and the Gemini completion gate before dispatching more work."
+        ),
+        missing=missing,
+    )
+
+
 def _directive_check(name: str, path: Path) -> dict[str, Any]:
     text = _read(path)
     lower = text.lower()
@@ -583,6 +685,7 @@ def _next_actions(checks: list[dict[str, Any]],
                     "claude_hooks", "codex_mcp", "antigravity_mcp",
                     "mcp_server_v2", "mcp_live_smoke", "claude_session_state",
                     "agent_state_guard", "token_waste_sentinel", "runtime_scorecard",
+                    "cross_surface_continuity",
                 } else "medium",
                 "title": check["name"],
                 "action": check["fix"],
