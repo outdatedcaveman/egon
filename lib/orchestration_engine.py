@@ -60,6 +60,11 @@ _QUOTA_MARKERS = (
     "overloaded",
     "credits exhausted",
     "billing hard limit",
+    # Claude Code's subscription runner emits these strings for a real
+    # five-hour-window rejection.  They are not conventional HTTP errors, but
+    # the provider is unavailable until the advertised reset just the same.
+    "out of extra usage",
+    '"type":"rate_limit_event"',
     # Anthropic API with an empty balance: "Credit balance is too low" (HTTP
     # 400). Same remedy as quota — cool the agent down + reroute the task —
     # instead of hard-failing it (seen on claude-code waves 3+4, 2026-07-09).
@@ -73,6 +78,8 @@ _ERROR_MARKERS = (
     "error",
     "exception",
     "failed",
+    '"status":"rejected"',
+    '"overagestatus":"rejected"',
 )
 _COOLDOWN_TABLE_SQL = """CREATE TABLE IF NOT EXISTS agent_cooldowns (
     agent_name TEXT PRIMARY KEY,
@@ -506,6 +513,12 @@ def _line_has_runtime_quota_signal(line: str) -> bool:
             event = json.loads(stripped)
             if isinstance(event, dict):
                 event_type = str(event.get("type") or "").lower()
+                rate_info = event.get("rate_limit_info")
+                if event_type == "rate_limit_event" and isinstance(rate_info, dict):
+                    rate_status = str(rate_info.get("status") or "").lower()
+                    overage_status = str(rate_info.get("overageStatus") or "").lower()
+                    if rate_status == "rejected" or overage_status == "rejected":
+                        return True
                 subtype = str(event.get("subtype") or "").lower()
                 level = str(event.get("level") or "").lower()
                 status = str(event.get("status") or event.get("status_code") or "")
@@ -541,6 +554,37 @@ def is_quota_failure(text: str) -> bool:
         if _line_has_quota_signal(line):
             return True
     return False
+
+
+def quota_reset_at(text: str) -> int | None:
+    """Extract a provider-advertised quota reset epoch from JSONL output.
+
+    Claude Code nests ``resetsAt`` under ``rate_limit_info``.  Keeping this
+    parser small and provider-agnostic lets the wake bridge cool a provider
+    down until its real reset instead of retrying every 30 minutes.
+    """
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            event = json.loads(stripped)
+        except Exception:
+            continue
+        candidates: list[object] = []
+        if isinstance(event, dict):
+            candidates.extend((event.get("resetsAt"), event.get("resets_at")))
+            info = event.get("rate_limit_info")
+            if isinstance(info, dict):
+                candidates.extend((info.get("resetsAt"), info.get("resets_at")))
+        for candidate in candidates:
+            try:
+                reset_at = int(candidate)
+            except (TypeError, ValueError):
+                continue
+            if reset_at > 0:
+                return reset_at
+    return None
 
 
 def is_auth_failure(text: str) -> bool:
@@ -606,7 +650,12 @@ def detect_agent_cooldowns(
                     if not _line_has_runtime_quota_signal(line):
                         continue
                     reason = f"Quota / rate limit detected from {Path(filepath).name}"
-                    cooldown_until = max(int(mtime) + DEFAULT_COOLDOWN_SECONDS, now + 600)
+                    reset_at = quota_reset_at(line)
+                    cooldown_until = max(
+                        int(mtime) + DEFAULT_COOLDOWN_SECONDS,
+                        now + 600,
+                        (reset_at + 60) if reset_at else 0,
+                    )
                     _set_agent_cooldown_until(conn, agent, cooldown_until, reason)
                     rerouted = _reroute_tasks_from_agent(conn, agent, reason, include_assigned=True)
                     conn.commit()
@@ -644,6 +693,9 @@ def report_agent_failure(
         if _line_has_quota_signal(line):
             reason = line.strip()[:180] or reason
             break
+    reset_at = quota_reset_at(detail)
+    if reset_at:
+        cooldown_seconds = max(int(cooldown_seconds), reset_at - int(time.time()) + 60)
     cooldown = set_agent_cooldown(agent_name, cooldown_seconds, reason)
     return {"status": "cooldown", "quota_detected": True, **cooldown}
 
