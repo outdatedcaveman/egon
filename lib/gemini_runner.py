@@ -32,16 +32,32 @@ from lib.orchestration_engine import (
 )
 
 _RUNNER_LOCK = threading.Lock()
-_MODEL = "gemini-2.5-flash"          # fast + cheap; the goal is diverse reasoning
+# Delegated work is research-grade, so match egon_chat's own Gemini default
+# rather than downgrading to flash: the cheap tier was the main reason
+# delegated mathematics came back thin (2026-07-21).
+_MODEL = "gemini-2.5-pro"
+# The status contract must fit inside the budget or the gate rejects our own
+# truncation as if it were Gemini's non-compliance.
+_MAX_TOKENS = 8000
 
 
 def _assess_output(output: str) -> tuple[str, str]:
-    """Reject acknowledgements and plans masquerading as completed work."""
+    """Reject acknowledgements and plans masquerading as completed work.
+
+    The contract is accepted anywhere in the text (the prompt asks for it up
+    front) so that a long answer running out of token budget cannot silently
+    lose its own status line.
+    """
     text = (output or "").strip()
     upper = text.upper()
     if "RESULT_STATUS: BLOCKED" in upper:
         return "blocked", "runner explicitly reported a blocker"
     if "RESULT_STATUS: COMPLETE" not in upper:
+        # Distinguish "ignored the contract" from "ran out of room": a long
+        # answer with no contract is almost always a truncated one, and
+        # blaming the model for it sends the wrong task to the wrong agent.
+        if len(text) > int(_MAX_TOKENS * 3.2):
+            return "invalid", "output appears truncated before the status contract"
         return "invalid", "missing explicit RESULT_STATUS"
     if not any(marker in upper for marker in ("EVIDENCE:", "VERIFICATION:", "DELIVERABLE:")):
         return "invalid", "missing evidence, verification, or deliverable section"
@@ -104,11 +120,15 @@ def execute_gemini_task(task: dict) -> None:
         "answer, review, or synthesis). You cannot edit files or run commands — "
         "if the task needs that, say so explicitly and produce the best written "
         "deliverable you can (e.g. the exact patch/plan to hand to a coding agent). "
-        "End with exactly one auditable status contract. For finished work use "
-        "'RESULT_STATUS: COMPLETE' followed by an 'EVIDENCE:', 'VERIFICATION:', "
+        "OPEN — do not end — with exactly one auditable status contract, on the "
+        "very first line, before any prose. For finished work write "
+        "'RESULT_STATUS: COMPLETE' and include an 'EVIDENCE:', 'VERIFICATION:', "
         "or 'DELIVERABLE:' section. If required evidence/tools are unavailable, "
-        "use 'RESULT_STATUS: BLOCKED' plus 'BLOCKER:' and 'HANDOFF:' sections. "
-        "Do not say you are ready or merely restate the task."
+        "write 'RESULT_STATUS: BLOCKED' plus 'BLOCKER:' and 'HANDOFF:' sections. "
+        "Putting it first means a long answer cannot lose its own status line. "
+        "Do not say you are ready or merely restate the task. If the task is "
+        "mathematics, produce the actual mathematics — definitions, statements "
+        "and proofs — not a description of what a proof would contain."
         + (f"\n\nEGON SHARED-MIND CONTEXT:\n{cap}" if cap else "")
         + f"\n\nPARENT GOAL:\n{task.get('parent_prompt') or ''}"
         + f"\n\nDELEGATED TASK:\n{desc}"
@@ -117,7 +137,8 @@ def execute_gemini_task(task: dict) -> None:
         from lib import egon_chat
         out = egon_chat.chat([{"role": "user", "content": prompt}],
                              provider="gemini", model=_MODEL,
-                             inject_context=False, temperature=0.4, max_tokens=2000)
+                             inject_context=False, temperature=0.4,
+                             max_tokens=_MAX_TOKENS)
         out = (out or "").strip()
         if not out:
             append_task_event(task_id, "gemini", "output", "(empty response)")
